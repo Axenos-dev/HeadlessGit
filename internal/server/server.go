@@ -10,30 +10,33 @@ import (
 )
 
 type server struct {
+	cfg config.ServerConfig
+
 	logger  *zap.Logger
 	control *control.Server
 	git     *git.Server
 }
 
-func NewServer(logger *zap.Logger) *server {
+func NewServer(logger *zap.Logger, cfg config.ServerConfig) *server {
 	return &server{
+		cfg:     cfg,
 		logger:  logger,
 		control: control.NewServer(logger.With(zap.String("component", "control"))),
-		git:     git.NewServer(logger.With(zap.String("component", "git"))),
+		git:     git.NewServer(logger.With(zap.String("component", "git")), cfg.RepoRoot, cfg.HostKeyPath),
 	}
 }
 
-func (s *server) Run(cfg config.ServerConfig) error {
+func (s *server) Run() error {
 	errCh := make(chan error, 3)
 
 	go func() {
-		errCh <- s.control.Run(fmt.Sprintf(":%d", cfg.ControlPort))
+		errCh <- s.control.Run(fmt.Sprintf(":%d", s.cfg.ControlPort))
 	}()
 	go func() {
-		errCh <- s.git.RunHTTP(fmt.Sprintf(":%d", cfg.GitHTTPPort))
+		errCh <- s.git.RunHTTP(fmt.Sprintf(":%d", s.cfg.GitHTTPPort))
 	}()
 	go func() {
-		errCh <- s.git.RunSSH(fmt.Sprintf(":%d", cfg.GitSSHPort))
+		errCh <- s.git.RunSSH(fmt.Sprintf(":%d", s.cfg.GitSSHPort))
 	}()
 
 	return <-errCh

@@ -16,11 +16,11 @@ type Server struct {
 	ssh    *gitssh.Server
 }
 
-func NewServer(logger *zap.Logger) *Server {
+func NewServer(logger *zap.Logger, repoRoot, hostKeyPath string) *Server {
 	return &Server{
 		logger: logger,
-		http:   githttp.NewHandlers(logger.With(zap.String("transport", "http"))),
-		ssh:    gitssh.NewServer(logger.With(zap.String("transport", "ssh"))),
+		http:   githttp.NewHandlers(logger.With(zap.String("transport", "http")), repoRoot),
+		ssh:    gitssh.NewServer(logger.With(zap.String("transport", "ssh")), repoRoot, hostKeyPath),
 	}
 }
 

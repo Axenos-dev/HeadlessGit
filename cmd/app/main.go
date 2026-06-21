@@ -1,4 +1,4 @@
-package app
+package main
 
 import (
 	"log"
@@ -25,8 +25,8 @@ func main() {
 		zap.String("environment", config.Environment),
 	)
 
-	srv := server.NewServer(root)
-	if err := srv.Run(config.Server); err != nil {
+	srv := server.NewServer(root, config.Server)
+	if err := srv.Run(); err != nil {
 		log.Fatal(err)
 	}
 }

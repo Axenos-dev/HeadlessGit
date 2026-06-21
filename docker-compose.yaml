@@ -1,0 +1,14 @@
+services:
+  headlessgit-server:
+    build: .
+    ports:
+      - "4000:4000" # git http
+      - "4001:4001" # control api
+      - "2222:2222" # git ssh
+    environment:
+      ENVIRONMENT: DEVELOPMENT
+      REPO_ROOT: /data/repos
+      SSH_HOST_KEY_PATH: /data/ssh/host_ed25519
+      DATABASE_URL: /data/headlessgit.db
+    volumes:
+      - ./data:/data
