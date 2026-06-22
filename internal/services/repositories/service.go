@@ -17,6 +17,7 @@ type Registry interface {
 	GetRepository(ctx context.Context, repositoryID int64) (gen.Repository, error)
 	CreateRepository(ctx context.Context, ownerID int64, name, storagePath, visibility string) (gen.Repository, error)
 	DeleteRepository(ctx context.Context, repositoryID int64) error
+	GetRepositoryByPath(ctx context.Context, namespace, name string) (gen.Repository, error)
 }
 
 type RepositoryStorage interface {
@@ -106,6 +107,17 @@ func (s *Service) Delete(ctx context.Context, repositoryID int64) error {
 	}
 
 	return nil
+}
+
+func (s *Service) GetRepositoryByPath(ctx context.Context, namespace, name string) (domain.Repository, error) {
+	repo, err := s.registry.GetRepositoryByPath(ctx, namespace, name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Repository{}, ErrRepositoryNotFound
+	}
+	if err != nil {
+		return domain.Repository{}, err
+	}
+	return toDomain(repo), nil
 }
 
 func toDomain(r gen.Repository) domain.Repository {

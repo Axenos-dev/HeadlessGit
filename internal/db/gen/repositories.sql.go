@@ -74,6 +74,33 @@ func (q *Queries) GetRepository(ctx context.Context, id int64) (Repository, erro
 	return i, err
 }
 
+const getRepositoryByPath = `-- name: GetRepositoryByPath :one
+select repositories.id, repositories.owner_id, repositories.repository_name, repositories.storage_path, repositories.visibility, repositories.created_at_unix_ms, repositories.updated_at_unix_ms from repositories
+join users on users.id = repositories.owner_id
+where users.username = ?1
+and repositories.repository_name = ?2
+`
+
+type GetRepositoryByPathParams struct {
+	Namespace string
+	Name      string
+}
+
+func (q *Queries) GetRepositoryByPath(ctx context.Context, arg GetRepositoryByPathParams) (Repository, error) {
+	row := q.db.QueryRowContext(ctx, getRepositoryByPath, arg.Namespace, arg.Name)
+	var i Repository
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.RepositoryName,
+		&i.StoragePath,
+		&i.Visibility,
+		&i.CreatedAtUnixMs,
+		&i.UpdatedAtUnixMs,
+	)
+	return i, err
+}
+
 const listUserRepositories = `-- name: ListUserRepositories :many
 select id, owner_id, repository_name, storage_path, visibility, created_at_unix_ms, updated_at_unix_ms from repositories 
 where owner_id=?

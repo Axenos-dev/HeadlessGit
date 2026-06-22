@@ -3,6 +3,7 @@ package gitcmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -53,6 +54,13 @@ func (r *Runner) InitBareRepository(ctx context.Context, storagePath string) err
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git init --bare: %w: %s", err, strings.TrimSpace(string(out)))
 	}
+
+	// allow push over HTTP (git-http-backend refuses receive-pack otherwise)
+	cfg := exec.CommandContext(ctx, r.gitPath, "-C", dir, "config", "http.receivepack", "true")
+	if out, err := cfg.CombinedOutput(); err != nil {
+		return fmt.Errorf("git config http.receivepack: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+
 	return nil
 }
 
@@ -63,6 +71,32 @@ func (r *Runner) Remove(ctx context.Context, storagePath string) error {
 		return err
 	}
 	return os.RemoveAll(dir)
+}
+
+func (r *Runner) RunUploadPack(ctx context.Context, storagePath string, stdin io.Reader, stdout, stderr io.Writer) error {
+	dir, err := r.resolve(storagePath)
+	if err != nil {
+		return err
+	}
+	return r.runPack(ctx, "git-upload-pack", dir, stdin, stdout, stderr)
+}
+
+func (r *Runner) RunReceivePack(ctx context.Context, storagePath string, stdin io.Reader, stdout, stderr io.Writer) error {
+	dir, err := r.resolve(storagePath)
+	if err != nil {
+		return err
+	}
+	return r.runPack(ctx, "git-receive-pack", dir, stdin, stdout, stderr)
+}
+
+func (r *Runner) runPack(ctx context.Context, subcommand, dir string, stdin io.Reader, stdout, stderr io.Writer) error {
+	cmd := exec.CommandContext(ctx, subcommand, dir)
+	// directly pass client's bytes to process stdin
+	cmd.Stdin = stdin
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+
+	return cmd.Run()
 }
 
 // resolve maps a stored relative path to an absolute dir under the root and

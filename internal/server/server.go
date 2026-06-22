@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/config"
+	"github.com/Axenos-dev/HeadlessGit/internal/gitcmd"
 	"github.com/Axenos-dev/HeadlessGit/internal/server/control"
 	"github.com/Axenos-dev/HeadlessGit/internal/server/git"
 	reposervice "github.com/Axenos-dev/HeadlessGit/internal/services/repositories"
@@ -18,12 +19,17 @@ type server struct {
 	git     *git.Server
 }
 
-func NewServer(logger *zap.Logger, cfg config.ServerConfig, repos *reposervice.Service) *server {
+func NewServer(
+	logger *zap.Logger,
+	cfg config.ServerConfig,
+	repos *reposervice.Service,
+	runner *gitcmd.Runner,
+) *server {
 	return &server{
 		cfg:     cfg,
 		logger:  logger,
 		control: control.NewServer(logger.With(zap.String("component", "control")), repos),
-		git:     git.NewServer(logger.With(zap.String("component", "git")), cfg.RepoRoot, cfg.HostKeyPath),
+		git:     git.NewServer(logger.With(zap.String("component", "git")), cfg.RepoRoot, cfg.HostKeyPath, runner, repos),
 	}
 }
 

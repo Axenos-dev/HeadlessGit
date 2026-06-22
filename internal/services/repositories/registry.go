@@ -33,3 +33,10 @@ func (r *RepositoryRegistry) CreateRepository(ctx context.Context, ownerID int64
 		Visibility:     visibility,
 	})
 }
+
+func (r *RepositoryRegistry) GetRepositoryByPath(ctx context.Context, namespace, name string) (gen.Repository, error) {
+	return r.db.GetRepositoryByPath(ctx, gen.GetRepositoryByPathParams{
+		Namespace: namespace,
+		Name:      name,
+	})
+}

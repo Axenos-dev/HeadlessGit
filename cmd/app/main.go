@@ -51,7 +51,7 @@ func main() {
 		gitRunner,
 	)
 
-	srv := server.NewServer(root, config.Server, repoService)
+	srv := server.NewServer(root, config.Server, repoService, gitRunner)
 	if err := srv.Run(); err != nil {
 		log.Fatal(err)
 	}

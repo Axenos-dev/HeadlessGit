@@ -16,3 +16,9 @@ insert into repositories (
 -- name: DeleteRepository :exec
 delete from repositories
 where id=?;
+
+-- name: GetRepositoryByPath :one
+select repositories.* from repositories
+join users on users.id = repositories.owner_id
+where users.username = sqlc.arg(namespace)
+and repositories.repository_name = sqlc.arg(name)

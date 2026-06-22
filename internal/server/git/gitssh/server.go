@@ -1,34 +1,48 @@
 package gitssh
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
+	"github.com/Axenos-dev/HeadlessGit/internal/domain"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/ssh"
 )
 
-type Server struct {
-	logger      *zap.Logger
-	repoRoot    string
-	hostKeyPath string
+type GitRunner interface {
+	RunUploadPack(ctx context.Context, storagePath string, stdin io.Reader, stdout, stderr io.Writer) error
+	RunReceivePack(ctx context.Context, storagePath string, stdin io.Reader, stdout, stderr io.Writer) error
 }
 
-func NewServer(logger *zap.Logger, repoRoot, hostKeyPath string) *Server {
+type RepositoryResolver interface {
+	GetRepositoryByPath(ctx context.Context, namespace, name string) (domain.Repository, error)
+}
+
+type Server struct {
+	logger      *zap.Logger
+	hostKeyPath string
+
+	runner   GitRunner
+	resolver RepositoryResolver
+}
+
+func NewServer(logger *zap.Logger, hostKeyPath string, runner GitRunner, resolver RepositoryResolver) *Server {
 	return &Server{
 		logger:      logger,
-		repoRoot:    repoRoot,
 		hostKeyPath: hostKeyPath,
+		runner:      runner,
+		resolver:    resolver,
 	}
 }
 
@@ -67,6 +81,14 @@ func (s *Server) handleConn(nConn net.Conn, cfg *ssh.ServerConfig) {
 	}
 	defer sshConn.Close()
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		// cancel on connection shutdown
+		sshConn.Wait()
+		cancel()
+	}()
+
 	go ssh.DiscardRequests(reqs)
 
 	for newChan := range chans {
@@ -75,11 +97,11 @@ func (s *Server) handleConn(nConn net.Conn, cfg *ssh.ServerConfig) {
 			newChan.Reject(ssh.UnknownChannelType, "only session channels are supported")
 			continue
 		}
-		go s.handleSession(newChan)
+		go s.handleSession(ctx, newChan)
 	}
 }
 
-func (s *Server) handleSession(newChan ssh.NewChannel) {
+func (s *Server) handleSession(ctx context.Context, newChan ssh.NewChannel) {
 	ch, reqs, err := newChan.Accept()
 	if err != nil {
 		return
@@ -101,76 +123,76 @@ func (s *Server) handleSession(newChan ssh.NewChannel) {
 		}
 		req.Reply(true, nil)
 
-		s.runGit(ch, payload.Command)
+		s.runGit(ctx, ch, payload.Command)
 		return
 	}
 }
 
-func (s *Server) runGit(ch ssh.Channel, command string) {
-	name, repo, err := parseGitCommand(command)
+func (s *Server) runGit(ctx context.Context, ch ssh.Channel, command string) {
+	subcommand, repo, err := parseGitCommand(command)
 	if err != nil {
 		fmt.Fprintln(ch.Stderr(), err.Error())
 		sendExit(ch, 1)
 		return
 	}
 
-	repoPath, err := s.repoPath(repo)
+	namespace, name, err := splitRepoPath(repo)
 	if err != nil {
 		fmt.Fprintln(ch.Stderr(), err.Error())
 		sendExit(ch, 1)
 		return
 	}
 
-	// execute command at repo path
-	cmd := exec.Command(name, repoPath)
-	// directly pass client's bytes to process stdin
-	cmd.Stdin = ch
-	cmd.Stdout = ch
-	cmd.Stderr = ch.Stderr()
+	// resolve repository by the requested path
+	resolved, err := s.resolver.GetRepositoryByPath(ctx, namespace, name)
+	if err != nil {
+		fmt.Fprintln(ch.Stderr(), "repository not found")
+		sendExit(ch, 1)
+		return
+	}
+
+	switch subcommand {
+	case "git-upload-pack":
+		err = s.runner.RunUploadPack(ctx, resolved.StoragePath, ch, ch, ch.Stderr())
+	case "git-receive-pack":
+		err = s.runner.RunReceivePack(ctx, resolved.StoragePath, ch, ch, ch.Stderr())
+	default:
+		err = fmt.Errorf("unhandled git subcommand: %s", subcommand)
+	}
 
 	code := 0
-	if err := cmd.Run(); err != nil {
+	if err != nil {
 		s.logger.Warn("git command failed", zap.String("command", command), zap.Error(err))
 		code = 1
 	}
 	sendExit(ch, code)
 }
 
-var allowedGitCommands = map[string]bool{
-	"git-upload-pack":  true,
-	"git-receive-pack": true,
-}
-
 // splits line to command name and repo name, and validates the input
-func parseGitCommand(command string) (name, repo string, err error) {
+func parseGitCommand(command string) (subcommand, repo string, err error) {
 	fields := strings.SplitN(strings.TrimSpace(command), " ", 2)
 	if len(fields) != 2 {
 		return "", "", errors.New("invalid git command")
 	}
 
 	// first argument is the command name
-	name = fields[0]
-	if !allowedGitCommands[name] {
-		return "", "", fmt.Errorf("command not allowed: %s", name)
-	}
+	subcommand = fields[0]
 
 	// second one is the repo name, wrapped in '
 	repo = strings.Trim(fields[1], "'\"")
-	return name, repo, nil
+	return subcommand, repo, nil
 }
 
-// repoPath resolves the requested repo under repoRoot and refuses to escape it.
-func (s *Server) repoPath(repo string) (string, error) {
-	root, err := filepath.Abs(s.repoRoot)
-	if err != nil {
-		return "", err
-	}
+// splits "namespace/name(.git)" into its parts
+func splitRepoPath(repo string) (namespace, name string, err error) {
+	repo = strings.Trim(repo, "/")
+	repo = strings.TrimSuffix(repo, ".git")
 
-	full := filepath.Join(root, filepath.Clean("/"+repo))
-	if full != root && !strings.HasPrefix(full, root+string(filepath.Separator)) {
-		return "", errors.New("invalid repo path")
+	parts := strings.Split(repo, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", errors.New("invalid repository path")
 	}
-	return full, nil
+	return parts[0], parts[1], nil
 }
 
 func sendExit(ch ssh.Channel, code int) {
