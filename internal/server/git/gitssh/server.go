@@ -34,6 +34,10 @@ type Authenticator interface {
 	AuthenticateSSHKey(ctx context.Context, fingerprint string) (domain.Account, error)
 }
 
+type Authorizer interface {
+	Authorize(ctx context.Context, account *domain.Account, repo domain.Repository, required domain.Role) error
+}
+
 type Server struct {
 	logger      *zap.Logger
 	hostKeyPath string
@@ -41,15 +45,17 @@ type Server struct {
 	runner   GitRunner
 	resolver RepositoryResolver
 	auth     Authenticator
+	authz    Authorizer
 }
 
-func NewServer(logger *zap.Logger, hostKeyPath string, runner GitRunner, resolver RepositoryResolver, authn Authenticator) *Server {
+func NewServer(logger *zap.Logger, hostKeyPath string, runner GitRunner, resolver RepositoryResolver, authn Authenticator, authz Authorizer) *Server {
 	return &Server{
 		logger:      logger,
 		hostKeyPath: hostKeyPath,
 		runner:      runner,
 		resolver:    resolver,
 		auth:        authn,
+		authz:       authz,
 	}
 }
 
@@ -175,6 +181,25 @@ func (s *Server) runGit(ctx context.Context, account domain.Account, ch ssh.Chan
 		return
 	}
 
+	// upload-pack reads, receive-pack writes
+	var required domain.Role
+	switch subcommand {
+	case "git-upload-pack":
+		required = domain.RoleRead
+	case "git-receive-pack":
+		required = domain.RoleWrite
+	default:
+		fmt.Fprintf(ch.Stderr(), "unhandled git subcommand: %s\n", subcommand)
+		sendExit(ch, 1)
+		return
+	}
+
+	if err := s.authz.Authorize(ctx, &account, resolved, required); err != nil {
+		fmt.Fprintln(ch.Stderr(), "access denied")
+		sendExit(ch, 1)
+		return
+	}
+
 	s.logger.Info("git ssh command",
 		zap.String("user", account.Username),
 		zap.String("subcommand", subcommand),
@@ -186,8 +211,6 @@ func (s *Server) runGit(ctx context.Context, account domain.Account, ch ssh.Chan
 		err = s.runner.RunUploadPack(ctx, resolved.StoragePath, ch, ch, ch.Stderr())
 	case "git-receive-pack":
 		err = s.runner.RunReceivePack(ctx, resolved.StoragePath, ch, ch, ch.Stderr())
-	default:
-		err = fmt.Errorf("unhandled git subcommand: %s", subcommand)
 	}
 
 	code := 0

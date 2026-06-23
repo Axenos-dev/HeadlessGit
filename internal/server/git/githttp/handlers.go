@@ -22,11 +22,16 @@ type Authenticator interface {
 	AuthenticateToken(ctx context.Context, rawToken string) (domain.Account, error)
 }
 
+type Authorizer interface {
+	Authorize(ctx context.Context, account *domain.Account, repo domain.Repository, required domain.Role) error
+}
+
 type Handlers struct {
 	logger   *zap.Logger
 	repoRoot string
 	resolver RepositoryResolver
 	auth     Authenticator
+	authz    Authorizer
 }
 
 // key for context
@@ -34,12 +39,13 @@ type contextKey string
 
 const accountKey contextKey = "account"
 
-func NewHandlers(logger *zap.Logger, repoRoot string, resolver RepositoryResolver, auth Authenticator) *Handlers {
+func NewHandlers(logger *zap.Logger, repoRoot string, resolver RepositoryResolver, auth Authenticator, authz Authorizer) *Handlers {
 	return &Handlers{
 		logger:   logger,
 		repoRoot: repoRoot,
 		resolver: resolver,
 		auth:     auth,
+		authz:    authz,
 	}
 }
 
@@ -61,10 +67,34 @@ func (h *Handlers) serve(service string) http.HandlerFunc {
 			return
 		}
 
+		account := accountFromContext(r.Context()) // nil = anonymous
+		if err := h.authz.Authorize(r.Context(), account, repo, requiredRole(r, service)); err != nil {
+			if account == nil {
+				// missing creds -> tell git to retry with credentials
+				w.Header().Set("WWW-Authenticate", `Basic realm="git"`)
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+			} else {
+				http.Error(w, "forbidden", http.StatusForbidden)
+			}
+			return
+		}
+
 		// basically re-route {namespace}/{name} to storage path
 		r.URL.Path = "/" + repo.StoragePath + service
 		h.backend().ServeHTTP(w, r)
 	}
+}
+
+// map the requested git service to the access level it needs
+func requiredRole(r *http.Request, service string) domain.Role {
+	svc := service
+	if service == "/info/refs" {
+		svc = "/" + r.URL.Query().Get("service")
+	}
+	if svc == "/git-receive-pack" {
+		return domain.RoleWrite
+	}
+	return domain.RoleRead
 }
 
 func (h *Handlers) withAccount(next http.Handler) http.Handler {

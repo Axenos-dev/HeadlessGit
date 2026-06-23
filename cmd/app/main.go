@@ -9,6 +9,7 @@ import (
 	"github.com/Axenos-dev/HeadlessGit/internal/logger"
 	"github.com/Axenos-dev/HeadlessGit/internal/server"
 	"github.com/Axenos-dev/HeadlessGit/internal/services/auth"
+	"github.com/Axenos-dev/HeadlessGit/internal/services/permissions"
 	"github.com/Axenos-dev/HeadlessGit/internal/services/repositories"
 	"go.uber.org/zap"
 )
@@ -57,7 +58,9 @@ func main() {
 		auth.NewRegistry(db),
 	)
 
-	srv := server.NewServer(root, config.Server, repoService, authService, gitRunner)
+	permsService := permissions.NewService(permissions.NewRegistry(db))
+
+	srv := server.NewServer(root, config.Server, repoService, authService, permsService, gitRunner)
 	if err := srv.Run(); err != nil {
 		log.Fatal(err)
 	}
