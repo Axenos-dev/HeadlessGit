@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/domain"
@@ -29,20 +30,26 @@ type RepositoryResolver interface {
 	GetRepositoryByPath(ctx context.Context, namespace, name string) (domain.Repository, error)
 }
 
+type Authenticator interface {
+	AuthenticateSSHKey(ctx context.Context, fingerprint string) (domain.Account, error)
+}
+
 type Server struct {
 	logger      *zap.Logger
 	hostKeyPath string
 
 	runner   GitRunner
 	resolver RepositoryResolver
+	auth     Authenticator
 }
 
-func NewServer(logger *zap.Logger, hostKeyPath string, runner GitRunner, resolver RepositoryResolver) *Server {
+func NewServer(logger *zap.Logger, hostKeyPath string, runner GitRunner, resolver RepositoryResolver, authn Authenticator) *Server {
 	return &Server{
 		logger:      logger,
 		hostKeyPath: hostKeyPath,
 		runner:      runner,
 		resolver:    resolver,
+		auth:        authn,
 	}
 }
 
@@ -52,7 +59,21 @@ func (s *Server) Run(addr string) error {
 		return fmt.Errorf("host key: %w", err)
 	}
 
-	cfg := &ssh.ServerConfig{NoClientAuth: true} // no auth yet
+	cfg := &ssh.ServerConfig{
+		PublicKeyCallback: func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+			// just resolve the key to a user
+			account, err := s.auth.AuthenticateSSHKey(context.Background(), ssh.FingerprintSHA256(key))
+			if err != nil {
+				return nil, errors.New("unauthorized")
+			}
+			// carry the resolved identity to the session via Permissions.Extensions
+			return &ssh.Permissions{Extensions: map[string]string{
+				"account_id": strconv.FormatInt(account.UserID, 10),
+				"username":   account.Username,
+				"kind":       string(account.Kind),
+			}}, nil
+		},
+	}
 	cfg.AddHostKey(hostKey)
 
 	ln, err := net.Listen("tcp", addr)
@@ -89,6 +110,9 @@ func (s *Server) handleConn(nConn net.Conn, cfg *ssh.ServerConfig) {
 		cancel()
 	}()
 
+	// resolved during the handshake by PublicKeyCallback
+	account := accountFromPermissions(sshConn.Permissions)
+
 	go ssh.DiscardRequests(reqs)
 
 	for newChan := range chans {
@@ -97,11 +121,11 @@ func (s *Server) handleConn(nConn net.Conn, cfg *ssh.ServerConfig) {
 			newChan.Reject(ssh.UnknownChannelType, "only session channels are supported")
 			continue
 		}
-		go s.handleSession(ctx, newChan)
+		go s.handleSession(ctx, account, newChan)
 	}
 }
 
-func (s *Server) handleSession(ctx context.Context, newChan ssh.NewChannel) {
+func (s *Server) handleSession(ctx context.Context, account domain.Account, newChan ssh.NewChannel) {
 	ch, reqs, err := newChan.Accept()
 	if err != nil {
 		return
@@ -123,12 +147,12 @@ func (s *Server) handleSession(ctx context.Context, newChan ssh.NewChannel) {
 		}
 		req.Reply(true, nil)
 
-		s.runGit(ctx, ch, payload.Command)
+		s.runGit(ctx, account, ch, payload.Command)
 		return
 	}
 }
 
-func (s *Server) runGit(ctx context.Context, ch ssh.Channel, command string) {
+func (s *Server) runGit(ctx context.Context, account domain.Account, ch ssh.Channel, command string) {
 	subcommand, repo, err := parseGitCommand(command)
 	if err != nil {
 		fmt.Fprintln(ch.Stderr(), err.Error())
@@ -150,6 +174,12 @@ func (s *Server) runGit(ctx context.Context, ch ssh.Channel, command string) {
 		sendExit(ch, 1)
 		return
 	}
+
+	s.logger.Info("git ssh command",
+		zap.String("user", account.Username),
+		zap.String("subcommand", subcommand),
+		zap.String("repo", namespace+"/"+name),
+	)
 
 	switch subcommand {
 	case "git-upload-pack":
@@ -181,6 +211,19 @@ func parseGitCommand(command string) (subcommand, repo string, err error) {
 	// second one is the repo name, wrapped in '
 	repo = strings.Trim(fields[1], "'\"")
 	return subcommand, repo, nil
+}
+
+// accountFromPermissions reconstructs the identity stashed by PublicKeyCallback.
+func accountFromPermissions(p *ssh.Permissions) domain.Account {
+	if p == nil {
+		return domain.Account{}
+	}
+	id, _ := strconv.ParseInt(p.Extensions["account_id"], 10, 64)
+	return domain.Account{
+		UserID:   id,
+		Username: p.Extensions["username"],
+		Kind:     domain.UserKind(p.Extensions["kind"]),
+	}
 }
 
 // splits "namespace/name(.git)" into its parts

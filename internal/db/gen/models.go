@@ -8,6 +8,15 @@ import (
 	"database/sql"
 )
 
+type Permission struct {
+	ID              int64
+	UserID          int64
+	RepositoryID    int64
+	UserRole        string
+	CreatedAtUnixMs int64
+	UpdatedAtUnixMs sql.NullInt64
+}
+
 type Repository struct {
 	ID              int64
 	OwnerID         int64
@@ -16,6 +25,26 @@ type Repository struct {
 	Visibility      string
 	CreatedAtUnixMs int64
 	UpdatedAtUnixMs sql.NullInt64
+}
+
+type SshKey struct {
+	ID               int64
+	UserID           int64
+	Title            string
+	PublicKey        string
+	Fingerprint      string
+	CreatedAtUnixMs  int64
+	LastUsedAtUnixMs sql.NullInt64
+}
+
+type Token struct {
+	ID               int64
+	UserID           int64
+	Title            string
+	TokenHash        string
+	CreatedAtUnixMs  int64
+	LastUsedAtUnixMs sql.NullInt64
+	ExpiresAtUnixMs  sql.NullInt64
 }
 
 type User struct {

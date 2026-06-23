@@ -6,6 +6,7 @@ import (
 	"github.com/Axenos-dev/HeadlessGit/internal/gitcmd"
 	"github.com/Axenos-dev/HeadlessGit/internal/server/git/githttp"
 	"github.com/Axenos-dev/HeadlessGit/internal/server/git/gitssh"
+	authservice "github.com/Axenos-dev/HeadlessGit/internal/services/auth"
 	reposervice "github.com/Axenos-dev/HeadlessGit/internal/services/repositories"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -18,11 +19,11 @@ type Server struct {
 	ssh    *gitssh.Server
 }
 
-func NewServer(logger *zap.Logger, repoRoot, hostKeyPath string, runner *gitcmd.Runner, repos *reposervice.Service) *Server {
+func NewServer(logger *zap.Logger, repoRoot, hostKeyPath string, runner *gitcmd.Runner, repos *reposervice.Service, auth *authservice.Service) *Server {
 	return &Server{
 		logger: logger,
-		http:   githttp.NewHandlers(logger.With(zap.String("transport", "http")), repoRoot, repos),
-		ssh:    gitssh.NewServer(logger.With(zap.String("transport", "ssh")), hostKeyPath, runner, repos),
+		http:   githttp.NewHandlers(logger.With(zap.String("transport", "http")), repoRoot, repos, auth),
+		ssh:    gitssh.NewServer(logger.With(zap.String("transport", "ssh")), hostKeyPath, runner, repos, auth),
 	}
 }
 
