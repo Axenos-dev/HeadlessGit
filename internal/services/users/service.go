@@ -2,42 +2,51 @@ package users
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/db/gen"
 	"github.com/Axenos-dev/HeadlessGit/internal/domain"
-	"go.uber.org/zap"
 )
 
 type Registry interface {
+	GetUser(ctx context.Context, userID int64) (gen.User, error)
 	CreateUser(ctx context.Context, username, kind string) (gen.User, error)
 }
 
 type Service struct {
-	logger   *zap.Logger
 	registry Registry
 }
 
-func NewService(logger *zap.Logger, registry Registry) *Service {
+func NewService(registry Registry) *Service {
 	return &Service{
-		logger:   logger,
 		registry: registry,
 	}
 }
 
-func (s *Service) CreateUser(ctx context.Context, userInfo domain.UserInfo) (domain.Account, error) {
-	user, err := s.registry.CreateUser(ctx, userInfo.Username, string(userInfo.Kind))
+func (s *Service) Create(ctx context.Context, info domain.UserInfo) (domain.Account, error) {
+	user, err := s.registry.CreateUser(ctx, info.Username, string(info.Kind))
 	if err != nil {
-		s.logger.Error("failed to create user", zap.Error(err))
 		return domain.Account{}, err
 	}
-
-	return toDomain(user), nil
+	return toAccount(user), nil
 }
 
-func toDomain(user gen.User) domain.Account {
+func (s *Service) Get(ctx context.Context, userID int64) (domain.Account, error) {
+	user, err := s.registry.GetUser(ctx, userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Account{}, ErrUserNotFound
+	}
+	if err != nil {
+		return domain.Account{}, err
+	}
+	return toAccount(user), nil
+}
+
+func toAccount(u gen.User) domain.Account {
 	return domain.Account{
-		UserID:   user.ID,
-		Username: user.Username,
-		Kind:     domain.UserKind(user.Kind),
+		UserID:   u.ID,
+		Username: u.Username,
+		Kind:     domain.UserKind(u.Kind),
 	}
 }

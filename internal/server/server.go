@@ -10,6 +10,7 @@ import (
 	authservice "github.com/Axenos-dev/HeadlessGit/internal/services/auth"
 	permsservice "github.com/Axenos-dev/HeadlessGit/internal/services/permissions"
 	reposervice "github.com/Axenos-dev/HeadlessGit/internal/services/repositories"
+	usersservice "github.com/Axenos-dev/HeadlessGit/internal/services/users"
 	"go.uber.org/zap"
 )
 
@@ -25,6 +26,7 @@ func NewServer(
 	logger *zap.Logger,
 	cfg config.ServerConfig,
 	repos *reposervice.Service,
+	users *usersservice.Service,
 	auth *authservice.Service,
 	perms *permsservice.Service,
 	runner *gitcmd.Runner,
@@ -32,7 +34,7 @@ func NewServer(
 	return &server{
 		cfg:     cfg,
 		logger:  logger,
-		control: control.NewServer(logger.With(zap.String("component", "control")), repos),
+		control: control.NewServer(logger.With(zap.String("component", "control")), repos, users, auth, perms),
 		git:     git.NewServer(logger.With(zap.String("component", "git")), cfg.RepoRoot, cfg.HostKeyPath, runner, repos, auth, perms),
 	}
 }
