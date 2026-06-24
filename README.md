@@ -43,7 +43,7 @@ For local development, see [`./dev.sh up`](#development).
 ![diagram](images/diagram.png)
 
 - **Backend** using the admin token calls the control API to create accounts, register credentials, create repositories, and grant permissions - translating its own users into explicit repo grants here.
-- **Users** use the data plane directly with their own credentials (SSH key or token). Serivce authenticates them and authorizes each operation against the permissions they have.
+- **Users** use the data plane directly with their own credentials (SSH key or token). Service authenticates them and authorizes each operation against the permissions they have.
 
 ### Identities
 
