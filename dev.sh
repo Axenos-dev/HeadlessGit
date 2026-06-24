@@ -9,6 +9,7 @@ usage() {
 	echo "commands:"
 	echo "  up     build and start the stack (docker compose up --build)"
 	echo "  gen    generate sqlc code (sqlc generate)"
+	echo "  test   run the checks the CI gate runs (build + vet + test)"
 }
 
 case "${1:-}" in
@@ -17,6 +18,11 @@ up)
 	;;
 gen)
 	sqlc generate
+	;;
+test)
+	go build ./...
+	go vet ./...
+	go test ./...
 	;;
 *)
 	usage
