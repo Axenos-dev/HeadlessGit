@@ -14,7 +14,7 @@ insert into users (
   username, kind
 ) values (
   ?, ?
-) returning id, username, kind, created_at_unix_ms, updated_at_unix_ms
+) returning id, username, kind, is_admin, created_at_unix_ms, updated_at_unix_ms
 `
 
 type CreateUserParams struct {
@@ -29,6 +29,30 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.ID,
 		&i.Username,
 		&i.Kind,
+		&i.IsAdmin,
+		&i.CreatedAtUnixMs,
+		&i.UpdatedAtUnixMs,
+	)
+	return i, err
+}
+
+const ensureAdminUser = `-- name: EnsureAdminUser :one
+insert into users (
+  username, kind, is_admin
+) values (
+  'admin', 'service', 1
+) on conflict(username) do update set is_admin=1
+returning id, username, kind, is_admin, created_at_unix_ms, updated_at_unix_ms
+`
+
+func (q *Queries) EnsureAdminUser(ctx context.Context) (User, error) {
+	row := q.db.QueryRowContext(ctx, ensureAdminUser)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Username,
+		&i.Kind,
+		&i.IsAdmin,
 		&i.CreatedAtUnixMs,
 		&i.UpdatedAtUnixMs,
 	)
@@ -36,7 +60,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 }
 
 const getUser = `-- name: GetUser :one
-select id, username, kind, created_at_unix_ms, updated_at_unix_ms from users
+select id, username, kind, is_admin, created_at_unix_ms, updated_at_unix_ms from users
 where id=? limit 1
 `
 
@@ -47,6 +71,7 @@ func (q *Queries) GetUser(ctx context.Context, id int64) (User, error) {
 		&i.ID,
 		&i.Username,
 		&i.Kind,
+		&i.IsAdmin,
 		&i.CreatedAtUnixMs,
 		&i.UpdatedAtUnixMs,
 	)

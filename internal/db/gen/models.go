@@ -51,6 +51,7 @@ type User struct {
 	ID              int64
 	Username        string
 	Kind            string
+	IsAdmin         int64
 	CreatedAtUnixMs int64
 	UpdatedAtUnixMs sql.NullInt64
 }

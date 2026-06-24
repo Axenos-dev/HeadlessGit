@@ -23,6 +23,9 @@ type config struct {
 	Environment string `env:"ENVIRONMENT" envDefault:"DEVELOPMENT"`
 	Database    DatabaseConfig
 	Server      ServerConfig
+
+	// raw token for the seeded admin service account; empty = no admin seeded
+	AdminToken string `env:"ADMIN_TOKEN"`
 }
 
 func Load() (config, error) {

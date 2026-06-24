@@ -48,5 +48,6 @@ func toAccount(u gen.User) domain.Account {
 		UserID:   u.ID,
 		Username: u.Username,
 		Kind:     domain.UserKind(u.Kind),
+		IsAdmin:  u.IsAdmin != 0,
 	}
 }

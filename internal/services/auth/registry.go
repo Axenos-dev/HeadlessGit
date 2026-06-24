@@ -60,8 +60,16 @@ func (r *AuthRegistry) DeleteToken(ctx context.Context, tokenHash string) error 
 	return r.db.DeleteToken(ctx, tokenHash)
 }
 
+func (r *AuthRegistry) DeleteTokensByUserID(ctx context.Context, userID int64) error {
+	return r.db.DeleteTokensByUserID(ctx, userID)
+}
+
 func (r *AuthRegistry) UpdateTokenUsedAt(ctx context.Context, tokenHash string) error {
 	return r.db.UpdateTokenUsedAt(ctx, tokenHash)
+}
+
+func (r *AuthRegistry) EnsureAdminUser(ctx context.Context) (gen.User, error) {
+	return r.db.EnsureAdminUser(ctx)
 }
 
 func nullInt64(v *int64) sql.NullInt64 {

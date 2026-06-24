@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/config"
@@ -58,6 +59,12 @@ func main() {
 		root.With(zap.String("service", "auth")),
 		auth.NewRegistry(db),
 	)
+
+	if config.AdminToken != "" {
+		if err := authService.SeedAdmin(context.Background(), config.AdminToken); err != nil {
+			log.Fatal(err)
+		}
+	}
 
 	permsService := permissions.NewService(permissions.NewRegistry(db))
 

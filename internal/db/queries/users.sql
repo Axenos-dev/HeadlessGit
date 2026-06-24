@@ -8,3 +8,11 @@ insert into users (
 ) values (
   ?, ?
 ) returning *;
+
+-- name: EnsureAdminUser :one
+insert into users (
+  username, kind, is_admin
+) values (
+  'admin', 'service', 1
+) on conflict(username) do update set is_admin=1
+returning *;

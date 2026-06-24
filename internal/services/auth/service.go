@@ -26,7 +26,10 @@ type Registry interface {
 	GetUserByToken(ctx context.Context, tokenHash string) (gen.User, error)
 	CreateToken(ctx context.Context, userID int64, title, tokenHash string, expiresAtUnixMs *int64) (gen.Token, error)
 	DeleteToken(ctx context.Context, tokenHash string) error
+	DeleteTokensByUserID(ctx context.Context, userID int64) error
 	UpdateTokenUsedAt(ctx context.Context, tokenHash string) error
+
+	EnsureAdminUser(ctx context.Context) (gen.User, error)
 }
 
 type Service struct {
@@ -39,6 +42,25 @@ func NewService(logger *zap.Logger, registry Registry) *Service {
 		logger:   logger,
 		registry: registry,
 	}
+}
+
+// ensures the admin service account exists
+// and that its only token is the given one
+// rotating token and restarting -> replaces the old token
+func (s *Service) SeedAdmin(ctx context.Context, rawToken string) error {
+	admin, err := s.registry.EnsureAdminUser(ctx)
+	if err != nil {
+		return err
+	}
+
+	// delete all admin tokens
+	if err := s.registry.DeleteTokensByUserID(ctx, admin.ID); err != nil {
+		return err
+	}
+
+	// and create only one token for admin
+	_, err = s.registry.CreateToken(ctx, admin.ID, "admin", hashToken(rawToken), nil)
+	return err
 }
 
 // authentication
@@ -133,6 +155,8 @@ func generateToken() (raw, hash string, err error) {
 	return raw, hashToken(raw), nil
 }
 
+// hashToken is how every token (including the seeded admin token) is hashed
+// before storage, so they all authenticate through the same lookup.
 func hashToken(raw string) string {
 	sum := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(sum[:])
@@ -143,6 +167,7 @@ func toAccount(u gen.User) domain.Account {
 		UserID:   u.ID,
 		Username: u.Username,
 		Kind:     domain.UserKind(u.Kind),
+		IsAdmin:  u.IsAdmin != 0,
 	}
 }
 

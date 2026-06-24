@@ -17,4 +17,5 @@ type Account struct {
 	UserID   int64
 	Username string
 	Kind     UserKind
+	IsAdmin  bool
 }

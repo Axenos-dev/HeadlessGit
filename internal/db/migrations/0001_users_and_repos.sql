@@ -4,6 +4,9 @@ create table if not exists users (
   username text not null unique,
   kind text not null check(kind in ('user', 'service')),
 
+  -- global operator: can use the control plane and has implicit access to all repos
+  is_admin integer not null default 0,
+
   created_at_unix_ms integer not null default (
     CAST(unixepoch('subsec') * 1000 as integer)
   ),

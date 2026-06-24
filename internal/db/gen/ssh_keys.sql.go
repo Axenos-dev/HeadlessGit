@@ -55,7 +55,7 @@ func (q *Queries) DeleteSSHKey(ctx context.Context, fingerprint string) error {
 }
 
 const getUserByFingerprint = `-- name: GetUserByFingerprint :one
-select users.id, users.username, users.kind, users.created_at_unix_ms, users.updated_at_unix_ms from users
+select users.id, users.username, users.kind, users.is_admin, users.created_at_unix_ms, users.updated_at_unix_ms from users
 join ssh_keys on ssh_keys.user_id = users.id
 where ssh_keys.fingerprint=?1 limit 1
 `
@@ -67,6 +67,7 @@ func (q *Queries) GetUserByFingerprint(ctx context.Context, fingerprint string) 
 		&i.ID,
 		&i.Username,
 		&i.Kind,
+		&i.IsAdmin,
 		&i.CreatedAtUnixMs,
 		&i.UpdatedAtUnixMs,
 	)

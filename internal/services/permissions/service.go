@@ -34,11 +34,15 @@ func (s *Service) Authorize(ctx context.Context, account *domain.Account, repo d
 	}
 
 	if account != nil {
-		if account.UserID == repo.OwnerID {
+		switch {
+		case account.IsAdmin:
+			// global operators have implicit admin on every repo
+			effective = maxRole(effective, domain.RoleAdmin)
+		case account.UserID == repo.OwnerID:
 			// the owner always has admin perms
 			effective = maxRole(effective, domain.RoleAdmin)
-		} else {
-			// otherwise, effective role is user role
+		default:
+			// otherwise, effective role is the explicit grant
 			role, err := s.grantedRole(ctx, account.UserID, repo.ID)
 			if err != nil {
 				return err

@@ -55,8 +55,18 @@ func (q *Queries) DeleteToken(ctx context.Context, tokenHash string) error {
 	return err
 }
 
+const deleteTokensByUserID = `-- name: DeleteTokensByUserID :exec
+delete from tokens
+where user_id=?
+`
+
+func (q *Queries) DeleteTokensByUserID(ctx context.Context, userID int64) error {
+	_, err := q.db.ExecContext(ctx, deleteTokensByUserID, userID)
+	return err
+}
+
 const getUserByToken = `-- name: GetUserByToken :one
-select users.id, users.username, users.kind, users.created_at_unix_ms, users.updated_at_unix_ms from users
+select users.id, users.username, users.kind, users.is_admin, users.created_at_unix_ms, users.updated_at_unix_ms from users
 join tokens on tokens.user_id = users.id
 where tokens.token_hash=?1
 and (tokens.expires_at_unix_ms is null or tokens.expires_at_unix_ms > cast(unixepoch('subsec') * 1000 as integer))
@@ -70,6 +80,7 @@ func (q *Queries) GetUserByToken(ctx context.Context, tokenHash string) (User, e
 		&i.ID,
 		&i.Username,
 		&i.Kind,
+		&i.IsAdmin,
 		&i.CreatedAtUnixMs,
 		&i.UpdatedAtUnixMs,
 	)
