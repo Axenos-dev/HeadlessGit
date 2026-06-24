@@ -1,4 +1,5 @@
-FROM golang:1.26-alpine AS build
+# build on the native arch (fast), cross-compile to the target arch
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
 
 WORKDIR /src
 
@@ -6,7 +7,8 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 go build -o /out/headlessgit ./cmd/app
+ARG TARGETOS TARGETARCH
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /out/headlessgit ./cmd/app
 
 FROM alpine:3.20
 
