@@ -37,6 +37,7 @@ func NewServer(logger *zap.Logger, repos *reposervice.Service, users *usersservi
 func (s *Server) Run(addr string) error {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID, middleware.ClientIPFromRemoteAddr, middleware.Recoverer)
+	r.Use(s.requireAdmin) // every control endpoint needs an admin bearer token
 
 	s.registerRoutes(r)
 

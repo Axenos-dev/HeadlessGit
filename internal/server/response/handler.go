@@ -9,24 +9,28 @@ import (
 
 type HandlerFunc func(w http.ResponseWriter, r *http.Request) error
 
-// basic wrapper for handlers
+// basic wrapper for handlers,
 // allows us easily handle error from the handler, and wrap it in the envelope and log
 func Handler(logger *zap.Logger, h HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		err := h(w, r)
-		if err == nil {
-			return
+		if err := h(w, r); err != nil {
+			WriteError(w, logger, err)
 		}
-
-		if apiErr, ok := errors.AsType[*APIError](err); ok {
-			writeJSON(w, apiErr.Status, errorEnvelope{Error: apiErr})
-			return
-		}
-
-		logger.Error("unhandled error", zap.Error(err))
-		writeJSON(w, http.StatusInternalServerError, errorEnvelope{Error: &APIError{
-			Code:    CodeInternalError,
-			Message: "internal server error",
-		}})
 	}
+}
+
+// returns error in the error envelope,
+// if its *APIError -> keeps its status/code,
+// anything else becomes a 500
+func WriteError(w http.ResponseWriter, logger *zap.Logger, err error) {
+	if apiErr, ok := errors.AsType[*APIError](err); ok {
+		writeJSON(w, apiErr.Status, errorEnvelope{Error: apiErr})
+		return
+	}
+
+	logger.Error("unhandled error", zap.Error(err))
+	writeJSON(w, http.StatusInternalServerError, errorEnvelope{Error: &APIError{
+		Code:    CodeInternalError,
+		Message: "internal server error",
+	}})
 }
