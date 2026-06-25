@@ -14,10 +14,10 @@ create table if not exists lfs_objects (
 
   unique(object_id, repository_id),
   foreign key (repository_id) references repositories(id) on delete cascade
-)
+);
 
 create index if not exists idx_lfs_objects_user_id on lfs_objects(user_id);
 
 -- +goose Down
-drop index if exists idx_lfs_objects_user_id
+drop index if exists idx_lfs_objects_user_id;
 drop table if exists lfs_objects;

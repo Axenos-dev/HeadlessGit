@@ -3,7 +3,8 @@ insert into lfs_objects (
   user_id, repository_id, object_id, size_bytes
 ) values (
   ?, ?, ?, ?
-) returning *;
+) on conflict(repository_id, object_id) do nothing 
+returning *;
 
 -- name: GetLFSObject :one
 select * from lfs_objects

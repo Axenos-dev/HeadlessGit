@@ -14,7 +14,8 @@ insert into lfs_objects (
   user_id, repository_id, object_id, size_bytes
 ) values (
   ?, ?, ?, ?
-) returning id, user_id, repository_id, object_id, size_bytes, verified, created_at_unix_ms
+) on conflict(repository_id, object_id) do nothing 
+returning id, user_id, repository_id, object_id, size_bytes, verified, created_at_unix_ms
 `
 
 type CreateLFSObjectParams struct {

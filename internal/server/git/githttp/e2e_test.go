@@ -17,7 +17,6 @@ import (
 	"github.com/Axenos-dev/HeadlessGit/internal/services/permissions"
 	"github.com/Axenos-dev/HeadlessGit/internal/services/repositories"
 	"github.com/Axenos-dev/HeadlessGit/internal/services/users"
-	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 )
 
@@ -67,9 +66,8 @@ func TestGitHTTPEndToEnd(t *testing.T) {
 	}
 
 	// serve the git HTTP transport
-	r := chi.NewRouter()
-	githttp.NewHandlers(log, repoRoot, repoSvc, authSvc, permsSvc).RegisterRoutes(r)
-	ts := httptest.NewServer(r)
+	srv := githttp.NewServer(log, repoRoot, repoSvc, authSvc, permsSvc, nil)
+	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 
 	anonURL := ts.URL + "/acme/api.git"

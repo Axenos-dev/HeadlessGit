@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/config"
@@ -10,9 +11,11 @@ import (
 	"github.com/Axenos-dev/HeadlessGit/internal/logger"
 	"github.com/Axenos-dev/HeadlessGit/internal/server"
 	"github.com/Axenos-dev/HeadlessGit/internal/services/auth"
+	"github.com/Axenos-dev/HeadlessGit/internal/services/lfs"
 	"github.com/Axenos-dev/HeadlessGit/internal/services/permissions"
 	"github.com/Axenos-dev/HeadlessGit/internal/services/repositories"
 	"github.com/Axenos-dev/HeadlessGit/internal/services/users"
+	"github.com/Axenos-dev/HeadlessGit/internal/storage"
 	"go.uber.org/zap"
 )
 
@@ -70,8 +73,37 @@ func main() {
 
 	usersService := users.NewService(users.NewRegistry(db))
 
-	srv := server.NewServer(root, config.Server, repoService, usersService, authService, permsService, gitRunner)
+	// nil when LFS is disabled
+	var lfsService *lfs.Service
+	if config.LFS.Enabled {
+		// resolve the LFS storage, could be or disk or S3
+		store, err := newLFSStorage(config.LFS)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		// and initialize the service
+		lfsService = lfs.NewService(
+			root.With(zap.String("service", "lfs")),
+			lfs.NewRegistry(db),
+			store,
+			config.LFS.PublicURL,
+		)
+	}
+
+	srv := server.NewServer(root, config.Server, repoService, usersService, authService, permsService, gitRunner, lfsService)
 	if err := srv.Run(); err != nil {
 		log.Fatal(err)
+	}
+}
+
+func newLFSStorage(cfg config.LFSConfig) (lfs.ObjectStorage, error) {
+	switch cfg.StorageType {
+	case "disk":
+		return storage.NewDisk(cfg.Root)
+	case "s3":
+		return nil, fmt.Errorf("lfs storage type %q not implemented yet", cfg.StorageType)
+	default:
+		return nil, fmt.Errorf("unknown lfs storage type %q", cfg.StorageType)
 	}
 }
