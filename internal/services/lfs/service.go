@@ -59,6 +59,10 @@ func (s *Service) lfsBase(namespace, name string) string {
 	return fmt.Sprintf("%s/%s/%s.git/info/lfs", s.publicURL, namespace, name)
 }
 
+func (s *Service) LFSEndpoint(namespace, name string) string {
+	return s.lfsBase(namespace, name)
+}
+
 func (s *Service) Batch(
 	ctx context.Context,
 	repo domain.Repository,

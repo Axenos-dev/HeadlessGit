@@ -27,6 +27,7 @@ type Registry interface {
 	CreateToken(ctx context.Context, userID int64, title, tokenHash string, expiresAtUnixMs *int64) (gen.Token, error)
 	DeleteToken(ctx context.Context, tokenHash string) error
 	DeleteTokensByUserID(ctx context.Context, userID int64) error
+	DeleteExpiredTokens(ctx context.Context) (int64, error)
 	UpdateTokenUsedAt(ctx context.Context, tokenHash string) error
 
 	EnsureAdminUser(ctx context.Context) (gen.User, error)
@@ -135,6 +136,30 @@ func (s *Service) MintToken(ctx context.Context, userID int64, title string, exp
 		return "", domain.Token{}, err
 	}
 	return raw, tokenToDomain(token), nil
+}
+
+// token maintenance
+
+// periodically deletes expired tokens until ctx is cancelled
+func (s *Service) RunExpiredTokenGC(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			n, err := s.registry.DeleteExpiredTokens(ctx)
+			if err != nil {
+				s.logger.Warn("expired token gc failed", zap.Error(err))
+				continue
+			}
+			if n > 0 {
+				s.logger.Info("deleted expired tokens", zap.Int64("count", n))
+			}
+		}
+	}
 }
 
 // helpers

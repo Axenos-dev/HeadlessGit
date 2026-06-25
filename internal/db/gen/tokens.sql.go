@@ -45,6 +45,20 @@ func (q *Queries) CreateToken(ctx context.Context, arg CreateTokenParams) (Token
 	return i, err
 }
 
+const deleteExpiredTokens = `-- name: DeleteExpiredTokens :execrows
+delete from tokens
+where expires_at_unix_ms is not null
+and expires_at_unix_ms <= cast(unixepoch('subsec') * 1000 as integer)
+`
+
+func (q *Queries) DeleteExpiredTokens(ctx context.Context) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteExpiredTokens)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const deleteToken = `-- name: DeleteToken :exec
 delete from tokens
 where token_hash=?

@@ -20,10 +20,16 @@ type Server struct {
 func NewServer(logger *zap.Logger, repoRoot, hostKeyPath string, runner *gitcmd.Runner, repos *reposervice.Service, auth *authservice.Service, perms *permsservice.Service, lfs *lfsservice.Service) *Server {
 	httpLogger := logger.With(zap.String("transport", "http"))
 
+	// for git over ssh
+	var lfsEndpoints gitssh.LFSEndpoints
+	if lfs != nil {
+		lfsEndpoints = lfs
+	}
+
 	return &Server{
 		logger: logger,
 		http:   githttp.NewServer(httpLogger, repoRoot, repos, auth, perms, lfs),
-		ssh:    gitssh.NewServer(logger.With(zap.String("transport", "ssh")), hostKeyPath, runner, repos, auth, perms),
+		ssh:    gitssh.NewServer(logger.With(zap.String("transport", "ssh")), hostKeyPath, runner, repos, auth, perms, auth, lfsEndpoints),
 	}
 }
 

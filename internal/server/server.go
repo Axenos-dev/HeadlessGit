@@ -1,7 +1,9 @@
 package server
 
 import (
+	"context"
 	"fmt"
+	"time"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/config"
 	"github.com/Axenos-dev/HeadlessGit/internal/gitcmd"
@@ -15,10 +17,14 @@ import (
 	"go.uber.org/zap"
 )
 
+// clean up expired tokens every hour
+const tokenGCInterval = time.Hour
+
 type server struct {
 	cfg config.ServerConfig
 
 	logger  *zap.Logger
+	auth    *authservice.Service
 	control *control.Server
 	git     *git.Server
 }
@@ -36,6 +42,7 @@ func NewServer(
 	return &server{
 		cfg:     cfg,
 		logger:  logger,
+		auth:    auth,
 		control: control.NewServer(logger.With(zap.String("component", "control")), repos, users, auth, perms),
 		git:     git.NewServer(logger.With(zap.String("component", "git")), cfg.RepoRoot, cfg.HostKeyPath, runner, repos, auth, perms, lfs),
 	}
@@ -43,6 +50,9 @@ func NewServer(
 
 func (s *server) Run() error {
 	errCh := make(chan error, 3)
+
+	// clean up expired tokens
+	go s.auth.RunExpiredTokenGC(context.Background(), tokenGCInterval)
 
 	go func() {
 		errCh <- s.control.Run(fmt.Sprintf(":%d", s.cfg.ControlPort))
