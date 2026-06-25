@@ -8,6 +8,16 @@ import (
 	"database/sql"
 )
 
+type LfsObject struct {
+	ID              int64
+	UserID          int64
+	RepositoryID    int64
+	ObjectID        string
+	SizeBytes       int64
+	Verified        bool
+	CreatedAtUnixMs int64
+}
+
 type Permission struct {
 	ID              int64
 	UserID          int64
