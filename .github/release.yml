@@ -1,0 +1,35 @@
+changelog:
+  exclude:
+    labels:
+      - skip-notes
+      - no-release-notes
+  categories:
+    - title: Features
+      labels:
+        - feat
+        - feature
+    - title: Fixes
+      labels:
+        - fix
+        - bug
+        - bugfix
+    - title: Performance
+      labels:
+        - perf
+        - performance
+    - title: Docs
+      labels:
+        - docs
+        - documentation
+    - title: Chores
+      labels:
+        - chore
+        - refactor
+        - build
+        - ci
+        - test
+        - infra
+    # catch-all so PRs without a matching label still show up; must be last
+    - title: Other
+      labels:
+        - "*"

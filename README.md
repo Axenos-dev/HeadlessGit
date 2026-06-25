@@ -30,10 +30,10 @@ Once user has a repository and credentials, they can you it like any other Git r
 
 ```sh
 # over SSH, authenticated by a registered public key
-git clone ssh://localhost:2222/acme/api.git
+git clone ssh://localhost:2222/username/api.git
 
 # over HTTP, authenticated by a token
-git clone http://x:<token>@localhost:4000/acme/api.git
+git clone http://x:<token>@localhost:4000/username/api.git
 ```
 
 For local development, see [`./dev.sh up`](#development).
