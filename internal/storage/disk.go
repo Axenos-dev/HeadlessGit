@@ -9,6 +9,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/Axenos-dev/HeadlessGit/internal/services/lfs"
+)
+
+var (
+	_ lfs.ObjectStorage = (*Disk)(nil)
 )
 
 // filesystem-backed object store

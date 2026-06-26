@@ -166,6 +166,7 @@ func (s *Service) uploadActions(ctx context.Context, repo domain.Repository, lfs
 
 	// otherwise client PUTs the bytes back to us
 	return map[string]domain.LFSAction{
+		// point href to our upload route ".../lfs/objects/{oid}""
 		"upload": {Href: lfsBase + "/objects/" + p.OID},
 		"verify": verify,
 	}, nil
@@ -180,6 +181,7 @@ func (s *Service) downloadAction(ctx context.Context, repo domain.Repository, lf
 		return domain.LFSAction{Href: url, ExpiresAt: time.Now().Add(presignTTL)}, nil
 	}
 
+	// point href to our download route ".../lfs/objects/{oid}"
 	return domain.LFSAction{Href: lfsBase + "/objects/" + oid}, nil
 }
 

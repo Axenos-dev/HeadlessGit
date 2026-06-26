@@ -48,6 +48,8 @@ func NewHandlers(logger *zap.Logger, resolver RepositoryResolver, authz Authoriz
 func (h *Handlers) RegisterRoutes(r chi.Router) {
 	r.Post("/{namespace}/{name}/info/lfs/objects/batch", h.handleBatch)
 	r.Post("/{namespace}/{name}/info/lfs/verify", h.handleVerify)
+
+	// used when lfs storage type is disk
 	r.Put("/{namespace}/{name}/info/lfs/objects/{oid}", h.handleUpload)
 	r.Get("/{namespace}/{name}/info/lfs/objects/{oid}", h.handleDownload)
 }

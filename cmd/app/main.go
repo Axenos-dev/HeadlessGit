@@ -102,7 +102,7 @@ func newLFSStorage(cfg config.LFSConfig) (lfs.ObjectStorage, error) {
 	case "disk":
 		return storage.NewDisk(cfg.Root)
 	case "s3":
-		return nil, fmt.Errorf("lfs storage type %q not implemented yet", cfg.StorageType)
+		return storage.NewS3(cfg.S3)
 	default:
 		return nil, fmt.Errorf("unknown lfs storage type %q", cfg.StorageType)
 	}
