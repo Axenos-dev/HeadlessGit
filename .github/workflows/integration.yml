@@ -1,0 +1,31 @@
+name: integration
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+jobs:
+  r2:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - run: git lfs version
+
+      - name: integration tests (S3/R2)
+        run: go test -race -v -run 'TestS3RoundTrip|TestGitLFSEndToEnd' ./...
+        env:
+          LFS_S3_BUCKET: ${{ secrets.LFS_S3_BUCKET }}
+          LFS_S3_ENDPOINT: ${{ secrets.LFS_S3_ENDPOINT }}
+          LFS_S3_ACCESS_KEY_ID: ${{ secrets.LFS_S3_ACCESS_KEY_ID }}
+          LFS_S3_SECRET_ACCESS_KEY: ${{ secrets.LFS_S3_SECRET_ACCESS_KEY }}
+          LFS_S3_REGION: auto
+          # keep every test object under one prefix
+          # so a bucket lifecycle rule can auto-expire them
+          LFS_S3_KEY_PREFIX: ci
