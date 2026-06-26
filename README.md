@@ -2,11 +2,12 @@
 
 This is a simple **headless Git server**, Git hosting _primitives_ (SSH/HTTP transport, authentication, permissions, storage) for projects that might need a Git-ish backend, but it doesnt need a full forge UI.
 
-Basically, this is just a Git layer of infrastructure you'd put _underneath_ a proejct. This service is not responsible for billing and the UI, etc etc. It just handles the actual `git` transport, enforces access, and stores the bare repositories.
+Basically, this is just a Git layer of infrastructure you'd put _underneath_ a project. This service is not responsible for billing and the UI, etc. It just handles the actual `git` transport, enforces access, and stores the bare repositories.
 
 ## What it is
 
 - Basic Git over **SSH** and **HTTP** for clone / fetch / push.
+- **Git LFS** for large files, with object storage on local disk or any S3-compatible bucket (AWS S3, Cloudflare R2, MinIO).
 - A small **control API**, RESTful api to manage repositories, users, SSH keys, tokens, and permissions.
 - Simple **permission model** (`read` / `write` / `admin`) enforced before every Git operation.
 - Bare-repository storage on a filesystem, with SQLite for metadata.
@@ -72,6 +73,30 @@ All configuration is via environment variables.
 | `ADMIN_TOKEN`       | _(empty)_               | Raw token for the seeded admin account. Only its hash is stored. Empty = no admin seeded. |
 
 See [`.env.example`](.env.example).
+
+## Git LFS
+
+Git LFS is enabled if `LFS_ENABLED=true` set in environment. Clients then use it transparently over both HTTP and SSH, and nothing beyond the usual `git lfs track`.
+
+**Storage** sits behind an interface, separate from the bare repos. It can be one of those:
+
+- `disk` (default) — objects stored locallu on disk under `LFS_ROOT`.
+- `s3` — any S3-compatible bucket (AWS S3, Cloudflare R2, MinIO). Transfers use **presigned URLs**, so object bytes flow directly between the client and the bucket instead of streaming through the server.
+
+| Variable                   | Default                 | Description                                                                           |
+| -------------------------- | ----------------------- | ------------------------------------------------------------------------------------- |
+| `LFS_ENABLED`              | `false`                 | Enable Git LFS.                                                                       |
+| `LFS_STORAGE_TYPE`         | `disk`                  | `disk` or `s3`.                                                                       |
+| `LFS_PUBLIC_URL`           | _(required if enabled)_ | Externally-reachable base URL of the Git HTTP server, e.g. `https://git.example.com`. |
+| `LFS_ROOT`                 | `data/lfs`              | Object directory when `LFS_STORAGE_TYPE=disk`.                                        |
+| `LFS_S3_BUCKET`            | _(required for s3)_     | Bucket name.                                                                          |
+| `LFS_S3_ENDPOINT`          | _(required for s3)_     | Host without scheme, e.g. `<account>.r2.cloudflarestorage.com`.                       |
+| `LFS_S3_ACCESS_KEY_ID`     | _(required for s3)_     | Access key ID.                                                                        |
+| `LFS_S3_SECRET_ACCESS_KEY` | _(required for s3)_     | Secret access key.                                                                    |
+| `LFS_S3_REGION`            | _(empty)_               | Region; use `auto` for Cloudflare R2.                                                 |
+| `LFS_S3_USE_SSL`           | `true`                  | Reach the endpoint over HTTPS.                                                        |
+| `LFS_S3_USE_PATH_STYLE`    | `false`                 | Force path-style addressing (needed by some S3-compatible providers).                 |
+| `LFS_S3_KEY_PREFIX`        | _(empty)_               | Optional prefix prepended to every object key.                                        |
 
 ## Control API
 
