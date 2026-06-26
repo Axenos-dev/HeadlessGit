@@ -13,6 +13,11 @@ where token_hash=?;
 delete from tokens
 where user_id=?;
 
+-- name: DeleteExpiredTokens :execrows
+delete from tokens
+where expires_at_unix_ms is not null
+and expires_at_unix_ms <= cast(unixepoch('subsec') * 1000 as integer);
+
 -- name: UpdateTokenUsedAt :exec
 update tokens 
 set last_used_at_unix_ms=CAST(unixepoch('subsec') * 1000 as integer)

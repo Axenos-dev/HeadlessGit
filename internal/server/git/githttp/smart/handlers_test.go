@@ -1,4 +1,4 @@
-package githttp
+package smart
 
 import (
 	"net/http/httptest"

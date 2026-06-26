@@ -64,6 +64,10 @@ func (r *AuthRegistry) DeleteTokensByUserID(ctx context.Context, userID int64) e
 	return r.db.DeleteTokensByUserID(ctx, userID)
 }
 
+func (r *AuthRegistry) DeleteExpiredTokens(ctx context.Context) (int64, error) {
+	return r.db.DeleteExpiredTokens(ctx)
+}
+
 func (r *AuthRegistry) UpdateTokenUsedAt(ctx context.Context, tokenHash string) error {
 	return r.db.UpdateTokenUsedAt(ctx, tokenHash)
 }

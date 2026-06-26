@@ -65,3 +65,36 @@ func TestParseGitCommand(t *testing.T) {
 		}
 	}
 }
+
+func TestParseLFSAuthCommand(t *testing.T) {
+	cases := []struct {
+		in      string
+		repo    string
+		op      string
+		wantErr bool
+	}{
+		{"git-lfs-authenticate 'acme/api.git' download", "acme/api.git", "download", false},
+		{"git-lfs-authenticate acme/api.git upload", "acme/api.git", "upload", false},
+		{"git-lfs-authenticate 'acme/api.git'", "", "", true},              // missing operation
+		{"git-lfs-authenticate acme/api.git download extra", "", "", true}, // too many args
+		{"git-upload-pack 'acme/api.git'", "", "", true},                   // wrong subcommand
+		{"", "", "", true},
+	}
+
+	for _, tc := range cases {
+		repo, op, err := parseLFSAuthCommand(tc.in)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("parseLFSAuthCommand(%q): expected error", tc.in)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("parseLFSAuthCommand(%q): unexpected error %v", tc.in, err)
+			continue
+		}
+		if repo != tc.repo || op != tc.op {
+			t.Errorf("parseLFSAuthCommand(%q) = %q,%q; want %q,%q", tc.in, repo, op, tc.repo, tc.op)
+		}
+	}
+}

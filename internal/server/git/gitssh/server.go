@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/binary"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -15,11 +16,15 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/domain"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/ssh"
 )
+
+// how long an LFS bearer token handed back over SSH stays valid
+const lfsTokenTTL = 15 * time.Minute
 
 type GitRunner interface {
 	RunUploadPack(ctx context.Context, storagePath string, stdin io.Reader, stdout, stderr io.Writer) error
@@ -38,6 +43,14 @@ type Authorizer interface {
 	Authorize(ctx context.Context, account *domain.Account, repo domain.Repository, required domain.Role) error
 }
 
+type TokenMinter interface {
+	MintToken(ctx context.Context, userID int64, title string, expiresAt *time.Time) (string, domain.Token, error)
+}
+
+type LFSEndpoints interface {
+	LFSEndpoint(namespace, name string) string
+}
+
 type Server struct {
 	logger      *zap.Logger
 	hostKeyPath string
@@ -46,9 +59,11 @@ type Server struct {
 	resolver RepositoryResolver
 	auth     Authenticator
 	authz    Authorizer
+	minter   TokenMinter
+	lfs      LFSEndpoints // nil if LFS is disabled
 }
 
-func NewServer(logger *zap.Logger, hostKeyPath string, runner GitRunner, resolver RepositoryResolver, authn Authenticator, authz Authorizer) *Server {
+func NewServer(logger *zap.Logger, hostKeyPath string, runner GitRunner, resolver RepositoryResolver, authn Authenticator, authz Authorizer, minter TokenMinter, lfs LFSEndpoints) *Server {
 	return &Server{
 		logger:      logger,
 		hostKeyPath: hostKeyPath,
@@ -56,6 +71,8 @@ func NewServer(logger *zap.Logger, hostKeyPath string, runner GitRunner, resolve
 		resolver:    resolver,
 		auth:        authn,
 		authz:       authz,
+		minter:      minter,
+		lfs:         lfs,
 	}
 }
 
@@ -153,9 +170,21 @@ func (s *Server) handleSession(ctx context.Context, account domain.Account, newC
 		}
 		req.Reply(true, nil)
 
-		s.runGit(ctx, account, ch, payload.Command)
+		s.handleExec(ctx, account, ch, payload.Command)
 		return
 	}
+}
+
+// dispatches an exec request to the matching handler,
+// or git-upload/receive-pack or git-lfs-authenticate
+func (s *Server) handleExec(ctx context.Context, account domain.Account, ch ssh.Channel, command string) {
+	subcommand, _, _ := strings.Cut(strings.TrimSpace(command), " ")
+	if subcommand == "git-lfs-authenticate" {
+		s.runLFSAuthenticate(ctx, account, ch, command)
+		return
+	}
+
+	s.runGit(ctx, account, ch, command)
 }
 
 func (s *Server) runGit(ctx context.Context, account domain.Account, ch ssh.Channel, command string) {
@@ -221,6 +250,83 @@ func (s *Server) runGit(ctx context.Context, account domain.Account, ch ssh.Chan
 	sendExit(ch, code)
 }
 
+func (s *Server) runLFSAuthenticate(ctx context.Context, account domain.Account, ch ssh.Channel, command string) {
+	if s.lfs == nil {
+		fmt.Fprintln(ch.Stderr(), "git-lfs is not enabled")
+		sendExit(ch, 1)
+		return
+	}
+
+	repoPath, operation, err := parseLFSAuthCommand(command)
+	if err != nil {
+		fmt.Fprintln(ch.Stderr(), err.Error())
+		sendExit(ch, 1)
+		return
+	}
+
+	namespace, name, err := splitRepoPath(repoPath)
+	if err != nil {
+		fmt.Fprintln(ch.Stderr(), err.Error())
+		sendExit(ch, 1)
+		return
+	}
+
+	resolved, err := s.resolver.GetRepositoryByPath(ctx, namespace, name)
+	if err != nil {
+		fmt.Fprintln(ch.Stderr(), "repository not found")
+		sendExit(ch, 1)
+		return
+	}
+
+	var required domain.Role
+	switch operation {
+	// for download we need at least read role
+	case "download":
+		required = domain.RoleRead
+	// for upload we need at least write role
+	case "upload":
+		required = domain.RoleWrite
+	default:
+		fmt.Fprintf(ch.Stderr(), "unsupported lfs operation: %s\n", operation)
+		sendExit(ch, 1)
+		return
+	}
+
+	if err := s.authz.Authorize(ctx, &account, resolved, required); err != nil {
+		fmt.Fprintln(ch.Stderr(), "access denied")
+		sendExit(ch, 1)
+		return
+	}
+
+	expiresAt := time.Now().Add(lfsTokenTTL)
+	rawToken, _, err := s.minter.MintToken(ctx, account.UserID, "lfs-ssh", &expiresAt)
+	if err != nil {
+		s.logger.Warn("failed to mint lfs token", zap.Error(err))
+		fmt.Fprintln(ch.Stderr(), "failed to issue lfs token")
+		sendExit(ch, 1)
+		return
+	}
+
+	s.logger.Info("git ssh command",
+		zap.String("user", account.Username),
+		zap.String("subcommand", "git-lfs-authenticate"),
+		zap.String("operation", operation),
+		zap.String("repo", namespace+"/"+name),
+	)
+
+	resp := lfsAuthResponse{
+		Href:      s.lfs.LFSEndpoint(namespace, name),
+		Header:    map[string]string{"Authorization": "Bearer " + rawToken},
+		ExpiresAt: expiresAt.UTC().Format(time.RFC3339),
+	}
+	if err := json.NewEncoder(ch).Encode(resp); err != nil {
+		s.logger.Warn("failed to write lfs auth response", zap.Error(err))
+		sendExit(ch, 1)
+		return
+	}
+	sendExit(ch, 0)
+}
+
 // splits line to command name and repo name, and validates the input
 func parseGitCommand(command string) (subcommand, repo string, err error) {
 	fields := strings.SplitN(strings.TrimSpace(command), " ", 2)
@@ -234,6 +340,18 @@ func parseGitCommand(command string) (subcommand, repo string, err error) {
 	// second one is the repo name, wrapped in '
 	repo = strings.Trim(fields[1], "'\"")
 	return subcommand, repo, nil
+}
+
+// splits git-lfs-authenticate <path> <operation>
+func parseLFSAuthCommand(command string) (repoPath, operation string, err error) {
+	fields := strings.Fields(strings.TrimSpace(command))
+	if len(fields) != 3 || fields[0] != "git-lfs-authenticate" {
+		return "", "", errors.New("invalid git-lfs-authenticate command")
+	}
+
+	repoPath = strings.Trim(fields[1], "'\"")
+	operation = fields[2]
+	return repoPath, operation, nil
 }
 
 // accountFromPermissions reconstructs the identity stashed by PublicKeyCallback.
