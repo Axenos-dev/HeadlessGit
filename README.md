@@ -1,8 +1,10 @@
 # HeadlessGit
 
-This is a simple **headless Git server**, Git hosting _primitives_ (SSH/HTTP transport, authentication, permissions, storage) for projects that might need a Git-ish backend, but it doesnt need a full forge UI.
+A headless Git server for platforms and internal tools.
 
-Basically, this is just a Git layer of infrastructure you'd put _underneath_ a project. This service is not responsible for billing and the UI, etc. It just handles the actual `git` transport, enforces access, and stores the bare repositories.
+Provides Git hosting _primitives_ (git over SSH/HTTP, authentication, permissions, storage) and pluggable storage.
+
+Basically, this is a Git layer of infrastructure you'd put _underneath_ a project. This service is not responsible for billing and the UI, etc. It just handles the actual `git` transport, enforces access, and stores the bare repositories.
 
 ## What it is
 
