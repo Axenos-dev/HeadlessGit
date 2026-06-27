@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/domain"
+	"github.com/Axenos-dev/HeadlessGit/internal/server/audit"
 	"github.com/Axenos-dev/HeadlessGit/internal/server/git/githttp/middleware"
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
@@ -61,6 +62,11 @@ func (h *Handlers) serve(service string) http.HandlerFunc {
 		if err != nil {
 			http.NotFound(w, r)
 			return
+		}
+
+		if e := audit.FromContext(r.Context()); e != nil {
+			e.RepoID = repo.ID
+			e.Command = strings.TrimPrefix(service, "/")
 		}
 
 		account := middleware.AccountFromContext(r.Context()) // nil = anonymous

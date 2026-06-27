@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/domain"
+	"github.com/Axenos-dev/HeadlessGit/internal/server/audit"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/ssh"
 )
@@ -198,12 +200,27 @@ func (s *Server) handleExec(ctx context.Context, account domain.Account, ch ssh.
 }
 
 func (s *Server) runGit(ctx context.Context, account domain.Account, ch ssh.Channel, command string) {
+	// initiate empty audit event
+	start := time.Now()
+	e := &audit.Event{
+		RequestID:  newRequestID(),
+		Transport:  "ssh",
+		IdentityID: account.UserID,
+		Result:     "error", // overwritten later
+	}
+	// on defer we send the log
+	defer func() {
+		// it HAS to be wrapped in func() {}, so .Since would work properly
+		audit.Log(s.logger, e, time.Since(start))
+	}()
+
 	subcommand, repo, err := parseGitCommand(command)
 	if err != nil {
 		fmt.Fprintln(ch.Stderr(), err.Error())
 		sendExit(ch, 1)
 		return
 	}
+	e.Command = subcommand
 
 	namespace, name, err := splitRepoPath(repo)
 	if err != nil {
@@ -219,6 +236,7 @@ func (s *Server) runGit(ctx context.Context, account domain.Account, ch ssh.Chan
 		sendExit(ch, 1)
 		return
 	}
+	e.RepoID = resolved.ID
 
 	// upload-pack reads, receive-pack writes
 	var required domain.Role
@@ -234,16 +252,11 @@ func (s *Server) runGit(ctx context.Context, account domain.Account, ch ssh.Chan
 	}
 
 	if err := s.authz.Authorize(ctx, &account, resolved, required); err != nil {
+		e.Result = "denied"
 		fmt.Fprintln(ch.Stderr(), "access denied")
 		sendExit(ch, 1)
 		return
 	}
-
-	s.logger.Info("git ssh command",
-		zap.String("user", account.Username),
-		zap.String("subcommand", subcommand),
-		zap.String("repo", namespace+"/"+name),
-	)
 
 	switch subcommand {
 	case "git-upload-pack":
@@ -251,16 +264,29 @@ func (s *Server) runGit(ctx context.Context, account domain.Account, ch ssh.Chan
 	case "git-receive-pack":
 		err = s.runner.RunReceivePack(ctx, resolved.StoragePath, ch, ch, ch.Stderr())
 	}
-
-	code := 0
 	if err != nil {
 		s.logger.Warn("git command failed", zap.String("command", command), zap.Error(err))
-		code = 1
+		sendExit(ch, 1)
+		return
 	}
-	sendExit(ch, code)
+
+	e.Result = "ok"
+	sendExit(ch, 0)
 }
 
 func (s *Server) runLFSAuthenticate(ctx context.Context, account domain.Account, ch ssh.Channel, command string) {
+	start := time.Now()
+	e := &audit.Event{
+		RequestID:  newRequestID(),
+		Transport:  "ssh",
+		IdentityID: account.UserID,
+		Command:    "git-lfs-authenticate",
+		Result:     "error", // overwritten later
+	}
+	defer func() {
+		audit.Log(s.logger, e, time.Since(start))
+	}()
+
 	if s.lfs == nil {
 		fmt.Fprintln(ch.Stderr(), "git-lfs is not enabled")
 		sendExit(ch, 1)
@@ -287,6 +313,7 @@ func (s *Server) runLFSAuthenticate(ctx context.Context, account domain.Account,
 		sendExit(ch, 1)
 		return
 	}
+	e.RepoID = resolved.ID
 
 	var required domain.Role
 	switch operation {
@@ -303,6 +330,7 @@ func (s *Server) runLFSAuthenticate(ctx context.Context, account domain.Account,
 	}
 
 	if err := s.authz.Authorize(ctx, &account, resolved, required); err != nil {
+		e.Result = "denied"
 		fmt.Fprintln(ch.Stderr(), "access denied")
 		sendExit(ch, 1)
 		return
@@ -317,13 +345,6 @@ func (s *Server) runLFSAuthenticate(ctx context.Context, account domain.Account,
 		return
 	}
 
-	s.logger.Info("git ssh command",
-		zap.String("user", account.Username),
-		zap.String("subcommand", "git-lfs-authenticate"),
-		zap.String("operation", operation),
-		zap.String("repo", namespace+"/"+name),
-	)
-
 	resp := lfsAuthResponse{
 		Href:      s.lfs.LFSEndpoint(namespace, name),
 		Header:    map[string]string{"Authorization": "Bearer " + rawToken},
@@ -334,6 +355,8 @@ func (s *Server) runLFSAuthenticate(ctx context.Context, account domain.Account,
 		sendExit(ch, 1)
 		return
 	}
+
+	e.Result = "ok"
 	sendExit(ch, 0)
 }
 
@@ -393,6 +416,14 @@ func sendExit(ch ssh.Channel, code int) {
 	status := make([]byte, 4)
 	binary.BigEndian.PutUint32(status, uint32(code))
 	ch.SendRequest("exit-status", false, status)
+}
+
+func newRequestID() string {
+	b := make([]byte, 12)
+	if _, err := rand.Read(b); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(b)
 }
 
 // reads the persisted host key, OR generating and saving a new one

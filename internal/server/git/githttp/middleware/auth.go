@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/domain"
+	"github.com/Axenos-dev/HeadlessGit/internal/server/audit"
 )
 
 type Authenticator interface {
@@ -27,6 +28,12 @@ func WithAccount(auth Authenticator) func(http.Handler) http.Handler {
 					http.Error(w, "unauthorized", http.StatusUnauthorized)
 					return
 				}
+
+				// pass identity if request is authenticated
+				if e := audit.FromContext(r.Context()); e != nil {
+					e.IdentityID = account.UserID
+				}
+
 				r = r.WithContext(context.WithValue(r.Context(), accountKey, &account))
 			}
 

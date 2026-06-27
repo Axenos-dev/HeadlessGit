@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Axenos-dev/HeadlessGit/internal/server/audit"
 	permhandlers "github.com/Axenos-dev/HeadlessGit/internal/server/control/permissions"
 	repohandlers "github.com/Axenos-dev/HeadlessGit/internal/server/control/repositories"
 	userhandlers "github.com/Axenos-dev/HeadlessGit/internal/server/control/users"
@@ -61,7 +62,9 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 
 func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
-	r.Use(middleware.RequestID, middleware.ClientIPFromRemoteAddr, middleware.Recoverer)
+	r.Use(middleware.RequestID, middleware.ClientIPFromRemoteAddr)
+	r.Use(audit.Middleware(s.logger, "http"))
+	r.Use(middleware.Recoverer)
 	r.Use(s.requireAdmin) // every control endpoint needs an admin bearer token
 
 	s.registerRoutes(r)

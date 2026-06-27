@@ -14,7 +14,7 @@ import (
 )
 
 func (h *Handlers) handleDownload(w http.ResponseWriter, r *http.Request) {
-	repo, ok := h.resolveRepo(w, r)
+	repo, ok := h.resolveRepo(w, r, "lfs-download")
 	if !ok {
 		return
 	}

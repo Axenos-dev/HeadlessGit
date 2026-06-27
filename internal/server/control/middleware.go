@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/Axenos-dev/HeadlessGit/internal/server/audit"
 	"github.com/Axenos-dev/HeadlessGit/internal/server/response"
 )
 
@@ -25,6 +26,11 @@ func (s *Server) requireAdmin(next http.Handler) http.Handler {
 		if !account.IsAdmin {
 			response.WriteError(w, s.logger, response.NewError(http.StatusForbidden, response.CodeForbidden, "admin access required"))
 			return
+		}
+
+		// pass identity to audit even if request is authenticated
+		if e := audit.FromContext(r.Context()); e != nil {
+			e.IdentityID = account.UserID
 		}
 
 		next.ServeHTTP(w, r)

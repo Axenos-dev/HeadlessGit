@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Axenos-dev/HeadlessGit/internal/server/audit"
 	"github.com/Axenos-dev/HeadlessGit/internal/server/git/githttp/lfs"
 	"github.com/Axenos-dev/HeadlessGit/internal/server/git/githttp/middleware"
 	"github.com/Axenos-dev/HeadlessGit/internal/server/git/githttp/smart"
@@ -64,7 +65,9 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 
 func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
-	r.Use(chimiddleware.RequestID, chimiddleware.ClientIPFromRemoteAddr, chimiddleware.Recoverer)
+	r.Use(chimiddleware.RequestID, chimiddleware.ClientIPFromRemoteAddr)
+	r.Use(audit.Middleware(s.logger, "http"))
+	r.Use(chimiddleware.Recoverer)
 	r.Use(middleware.WithAccount(s.auth))
 
 	s.registerRoutes(r)

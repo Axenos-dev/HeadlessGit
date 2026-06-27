@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/domain"
+	"github.com/Axenos-dev/HeadlessGit/internal/server/audit"
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 )
@@ -54,8 +55,8 @@ func (h *Handlers) RegisterRoutes(r chi.Router) {
 	r.Get("/{namespace}/{name}/info/lfs/objects/{oid}", h.handleDownload)
 }
 
-// resolves the repo from the URL
-func (h *Handlers) resolveRepo(w http.ResponseWriter, r *http.Request) (domain.Repository, bool) {
+// resolves the repo from the URL and records it on the audit event
+func (h *Handlers) resolveRepo(w http.ResponseWriter, r *http.Request, command string) (domain.Repository, bool) {
 	namespace := chi.URLParam(r, "namespace")
 	name := strings.TrimSuffix(chi.URLParam(r, "name"), ".git")
 
@@ -63,6 +64,11 @@ func (h *Handlers) resolveRepo(w http.ResponseWriter, r *http.Request) (domain.R
 	if err != nil {
 		h.writeError(w, http.StatusNotFound, "repository not found")
 		return domain.Repository{}, false
+	}
+
+	if e := audit.FromContext(r.Context()); e != nil {
+		e.RepoID = repo.ID
+		e.Command = command
 	}
 	return repo, true
 }

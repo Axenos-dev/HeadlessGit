@@ -18,7 +18,7 @@ var (
 )
 
 // filesystem-backed object store
-// implements the services/lfs Storage interface
+// implements the services/lfs ObjectStorage interface
 type Disk struct {
 	root string
 }

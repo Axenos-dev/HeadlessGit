@@ -11,7 +11,7 @@ import (
 )
 
 func (h *Handlers) handleBatch(w http.ResponseWriter, r *http.Request) {
-	repo, ok := h.resolveRepo(w, r)
+	repo, ok := h.resolveRepo(w, r, "lfs-batch")
 	if !ok {
 		return
 	}

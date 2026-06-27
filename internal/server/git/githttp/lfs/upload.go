@@ -12,7 +12,7 @@ import (
 )
 
 func (h *Handlers) handleUpload(w http.ResponseWriter, r *http.Request) {
-	repo, ok := h.resolveRepo(w, r)
+	repo, ok := h.resolveRepo(w, r, "lfs-upload")
 	if !ok {
 		return
 	}
