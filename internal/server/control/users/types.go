@@ -52,10 +52,11 @@ func (r AddSSHKeyRequest) Validate() error {
 }
 
 type SSHKeyResponse struct {
-	ID          int64     `json:"id"`
-	Title       string    `json:"title"`
-	Fingerprint string    `json:"fingerprint"`
-	CreatedAt   time.Time `json:"createdAt"`
+	ID          int64      `json:"id"`
+	Title       string     `json:"title"`
+	Fingerprint string     `json:"fingerprint"`
+	CreatedAt   time.Time  `json:"createdAt"`
+	LastUsedAt  *time.Time `json:"lastUsedAt,omitempty"`
 }
 
 func newSSHKeyResponse(k domain.SSHKey) SSHKeyResponse {
@@ -64,7 +65,43 @@ func newSSHKeyResponse(k domain.SSHKey) SSHKeyResponse {
 		Title:       k.Title,
 		Fingerprint: k.Fingerprint,
 		CreatedAt:   k.CreatedAt,
+		LastUsedAt:  k.LastUsedAt,
 	}
+}
+
+func newSSHKeyResponses(keys []domain.SSHKey) []SSHKeyResponse {
+	out := make([]SSHKeyResponse, len(keys))
+	for i, k := range keys {
+		out[i] = newSSHKeyResponse(k)
+	}
+	return out
+}
+
+// TokenResponse never includes the raw token; that is only returned once at mint.
+type TokenResponse struct {
+	ID         int64      `json:"id"`
+	Title      string     `json:"title"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	ExpiresAt  *time.Time `json:"expiresAt,omitempty"`
+	LastUsedAt *time.Time `json:"lastUsedAt,omitempty"`
+}
+
+func newTokenResponse(t domain.Token) TokenResponse {
+	return TokenResponse{
+		ID:         t.ID,
+		Title:      t.Title,
+		CreatedAt:  t.CreatedAt,
+		ExpiresAt:  t.ExpiresAt,
+		LastUsedAt: t.LastUsedAt,
+	}
+}
+
+func newTokenResponses(tokens []domain.Token) []TokenResponse {
+	out := make([]TokenResponse, len(tokens))
+	for i, t := range tokens {
+		out[i] = newTokenResponse(t)
+	}
+	return out
 }
 
 type MintTokenRequest struct {

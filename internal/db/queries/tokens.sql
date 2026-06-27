@@ -9,9 +9,18 @@ insert into tokens (
 delete from tokens
 where token_hash=?;
 
+-- name: DeleteTokenByID :execrows
+delete from tokens
+where id=sqlc.arg(id) and user_id=sqlc.arg(user_id);
+
 -- name: DeleteTokensByUserID :exec
 delete from tokens
 where user_id=?;
+
+-- name: ListTokensByUser :many
+select * from tokens
+where user_id=?
+order by created_at_unix_ms;
 
 -- name: DeleteExpiredTokens :execrows
 delete from tokens

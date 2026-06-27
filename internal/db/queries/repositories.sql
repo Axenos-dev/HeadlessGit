@@ -13,6 +13,13 @@ insert into repositories (
   ?, ?, ?, ?
 ) returning *;
 
+-- name: UpdateRepositoryVisibility :one
+update repositories
+set visibility=sqlc.arg(visibility),
+    updated_at_unix_ms=cast(unixepoch('subsec') * 1000 as integer)
+where id=sqlc.arg(id)
+returning *;
+
 -- name: DeleteRepository :exec
 delete from repositories
 where id=?;

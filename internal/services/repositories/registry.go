@@ -25,6 +25,17 @@ func (r *RepositoryRegistry) DeleteRepository(ctx context.Context, repositoryID 
 	return r.db.DeleteRepository(ctx, repositoryID)
 }
 
+func (r *RepositoryRegistry) UpdateRepositoryVisibility(ctx context.Context, repositoryID int64, visibility string) (gen.Repository, error) {
+	return r.db.UpdateRepositoryVisibility(ctx, gen.UpdateRepositoryVisibilityParams{
+		Visibility: visibility,
+		ID:         repositoryID,
+	})
+}
+
+func (r *RepositoryRegistry) ListUserRepositories(ctx context.Context, ownerID int64) ([]gen.Repository, error) {
+	return r.db.ListUserRepositories(ctx, ownerID)
+}
+
 func (r *RepositoryRegistry) CreateRepository(ctx context.Context, ownerID int64, name, storagePath, visibility string) (gen.Repository, error) {
 	return r.db.CreateRepository(ctx, gen.CreateRepositoryParams{
 		OwnerID:        ownerID,

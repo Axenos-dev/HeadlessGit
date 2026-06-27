@@ -54,6 +54,24 @@ func (q *Queries) DeleteSSHKey(ctx context.Context, fingerprint string) error {
 	return err
 }
 
+const deleteSSHKeyByID = `-- name: DeleteSSHKeyByID :execrows
+delete from ssh_keys
+where id=?1 and user_id=?2
+`
+
+type DeleteSSHKeyByIDParams struct {
+	ID     int64
+	UserID int64
+}
+
+func (q *Queries) DeleteSSHKeyByID(ctx context.Context, arg DeleteSSHKeyByIDParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteSSHKeyByID, arg.ID, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const getUserByFingerprint = `-- name: GetUserByFingerprint :one
 select users.id, users.username, users.kind, users.is_admin, users.created_at_unix_ms, users.updated_at_unix_ms from users
 join ssh_keys on ssh_keys.user_id = users.id
@@ -72,6 +90,43 @@ func (q *Queries) GetUserByFingerprint(ctx context.Context, fingerprint string) 
 		&i.UpdatedAtUnixMs,
 	)
 	return i, err
+}
+
+const listSSHKeysByUser = `-- name: ListSSHKeysByUser :many
+select id, user_id, title, public_key, fingerprint, created_at_unix_ms, last_used_at_unix_ms from ssh_keys
+where user_id=?
+order by created_at_unix_ms
+`
+
+func (q *Queries) ListSSHKeysByUser(ctx context.Context, userID int64) ([]SshKey, error) {
+	rows, err := q.db.QueryContext(ctx, listSSHKeysByUser, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SshKey
+	for rows.Next() {
+		var i SshKey
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.Title,
+			&i.PublicKey,
+			&i.Fingerprint,
+			&i.CreatedAtUnixMs,
+			&i.LastUsedAtUnixMs,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const updateSSHKeyUsedAt = `-- name: UpdateSSHKeyUsedAt :exec

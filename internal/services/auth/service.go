@@ -21,11 +21,15 @@ type Registry interface {
 	GetUserByFingerprint(ctx context.Context, fingerprint string) (gen.User, error)
 	CreateSSHKey(ctx context.Context, userID int64, title, publicKey, fingerprint string) (gen.SshKey, error)
 	DeleteSSHKey(ctx context.Context, fingerprint string) error
+	DeleteSSHKeyByID(ctx context.Context, keyID, userID int64) (int64, error)
+	ListSSHKeysByUser(ctx context.Context, userID int64) ([]gen.SshKey, error)
 	UpdateSSHKeyUsedAt(ctx context.Context, fingerprint string) error
 
 	GetUserByToken(ctx context.Context, tokenHash string) (gen.User, error)
 	CreateToken(ctx context.Context, userID int64, title, tokenHash string, expiresAtUnixMs *int64) (gen.Token, error)
 	DeleteToken(ctx context.Context, tokenHash string) error
+	DeleteTokenByID(ctx context.Context, tokenID, userID int64) (int64, error)
+	ListTokensByUser(ctx context.Context, userID int64) ([]gen.Token, error)
 	DeleteTokensByUserID(ctx context.Context, userID int64) error
 	DeleteExpiredTokens(ctx context.Context) (int64, error)
 	UpdateTokenUsedAt(ctx context.Context, tokenHash string) error
@@ -117,6 +121,32 @@ func (s *Service) RemoveSSHKey(ctx context.Context, fingerprint string) error {
 	return s.registry.DeleteSSHKey(ctx, fingerprint)
 }
 
+// RemoveSSHKeyByID deletes a key by id, scoped to its owner. Returns
+// ErrSSHKeyNotFound if no matching key exists for that user.
+func (s *Service) RemoveSSHKeyByID(ctx context.Context, userID, keyID int64) error {
+	n, err := s.registry.DeleteSSHKeyByID(ctx, keyID, userID)
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrSSHKeyNotFound
+	}
+	return nil
+}
+
+func (s *Service) ListSSHKeys(ctx context.Context, userID int64) ([]domain.SSHKey, error) {
+	keys, err := s.registry.ListSSHKeysByUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]domain.SSHKey, len(keys))
+	for i, k := range keys {
+		out[i] = sshKeyToDomain(k)
+	}
+	return out, nil
+}
+
 // MintToken creates a token and returns the raw secret
 // only its hash is stored
 func (s *Service) MintToken(ctx context.Context, userID int64, title string, expiresAt *time.Time) (string, domain.Token, error) {
@@ -136,6 +166,37 @@ func (s *Service) MintToken(ctx context.Context, userID int64, title string, exp
 		return "", domain.Token{}, err
 	}
 	return raw, tokenToDomain(token), nil
+}
+
+func (s *Service) ListTokens(ctx context.Context, userID int64) ([]domain.Token, error) {
+	tokens, err := s.registry.ListTokensByUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]domain.Token, len(tokens))
+	for i, t := range tokens {
+		out[i] = tokenToDomain(t)
+	}
+	return out, nil
+}
+
+// RevokeToken deletes a token by id, scoped to its owner. Returns
+// ErrTokenNotFound if no matching token exists for that user.
+func (s *Service) RevokeToken(ctx context.Context, userID, tokenID int64) error {
+	n, err := s.registry.DeleteTokenByID(ctx, tokenID, userID)
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrTokenNotFound
+	}
+	return nil
+}
+
+// RevokeAllTokens deletes every token owned by a user.
+func (s *Service) RevokeAllTokens(ctx context.Context, userID int64) error {
+	return s.registry.DeleteTokensByUserID(ctx, userID)
 }
 
 // token maintenance

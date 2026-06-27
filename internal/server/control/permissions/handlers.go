@@ -11,6 +11,8 @@ import (
 
 type PermissionManager interface {
 	Grant(ctx context.Context, userID, repositoryID int64, role domain.Role) error
+	Revoke(ctx context.Context, userID, repositoryID int64) error
+	List(ctx context.Context, repositoryID int64) ([]domain.Permission, error)
 }
 
 type handlers struct {
@@ -26,5 +28,9 @@ func NewHandlers(logger *zap.Logger, perms PermissionManager) *handlers {
 }
 
 func (h *handlers) RegisterRoutes(parent chi.Router) {
-	parent.Put("/repositories/{repositoryID}/permissions", response.Handler(h.logger, h.grantPermission))
+	parent.Route("/repositories/{repositoryID}/permissions", func(r chi.Router) {
+		r.Get("/", response.Handler(h.logger, h.listPermissions))
+		r.Put("/", response.Handler(h.logger, h.grantPermission))
+		r.Delete("/{userID}", response.Handler(h.logger, h.revokePermission))
+	})
 }

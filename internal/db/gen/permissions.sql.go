@@ -48,6 +48,42 @@ func (q *Queries) GetPermission(ctx context.Context, arg GetPermissionParams) (P
 	return i, err
 }
 
+const listRepositoryPermissions = `-- name: ListRepositoryPermissions :many
+select id, user_id, repository_id, user_role, created_at_unix_ms, updated_at_unix_ms from permissions
+where repository_id=?
+order by created_at_unix_ms
+`
+
+func (q *Queries) ListRepositoryPermissions(ctx context.Context, repositoryID int64) ([]Permission, error) {
+	rows, err := q.db.QueryContext(ctx, listRepositoryPermissions, repositoryID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Permission
+	for rows.Next() {
+		var i Permission
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.RepositoryID,
+			&i.UserRole,
+			&i.CreatedAtUnixMs,
+			&i.UpdatedAtUnixMs,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const upsertPermission = `-- name: UpsertPermission :one
 insert into permissions (
   user_id, repository_id, user_role

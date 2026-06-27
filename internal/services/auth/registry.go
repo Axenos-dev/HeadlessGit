@@ -37,6 +37,14 @@ func (r *AuthRegistry) DeleteSSHKey(ctx context.Context, fingerprint string) err
 	return r.db.DeleteSSHKey(ctx, fingerprint)
 }
 
+func (r *AuthRegistry) DeleteSSHKeyByID(ctx context.Context, keyID, userID int64) (int64, error) {
+	return r.db.DeleteSSHKeyByID(ctx, gen.DeleteSSHKeyByIDParams{ID: keyID, UserID: userID})
+}
+
+func (r *AuthRegistry) ListSSHKeysByUser(ctx context.Context, userID int64) ([]gen.SshKey, error) {
+	return r.db.ListSSHKeysByUser(ctx, userID)
+}
+
 func (r *AuthRegistry) UpdateSSHKeyUsedAt(ctx context.Context, fingerprint string) error {
 	return r.db.UpdateSSHKeyUsedAt(ctx, fingerprint)
 }
@@ -58,6 +66,14 @@ func (r *AuthRegistry) CreateToken(ctx context.Context, userID int64, title, tok
 
 func (r *AuthRegistry) DeleteToken(ctx context.Context, tokenHash string) error {
 	return r.db.DeleteToken(ctx, tokenHash)
+}
+
+func (r *AuthRegistry) DeleteTokenByID(ctx context.Context, tokenID, userID int64) (int64, error) {
+	return r.db.DeleteTokenByID(ctx, gen.DeleteTokenByIDParams{ID: tokenID, UserID: userID})
+}
+
+func (r *AuthRegistry) ListTokensByUser(ctx context.Context, userID int64) ([]gen.Token, error) {
+	return r.db.ListTokensByUser(ctx, userID)
 }
 
 func (r *AuthRegistry) DeleteTokensByUserID(ctx context.Context, userID int64) error {

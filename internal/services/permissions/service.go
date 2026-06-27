@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"time"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/db/gen"
 	"github.com/Axenos-dev/HeadlessGit/internal/domain"
@@ -13,6 +14,7 @@ type Registry interface {
 	GetPermission(ctx context.Context, userID, repositoryID int64) (gen.Permission, error)
 	UpsertPermission(ctx context.Context, userID, repositoryID int64, role string) (gen.Permission, error)
 	DeletePermission(ctx context.Context, userID, repositoryID int64) error
+	ListRepositoryPermissions(ctx context.Context, repositoryID int64) ([]gen.Permission, error)
 }
 
 type Service struct {
@@ -67,6 +69,32 @@ func (s *Service) Grant(ctx context.Context, userID, repositoryID int64, role do
 
 func (s *Service) Revoke(ctx context.Context, userID, repositoryID int64) error {
 	return s.registry.DeletePermission(ctx, userID, repositoryID)
+}
+
+func (s *Service) List(ctx context.Context, repositoryID int64) ([]domain.Permission, error) {
+	perms, err := s.registry.ListRepositoryPermissions(ctx, repositoryID)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]domain.Permission, len(perms))
+	for i, p := range perms {
+		out[i] = toDomain(p)
+	}
+	return out, nil
+}
+
+func toDomain(p gen.Permission) domain.Permission {
+	perm := domain.Permission{
+		UserID:    p.UserID,
+		Role:      domain.Role(p.UserRole),
+		CreatedAt: time.UnixMilli(p.CreatedAtUnixMs).UTC(),
+	}
+	if p.UpdatedAtUnixMs.Valid {
+		t := time.UnixMilli(p.UpdatedAtUnixMs.Int64).UTC()
+		perm.UpdatedAt = &t
+	}
+	return perm
 }
 
 // returns explicit permission role,

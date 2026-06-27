@@ -136,3 +136,31 @@ func (q *Queries) ListUserRepositories(ctx context.Context, ownerID int64) ([]Re
 	}
 	return items, nil
 }
+
+const updateRepositoryVisibility = `-- name: UpdateRepositoryVisibility :one
+update repositories
+set visibility=?1,
+    updated_at_unix_ms=cast(unixepoch('subsec') * 1000 as integer)
+where id=?2
+returning id, owner_id, repository_name, storage_path, visibility, created_at_unix_ms, updated_at_unix_ms
+`
+
+type UpdateRepositoryVisibilityParams struct {
+	Visibility string
+	ID         int64
+}
+
+func (q *Queries) UpdateRepositoryVisibility(ctx context.Context, arg UpdateRepositoryVisibilityParams) (Repository, error) {
+	row := q.db.QueryRowContext(ctx, updateRepositoryVisibility, arg.Visibility, arg.ID)
+	var i Repository
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.RepositoryName,
+		&i.StoragePath,
+		&i.Visibility,
+		&i.CreatedAtUnixMs,
+		&i.UpdatedAtUnixMs,
+	)
+	return i, err
+}

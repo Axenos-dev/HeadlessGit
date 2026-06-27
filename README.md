@@ -104,15 +104,32 @@ Git LFS is enabled if `LFS_ENABLED=true` set in environment. Clients then use it
 
 Every request requires `Authorization: Bearer <ADMIN_TOKEN>`. Responses are enveloped: `{"data": ...}` on success, `{"error": {"code", "message"}}` on failure.
 
-| Method   | Path                             | Body                          | Description                                                      |
-| -------- | -------------------------------- | ----------------------------- | ---------------------------------------------------------------- |
-| `POST`   | `/users`                         | `{username, kind}`            | Create a user/service account (`kind`: `user` \| `service`).     |
-| `POST`   | `/users/{id}/ssh-keys`           | `{title, publicKey}`          | Register an SSH public key.                                      |
-| `POST`   | `/users/{id}/tokens`             | `{title}`                     | Mint a token; the raw value is returned **once**.                |
-| `POST`   | `/repositories`                  | `{ownerId, name, visibility}` | Create a repository (`visibility`: `public` \| `private`).       |
-| `GET`    | `/repositories/{id}`             | —                             | Get repository metadata.                                         |
-| `DELETE` | `/repositories/{id}`             | —                             | Delete a repository (row + bare repo).                           |
-| `PUT`    | `/repositories/{id}/permissions` | `{userId, role}`              | Grant/update a collaborator role (`read` \| `write` \| `admin`). |
+**Accounts & credentials**
+
+| Method   | Path                              | Body                 | Description                                                   |
+| -------- | --------------------------------- | -------------------- | ------------------------------------------------------------ |
+| `POST`   | `/users`                          | `{username, kind}`   | Create a user/service account (`kind`: `user` \| `service`). |
+| `GET`    | `/users/{id}`                     | —                    | Get an account.                                              |
+| `GET`    | `/users/{id}/repositories`        | —                    | List repositories owned by the account.                     |
+| `POST`   | `/users/{id}/ssh-keys`            | `{title, publicKey}` | Register an SSH public key.                                  |
+| `GET`    | `/users/{id}/ssh-keys`            | —                    | List the account's SSH keys.                                 |
+| `DELETE` | `/users/{id}/ssh-keys/{keyId}`    | —                    | Revoke an SSH key.                                           |
+| `POST`   | `/users/{id}/tokens`              | `{title}`            | Mint a token; the raw value is returned **once**.           |
+| `GET`    | `/users/{id}/tokens`              | —                    | List the account's tokens (never the secret).               |
+| `DELETE` | `/users/{id}/tokens/{tokenId}`    | —                    | Revoke a single token.                                       |
+| `DELETE` | `/users/{id}/tokens`              | —                    | Revoke **all** of the account's tokens.                     |
+
+**Repositories & permissions**
+
+| Method   | Path                                       | Body                          | Description                                                      |
+| -------- | ------------------------------------------ | ----------------------------- | ---------------------------------------------------------------- |
+| `POST`   | `/repositories`                            | `{ownerId, name, visibility}` | Create a repository (`visibility`: `public` \| `private`).       |
+| `GET`    | `/repositories/{id}`                       | —                             | Get repository metadata.                                         |
+| `PUT`    | `/repositories/{id}/visibility`            | `{visibility}`                | Change visibility (`public` \| `private`).                       |
+| `DELETE` | `/repositories/{id}`                       | —                             | Delete a repository (row + bare repo).                          |
+| `GET`    | `/repositories/{id}/permissions`           | —                             | List collaborators.                                             |
+| `PUT`    | `/repositories/{id}/permissions`           | `{userId, role}`              | Grant/update a collaborator role (`read` \| `write` \| `admin`). |
+| `DELETE` | `/repositories/{id}/permissions/{userId}`  | —                             | Revoke a collaborator.                                          |
 
 ### Health
 

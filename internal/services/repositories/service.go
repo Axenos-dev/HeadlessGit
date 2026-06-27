@@ -18,6 +18,8 @@ type Registry interface {
 	CreateRepository(ctx context.Context, ownerID int64, name, storagePath, visibility string) (gen.Repository, error)
 	DeleteRepository(ctx context.Context, repositoryID int64) error
 	GetRepositoryByPath(ctx context.Context, namespace, name string) (gen.Repository, error)
+	UpdateRepositoryVisibility(ctx context.Context, repositoryID int64, visibility string) (gen.Repository, error)
+	ListUserRepositories(ctx context.Context, ownerID int64) ([]gen.Repository, error)
 }
 
 type RepositoryStorage interface {
@@ -107,6 +109,34 @@ func (s *Service) Delete(ctx context.Context, repositoryID int64) error {
 	}
 
 	return nil
+}
+
+func (s *Service) SetVisibility(ctx context.Context, repositoryID int64, visibility domain.RepoVisibility) (domain.Repository, error) {
+	if visibility != domain.RepoVisibilityPublic && visibility != domain.RepoVisibilityPrivate {
+		return domain.Repository{}, ErrInvalidVisibility
+	}
+
+	repo, err := s.registry.UpdateRepositoryVisibility(ctx, repositoryID, string(visibility))
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Repository{}, ErrRepositoryNotFound
+	}
+	if err != nil {
+		return domain.Repository{}, err
+	}
+	return toDomain(repo), nil
+}
+
+func (s *Service) ListByOwner(ctx context.Context, ownerID int64) ([]domain.Repository, error) {
+	repos, err := s.registry.ListUserRepositories(ctx, ownerID)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]domain.Repository, len(repos))
+	for i, repo := range repos {
+		out[i] = toDomain(repo)
+	}
+	return out, nil
 }
 
 func (s *Service) GetRepositoryByPath(ctx context.Context, namespace, name string) (domain.Repository, error) {

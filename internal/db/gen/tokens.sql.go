@@ -69,6 +69,24 @@ func (q *Queries) DeleteToken(ctx context.Context, tokenHash string) error {
 	return err
 }
 
+const deleteTokenByID = `-- name: DeleteTokenByID :execrows
+delete from tokens
+where id=?1 and user_id=?2
+`
+
+type DeleteTokenByIDParams struct {
+	ID     int64
+	UserID int64
+}
+
+func (q *Queries) DeleteTokenByID(ctx context.Context, arg DeleteTokenByIDParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteTokenByID, arg.ID, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const deleteTokensByUserID = `-- name: DeleteTokensByUserID :exec
 delete from tokens
 where user_id=?
@@ -99,6 +117,43 @@ func (q *Queries) GetUserByToken(ctx context.Context, tokenHash string) (User, e
 		&i.UpdatedAtUnixMs,
 	)
 	return i, err
+}
+
+const listTokensByUser = `-- name: ListTokensByUser :many
+select id, user_id, title, token_hash, created_at_unix_ms, last_used_at_unix_ms, expires_at_unix_ms from tokens
+where user_id=?
+order by created_at_unix_ms
+`
+
+func (q *Queries) ListTokensByUser(ctx context.Context, userID int64) ([]Token, error) {
+	rows, err := q.db.QueryContext(ctx, listTokensByUser, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Token
+	for rows.Next() {
+		var i Token
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.Title,
+			&i.TokenHash,
+			&i.CreatedAtUnixMs,
+			&i.LastUsedAtUnixMs,
+			&i.ExpiresAtUnixMs,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const updateTokenUsedAt = `-- name: UpdateTokenUsedAt :exec

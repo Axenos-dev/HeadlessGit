@@ -38,3 +38,7 @@ func (r *PermissionRegistry) DeletePermission(ctx context.Context, userID, repos
 		RepositoryID: repositoryID,
 	})
 }
+
+func (r *PermissionRegistry) ListRepositoryPermissions(ctx context.Context, repositoryID int64) ([]gen.Permission, error) {
+	return r.db.ListRepositoryPermissions(ctx, repositoryID)
+}

@@ -7,4 +7,7 @@ const (
 	CodeForbidden      = "forbidden"
 
 	CodeRepositoryNotFound = "repository_not_found"
+	CodeUserNotFound       = "user_not_found"
+	CodeSSHKeyNotFound     = "ssh_key_not_found"
+	CodeTokenNotFound      = "token_not_found"
 )

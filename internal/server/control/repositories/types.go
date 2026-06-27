@@ -45,3 +45,22 @@ func newRepository(r domain.Repository) Repository {
 		UpdatedAt:  r.UpdatedAt,
 	}
 }
+
+func newRepositories(repos []domain.Repository) []Repository {
+	out := make([]Repository, len(repos))
+	for i, repo := range repos {
+		out[i] = newRepository(repo)
+	}
+	return out
+}
+
+type UpdateVisibilityRequest struct {
+	Visibility string `json:"visibility"`
+}
+
+func (r UpdateVisibilityRequest) Validate() error {
+	if r.Visibility != string(domain.RepoVisibilityPublic) && r.Visibility != string(domain.RepoVisibilityPrivate) {
+		return errors.New("visibility must be 'public' or 'private'")
+	}
+	return nil
+}

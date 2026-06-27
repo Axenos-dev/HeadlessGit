@@ -32,6 +32,10 @@ func (f fakeRegistry) DeletePermission(ctx context.Context, userID, repositoryID
 	return nil
 }
 
+func (f fakeRegistry) ListRepositoryPermissions(ctx context.Context, repositoryID int64) ([]gen.Permission, error) {
+	return nil, nil
+}
+
 func TestAuthorize(t *testing.T) {
 	owner := &domain.Account{UserID: 1}
 	other := &domain.Account{UserID: 2}
