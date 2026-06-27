@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os/signal"
+	"syscall"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/config"
 	"github.com/Axenos-dev/HeadlessGit/internal/db"
@@ -70,7 +72,6 @@ func main() {
 	}
 
 	permsService := permissions.NewService(permissions.NewRegistry(db))
-
 	usersService := users.NewService(users.NewRegistry(db))
 
 	// nil when LFS is disabled
@@ -91,8 +92,15 @@ func main() {
 		)
 	}
 
+	ctx, stop := signal.NotifyContext(
+		context.Background(),
+		syscall.SIGINT,
+		syscall.SIGTERM,
+	)
+	defer stop()
+
 	srv := server.NewServer(root, config.Server, repoService, usersService, authService, permsService, gitRunner, lfsService)
-	if err := srv.Run(); err != nil {
+	if err := srv.Run(ctx); err != nil {
 		log.Fatal(err)
 	}
 }

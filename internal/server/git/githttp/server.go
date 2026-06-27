@@ -1,7 +1,10 @@
 package githttp
 
 import (
+	"context"
+	"errors"
 	"net/http"
+	"time"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/server/git/githttp/lfs"
 	"github.com/Axenos-dev/HeadlessGit/internal/server/git/githttp/middleware"
@@ -37,12 +40,28 @@ func NewServer(logger *zap.Logger, repoRoot string, repos *reposervice.Service, 
 	}
 }
 
-func (s *Server) Run(addr string) error {
+func (s *Server) Run(ctx context.Context, addr string) error {
+	srv := &http.Server{Addr: addr, Handler: s.Handler()}
+
+	// shut down when ctx is cancelled
+	go func() {
+		<-ctx.Done()
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		srv.Shutdown(shutdownCtx)
+	}()
+
 	s.logger.Info("git http listening", zap.String("addr", addr))
-	return http.ListenAndServe(addr, s.Handler())
+
+	// ListenAndServe returns ErrServerClosed after a clean Shutdown
+	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
 }
 
-// Handler builds the configured chi router for the git HTTP transport.
 func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
 	r.Use(chimiddleware.RequestID, chimiddleware.ClientIPFromRemoteAddr, chimiddleware.Recoverer)

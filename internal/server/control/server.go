@@ -1,7 +1,10 @@
 package control
 
 import (
+	"context"
+	"errors"
 	"net/http"
+	"time"
 
 	permhandlers "github.com/Axenos-dev/HeadlessGit/internal/server/control/permissions"
 	repohandlers "github.com/Axenos-dev/HeadlessGit/internal/server/control/repositories"
@@ -34,15 +37,36 @@ func NewServer(logger *zap.Logger, repos *reposervice.Service, users *usersservi
 	}
 }
 
-func (s *Server) Run(addr string) error {
+func (s *Server) Run(ctx context.Context, addr string) error {
+	srv := &http.Server{Addr: addr, Handler: s.Handler()}
+
+	// shut down when ctx is cancelled
+	go func() {
+		<-ctx.Done()
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		srv.Shutdown(shutdownCtx)
+	}()
+
+	s.logger.Info("git http listening", zap.String("addr", addr))
+
+	// ListenAndServe returns ErrServerClosed after a clean Shutdown
+	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
+}
+
+func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID, middleware.ClientIPFromRemoteAddr, middleware.Recoverer)
 	r.Use(s.requireAdmin) // every control endpoint needs an admin bearer token
 
 	s.registerRoutes(r)
 
-	s.logger.Info("control api listening", zap.String("addr", addr))
-	return http.ListenAndServe(addr, r)
+	return r
 }
 
 func (s *Server) registerRoutes(r chi.Router) {

@@ -1,6 +1,8 @@
 package git
 
 import (
+	"context"
+
 	"github.com/Axenos-dev/HeadlessGit/internal/gitcmd"
 	"github.com/Axenos-dev/HeadlessGit/internal/server/git/githttp"
 	"github.com/Axenos-dev/HeadlessGit/internal/server/git/gitssh"
@@ -33,10 +35,10 @@ func NewServer(logger *zap.Logger, repoRoot, hostKeyPath string, runner *gitcmd.
 	}
 }
 
-func (s *Server) RunHTTP(addr string) error {
-	return s.http.Run(addr)
+func (s *Server) RunHTTP(ctx context.Context, addr string) error {
+	return s.http.Run(ctx, addr)
 }
 
-func (s *Server) RunSSH(addr string) error {
-	return s.ssh.Run(addr)
+func (s *Server) RunSSH(ctx context.Context, addr string) error {
+	return s.ssh.Run(ctx, addr)
 }

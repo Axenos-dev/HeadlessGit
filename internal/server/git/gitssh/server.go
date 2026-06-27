@@ -76,7 +76,7 @@ func NewServer(logger *zap.Logger, hostKeyPath string, runner GitRunner, resolve
 	}
 }
 
-func (s *Server) Run(addr string) error {
+func (s *Server) Run(ctx context.Context, addr string) error {
 	hostKey, err := s.loadOrCreateHostKey()
 	if err != nil {
 		return fmt.Errorf("host key: %w", err)
@@ -104,11 +104,21 @@ func (s *Server) Run(addr string) error {
 		return err
 	}
 
+	// stop accepting new connections on context done
+	go func() {
+		<-ctx.Done()
+		ln.Close()
+	}()
+
 	s.logger.Info("git ssh listening", zap.String("addr", addr))
 
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil // listener closed
+			}
+
 			return err
 		}
 		go s.handleConn(conn, cfg)

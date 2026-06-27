@@ -48,21 +48,26 @@ func NewServer(
 	}
 }
 
-func (s *server) Run() error {
+func (s *server) Run(ctx context.Context) error {
 	errCh := make(chan error, 3)
 
 	// clean up expired tokens
-	go s.auth.RunExpiredTokenGC(context.Background(), tokenGCInterval)
+	go s.auth.RunExpiredTokenGC(ctx, tokenGCInterval)
 
 	go func() {
-		errCh <- s.control.Run(fmt.Sprintf(":%d", s.cfg.ControlPort))
+		errCh <- s.control.Run(ctx, fmt.Sprintf(":%d", s.cfg.ControlPort))
 	}()
 	go func() {
-		errCh <- s.git.RunHTTP(fmt.Sprintf(":%d", s.cfg.GitHTTPPort))
+		errCh <- s.git.RunHTTP(ctx, fmt.Sprintf(":%d", s.cfg.GitHTTPPort))
 	}()
 	go func() {
-		errCh <- s.git.RunSSH(fmt.Sprintf(":%d", s.cfg.GitSSHPort))
+		errCh <- s.git.RunSSH(ctx, fmt.Sprintf(":%d", s.cfg.GitSSHPort))
 	}()
 
-	return <-errCh
+	select {
+	case <-ctx.Done():
+		return nil
+	case err := <-errCh:
+		return err
+	}
 }
