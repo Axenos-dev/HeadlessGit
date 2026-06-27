@@ -29,7 +29,7 @@ docker run --rm \
 
 That brings up three listeners - Git over HTTP (`4000`) and SSH (`2222`) for clients, and the control API (`4001`) for your backend. `ADMIN_TOKEN` seeds an admin service account on boot — your backend uses it as a bearer token to provision accounts, repositories, and permissions through the [control API](#control-api).
 
-Once user has a repository and credentials, they can you it like any other Git remote — the path is always `<owner-username>/<repo-name>.git`:
+Once a user has a repository and credentials, they can use it like any other Git remote — the path is always `<owner-username>/<repo-name>.git`:
 
 ```sh
 # over SSH, authenticated by a registered public key
@@ -50,7 +50,7 @@ For local development, see [`./dev.sh up`](#development).
 
 ### Identities
 
-An account is either a `user` (a human with a Git client) or a `service` (a machine — backend). They authenticate identically and are authorized by the same per-repo permissions. The seeded `ADMIN_TOKEN` account is an admin service account — typically application's backend, which going to use the
+An account is either a `user` (a human with a Git client) or a `service` (a machine — backend). They authenticate identically and are authorized by the same per-repo permissions. The seeded `ADMIN_TOKEN` account is an admin service account — typically your application's backend, which uses it to provision accounts, repositories, and permissions.
 
 ### Recommended deployment
 
@@ -82,7 +82,7 @@ Git LFS is enabled if `LFS_ENABLED=true` set in environment. Clients then use it
 
 **Storage** sits behind an interface, separate from the bare repos. It can be one of those:
 
-- `disk` (default) — objects stored locallu on disk under `LFS_ROOT`.
+- `disk` (default) — objects stored locally on disk under `LFS_ROOT`.
 - `s3` — any S3-compatible bucket (AWS S3, Cloudflare R2, MinIO). Transfers use **presigned URLs**, so object bytes flow directly between the client and the bucket instead of streaming through the server.
 
 | Variable                   | Default                 | Description                                                                           |
@@ -113,6 +113,10 @@ Every request requires `Authorization: Bearer <ADMIN_TOKEN>`. Responses are enve
 | `GET`    | `/repositories/{id}`             | —                             | Get repository metadata.                                         |
 | `DELETE` | `/repositories/{id}`             | —                             | Delete a repository (row + bare repo).                           |
 | `PUT`    | `/repositories/{id}/permissions` | `{userId, role}`              | Grant/update a collaborator role (`read` \| `write` \| `admin`). |
+
+### Health
+
+The control port also serves an unauthenticated `GET /healthz` readiness probe. It returns `200 {"status":"ok"}` when the database is reachable and `503 {"status":"unavailable"}` otherwise, and backs the container `HEALTHCHECK`.
 
 ## Development
 

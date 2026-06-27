@@ -29,4 +29,8 @@ ENV SSH_HOST_KEY_PATH=/data/ssh/host_ed25519
 # git http, control api, git ssh
 EXPOSE 4000 4001 2222
 
+# readiness probe against the control API (busybox wget exits non-zero on 5xx)
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+	CMD wget -q -O - "http://localhost:${CONTROL_PORT:-4001}/healthz" > /dev/null 2>&1 || exit 1
+
 ENTRYPOINT ["headlessgit"]

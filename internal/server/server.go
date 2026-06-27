@@ -38,12 +38,13 @@ func NewServer(
 	perms *permsservice.Service,
 	runner *gitcmd.Runner,
 	lfs *lfsservice.Service,
+	health control.HealthChecker,
 ) *server {
 	return &server{
 		cfg:     cfg,
 		logger:  logger,
 		auth:    auth,
-		control: control.NewServer(logger.With(zap.String("component", "control")), repos, users, auth, perms),
+		control: control.NewServer(logger.With(zap.String("component", "control")), repos, users, auth, perms, health),
 		git:     git.NewServer(logger.With(zap.String("component", "git")), cfg.RepoRoot, cfg.HostKeyPath, runner, repos, auth, perms, lfs),
 	}
 }

@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"os"
 	"path/filepath"
@@ -35,4 +36,8 @@ func Open(url string) (*DB, error) {
 
 func (db *DB) Close() error {
 	return db.db.Close()
+}
+
+func (db *DB) Health(ctx context.Context) error {
+	return db.db.PingContext(ctx)
 }

@@ -19,22 +19,29 @@ import (
 	"go.uber.org/zap"
 )
 
+// should report whether a backing dependency (the database) is reachable
+type HealthChecker interface {
+	Health(ctx context.Context) error
+}
+
 type Server struct {
 	logger *zap.Logger
 
-	repos *reposervice.Service
-	users *usersservice.Service
-	auth  *authservice.Service
-	perms *permsservice.Service
+	repos  *reposervice.Service
+	users  *usersservice.Service
+	auth   *authservice.Service
+	perms  *permsservice.Service
+	health HealthChecker
 }
 
-func NewServer(logger *zap.Logger, repos *reposervice.Service, users *usersservice.Service, auth *authservice.Service, perms *permsservice.Service) *Server {
+func NewServer(logger *zap.Logger, repos *reposervice.Service, users *usersservice.Service, auth *authservice.Service, perms *permsservice.Service, health HealthChecker) *Server {
 	return &Server{
 		logger: logger,
 		repos:  repos,
 		users:  users,
 		auth:   auth,
 		perms:  perms,
+		health: health,
 	}
 }
 
@@ -51,7 +58,7 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 		srv.Shutdown(shutdownCtx)
 	}()
 
-	s.logger.Info("git http listening", zap.String("addr", addr))
+	s.logger.Info("control api listening", zap.String("addr", addr))
 
 	// ListenAndServe returns ErrServerClosed after a clean Shutdown
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
@@ -62,12 +69,17 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 
 func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
-	r.Use(middleware.RequestID, middleware.ClientIPFromRemoteAddr)
-	r.Use(audit.Middleware(s.logger, "http"))
-	r.Use(middleware.Recoverer)
-	r.Use(s.requireAdmin) // every control endpoint needs an admin bearer token
 
-	s.registerRoutes(r)
+	r.Get("/healthz", s.handleHealth)
+
+	r.Group(func(r chi.Router) {
+		r.Use(middleware.RequestID, middleware.ClientIPFromRemoteAddr)
+		r.Use(audit.Middleware(s.logger, "http"))
+		r.Use(middleware.Recoverer)
+		r.Use(s.requireAdmin) // every control endpoint needs an admin bearer token
+
+		s.registerRoutes(r)
+	})
 
 	return r
 }
