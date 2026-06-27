@@ -2,105 +2,100 @@
 
 ## Project
 
-`headlessgit` is a headless Git server for applications that need Git hosting primitives without a forge UI.
+`headlessgit` is a headless Git server: Git hosting primitives (transport, auth,
+permissions, storage) for products that need to host repositories without a forge
+UI. It is a secure gateway around the system `git` binary, not a GitHub/Gitea clone.
 
 It provides:
 
-- Git over SSH for clone, fetch, and push.
-- Git over HTTP for clone, fetch, and push, plus the HTTP surface Git LFS requires.
-- A control API for repositories, users, SSH keys, permissions, and webhooks.
-- Git LFS support for large binary files.
-- Bare repository storage on a filesystem.
-- Push events/webhooks for downstream systems.
+- Git over SSH and HTTP (clone / fetch / push).
+- Git LFS (object transfer over HTTP; disk or S3 storage).
+- A control API to manage repositories, users, SSH keys, tokens, and permissions.
+- A `read` / `write` / `admin` permission model enforced before every Git operation.
 
-Both SSH and HTTP transports are core. They are not phased: Git LFS speaks HTTP for
-object transfer, so an HTTP server exists from v1 regardless.
+Out of scope unless explicitly requested: issues, pull requests, wikis, CI/actions,
+stars, social profiles, a repo-browsing UI, package registries.
 
-It is not a GitHub/Gitea/Forgejo clone.
+Push webhooks are specified but **not yet implemented** — see [Planned: webhooks](#planned-webhooks).
 
-Im not interested in issues, pull requests, wikis, actions, stars, social profiles, repository browsing UI, or package registry features unless explicitly requested.
+## Commands
 
-## Design rules
+```sh
+./dev.sh test   # build + vet + test — the CI gate (go build/vet/test ./...)
+./dev.sh up     # build and run the stack (docker compose up --build)
+./dev.sh gen    # regenerate sqlc code after editing internal/db/queries/*.sql
+```
+
+- Run one package: `go test ./internal/server/git/gitssh`.
+- The Git e2e tests skip when `git` / `git-lfs` are not on `PATH`; the S3/LFS
+  tests skip unless `LFS_S3_*` env vars point at a bucket. `./dev.sh test` is green
+  either way.
+- Local config is via env vars — copy `.env.example` and set at least `DATABASE_URL`.
+
+## Architecture
+
+A request is authenticated, the repo is resolved through metadata, permissions are
+checked, then bytes are piped to a system `git` subprocess (or an LFS object is
+streamed). The server never reimplements the Git protocol.
+
+```txt
+client -> SSH/HTTP transport -> auth + permissions -> system git subprocess -> bare repo on disk
+git-lfs -> HTTP LFS API       -> auth + permissions -> local/S3 object storage
+```
+
+Package map:
+
+| Path                          | Purpose                                                                                                           |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `cmd/app`                     | Entrypoint: build deps, seed admin, wire `server`, handle signals.                                                |
+| `internal/config`             | Env-based configuration.                                                                                          |
+| `internal/db`                 | SQLite open/migrate; sqlc queries live in `gen/`, SQL in `queries/`, migrations in `migrations/`.                 |
+| `internal/domain`             | Core types (repository, account, role, token, ssh key, lfs).                                                      |
+| `internal/services/*`         | Business logic per area (repositories, users, auth, permissions, lfs); each has a service + a registry over `db`. |
+| `internal/storage`            | LFS object storage behind an interface (`disk`, `s3`).                                                            |
+| `internal/gitcmd`             | Runs the system `git` subprocesses safely.                                                                        |
+| `internal/server`             | Composition root: wires control + git servers, runs and shuts down listeners.                                     |
+| `internal/server/control`     | Control API (REST); sub-handlers in `repositories/`, `users/`, `permissions/`.                                    |
+| `internal/server/git/gitssh`  | Git-over-SSH transport (custom in-process SSH server).                                                            |
+| `internal/server/git/githttp` | Git-over-HTTP transport; `smart/` (git-http-backend) and `lfs/` (Batch API).                                      |
+| `internal/server/audit`       | Request-scoped audit event + HTTP middleware.                                                                     |
+| `internal/server/response`    | JSON envelope + error helpers for the control API.                                                                |
+
+## Core rules
 
 ### Git transport
 
-Do not reimplement Git protocol internals unless explicitly requested.
-
-Use the system Git binary for Git transport:
-
-- `git-upload-pack` for clone/fetch (SSH and HTTP).
-- `git-receive-pack` for push (SSH and HTTP).
-- `git-http-backend` for the Git-over-HTTP smart protocol.
-
-The server is responsible for:
-
-1. Authenticating the caller.
-2. Resolving the requested repo.
-3. Checking permissions.
-4. Starting the correct Git subprocess.
-5. Piping bytes between the client connection and the Git subprocess.
-6. Emitting events after successful writes.
+Use the system Git binary; do not reimplement protocol internals:
+`git-upload-pack` (fetch), `git-receive-pack` (push), `git-http-backend` (smart HTTP).
 
 ### Repo path safety
 
-Never map user input directly to filesystem paths.
+Never map user input to a filesystem path. Always go
+`namespace/name.git -> database lookup -> repo_id -> controlled storage path`.
+Repo paths are created by trusted code and stored as internal metadata; never build
+a path by concatenating user input onto the storage root.
 
-Do this:
+### Permission model
 
-```txt
-namespace/name.git
-  -> database lookup
-  -> repo_id
-  -> controlled storage path
-```
-
-Do not do this:
-
-```txt
-repo_path = storage_root + "/" + user_input
-```
-
-All repo paths must be created by trusted code and stored as internal metadata.
-
-### Storage
-
-Bare Git repos live on a filesystem-backed storage root.
-
-Example:
-
-```txt
-/var/lib/headlessgit/repos/repo_123.git
-```
-
-Object storage may be used for LFS objects, backups, etc etc.
-
-### LFS
-
-Git LFS is first-class.
-
-LFS object transfer happens over HTTP (the LFS Batch API), never over SSH. When a
-client reaches a repo over SSH, the server answers `git-lfs-authenticate` with the
-HTTP LFS endpoint and a short-lived token; the actual upload/download then goes to the
-HTTP server. This is why HTTP is a core transport rather than a later add-on.
-
-LFS authorization must use the same repo permission model as normal Git access:
-read grants LFS download, write grants LFS upload.
-
-LFS object storage should be behind a storage interface so local disk works first and S3 can be added later.
+Keep it small: `read` = clone/fetch + LFS download; `write` = read + push + LFS
+upload; `admin` = write + repo settings/permissions/webhooks. No organizations,
+teams, nested groups, or inheritance until actually needed. LFS authorization uses
+the same model as normal Git access. A caller's access from another product is
+translated into explicit repo permissions here.
 
 ### Security
 
-Security-sensitive code must prefer boring, explicit logic over clever abstractions.
+Security-sensitive code prefers boring, explicit logic over clever abstractions.
 
 Always:
 
 - Check permissions before running Git subprocesses.
 - Execute subprocesses with argv arrays, not shell strings.
-- Validate requested Git commands strictly.
-- Sign outbound webhooks.
-- Use constant-time comparison for webhook secrets and tokens where relevant.
+- Validate requested Git commands strictly (allowlist).
+- Sign outbound webhooks; use constant-time comparison for secrets and tokens.
 - Add timeouts to subprocesses and external calls.
-- Treat repo names, refs, paths, webhook URLs, SSH commands, and LFS object IDs as untrusted input.
+- Treat repo names, refs, paths, webhook URLs, SSH commands, and LFS object IDs as untrusted.
+- Store tokens hashed.
 
 Never:
 
@@ -108,231 +103,48 @@ Never:
 - Allow path traversal.
 - Trust clone URLs as storage paths.
 - Let LFS upload/download bypass repo permissions.
-- Add broad filesystem access to Git subprocesses.
+- Give Git subprocesses broad filesystem access.
+- Hand an SSH client an interactive shell or pty.
 
-## Permission model
+## Conventions
 
-Keep the permission model small.
+Prefer simple Go: small interfaces at module boundaries, context-aware I/O, explicit
+errors with context, table-driven tests, standard library first. Avoid large global
+state, framework-heavy abstractions, and dependencies added for small tasks.
 
-Initial roles:
+**Dependencies & interfaces.** The package that _invokes_ a dependency defines a
+minimal consumer interface for it (e.g. `gitssh`'s `Authenticator`/`TokenMinter`,
+the handler packages' own interfaces). Composition/router layers (`server`, `git`,
+`githttp`, the control router) hold concrete types and forward them down. So a
+monolithic router+consumer like `gitssh` defines interfaces while a delegating
+router like `githttp` stays concrete — that asymmetry is intentional. Constructors
+take a single `Services` struct, not a long positional list; `main` builds the
+concretes once.
 
-```txt
-read   = clone/fetch and LFS download
-write  = read + push and LFS upload
-admin  = write + repo settings/webhooks/permissions
-```
+**HTTP.** One `net/http` + `chi` stack (no `fasthttp`/Fiber: the smart-HTTP path
+streams bodies to/from `git-http-backend`). The Git/LFS routes must stay
+streaming-safe — no body-size limits or body-buffering middleware. Health (`/healthz`)
+is unauthenticated and sits outside the audit chain.
 
-No organizations, teams, nested groups, or complex inheritance until needed.
-
-If a caller has access through another product, that product should translate its access model into explicit repo permissions here.
-
-Prefer stable, small request/response types. Avoid leaking internal storage paths in API responses.
-
-## Identity and authentication
-
-There are three callers, each with a distinct auth mechanism:
-
-```txt
-Git/LFS over SSH   -> SSH public key  -> resolves to user or service account
-Git/LFS over HTTP  -> bearer token    -> resolves to user or service account
-Control API        -> bearer token    -> resolves to user or service account
-```
-
-Notes:
-
-- A user owns one or more SSH public keys and zero or more API/access tokens.
-- A service account is a non-human identity (another product, a CI system) that
-  authenticates the same way and is subject to the same repo permissions.
-- LFS-over-SSH bootstraps into an HTTP bearer token via `git-lfs-authenticate`
-  (see the LFS section), so HTTP token auth is required even for SSH-first users.
-- Tokens are stored hashed; compare with constant-time comparison.
-
-## SSH Git server
-
-The SSH server should:
-
-1. Authenticate public keys.
-2. Resolve the key to a user or service account.
-3. Accept only Git commands:
-   - `git-upload-pack`
-   - `git-receive-pack`
-
-4. Parse the requested repo path.
-5. Resolve it through repository metadata.
-6. Check read/write permissions.
-7. Start the Git subprocess.
-8. Pipe stdin/stdout/stderr safely.
-9. Record audit information.
-
-Reject unknown SSH commands.
-
-Implement this as a custom in-process SSH server (built on a maintained SSH library)
-rather than relying on a system `sshd` + `authorized_keys` forced-command setup. The
-server parses the requested command itself and only ever execs an allowlisted Git
-subprocess. Never hand the client an interactive shell or pty.
-
-## HTTP stack
-
-Use Go's standard `net/http` with the `chi` router for all HTTP, shared by both the
-Control API and the Git/LFS HTTP server. Do not use a `fasthttp`-based framework
-(e.g. Fiber): the Git smart HTTP path streams request/response bodies to and from the
-`git-http-backend` CGI subprocess, and that integration is built around `net/http`.
-One `net/http` stack keeps middleware, auth, and zap-based audit logging consistent.
-
-The three surfaces differ in shape, not transport:
+**Logging.** `zap` structured logging. Never log secrets (tokens, webhook secrets,
+SSH key material, full auth headers). Each transport request emits one audit line:
 
 ```txt
-Control API   HTTP + JSON     REST handlers (create/configure repos, users, perms, webhooks)
-HTTP Git/LFS  HTTP + binary   stream to git-http-backend; LFS Batch API (JSON) + object transfer
-SSH Git       SSH + binary    authenticated channel piped to the git subprocess (not an HTTP API)
+request_id  identity_id  transport(ssh|http)  repo_id  git_command  result(ok|denied|error)  duration
 ```
-
-The Control API and Git/LFS share one `chi.Router` on a single listener, but live in
-separate route groups with separate middleware chains:
-
-- Keep only universally-safe middleware global: `RequestID`, `RealIP`, `Recoverer`,
-  and a zap-based request/audit logger.
-- The Control API group adds JSON/content-type handling, body-size limits, and the
-  management-token auth.
-- The Git/LFS group must stay streaming-safe: no body-size limits and no middleware
-  that buffers the request/response body, since it pipes to `git-http-backend` and
-  streams LFS objects. It uses repo-permission auth, not management-token auth.
-
-Use a zap-based request-logging middleware, not chi's stdlib `middleware.Logger`, so
-HTTP audit logs match the structured field set in the Logging section.
-
-## HTTP Git and LFS server
-
-The HTTP server exposes:
-
-1. The Git smart HTTP endpoints (`info/refs`, `git-upload-pack`, `git-receive-pack`)
-   backed by `git-http-backend`.
-2. The LFS Batch API and object transfer endpoints.
-
-It applies the same flow as SSH: authenticate the bearer token, resolve the repo
-through metadata, check permissions, then run the Git subprocess or stream the LFS
-object. Reject any path that does not resolve to a known repo.
-
-## Webhooks
-
-Push webhooks should be emitted only after a successful push.
-
-Webhook payloads should include at least:
-
-```txt
-event
-repo_id
-ref
-old_sha
-new_sha
-pusher_id
-```
-
-Sign webhook deliveries with a per-webhook secret.
-
-Webhook delivery must not run inline in the Git push path, since a slow or failing
-endpoint would slow down or break pushes. For the thin v1, an in-process background
-queue with bounded retries is enough; do not pull in an external job system until
-delivery volume actually demands it.
-
-## Database
-
-Use SQLite for metadata in v1: it is embedded, zero-ops, and matches the thin goal.
-
-Keep all metadata access behind a small storage interface so the backend can be
-swapped for Postgres later without touching transport, auth, or permission code.
-Do not adopt Postgres until a task explicitly requires it (e.g. multi-node deployment).
-
-## Logging
-
-Use `zap` for structured logging.
-
-Wrap it behind a small `Logger` interface at the module boundary so transport, auth,
-and permission code log against our own type, not zap directly. This keeps the swap
-point open and keeps the dependency from leaking through the whole codebase.
-
-Audit logging is a first-class use of the logger. Every transport request should log a
-consistent, structured set of fields:
-
-```txt
-request_id    correlation id, threaded via context
-identity_id   resolved user or service account
-transport     ssh | http
-repo_id       resolved repo (never the raw storage path)
-git_command   git-upload-pack | git-receive-pack | lfs-batch | ...
-result        ok | denied | error
-duration      request duration
-```
-
-Never log secrets: tokens, webhook secrets, SSH private material, or full auth
-headers. Redact before logging.
-
-## Coding style
-
-Prefer simple Go.
-
-Use:
-
-- Small interfaces at module boundaries.
-- Context-aware functions for I/O and subprocess work.
-- Explicit errors with useful context.
-- Table-driven tests where they make behavior clearer.
-- Standard library packages unless a dependency clearly improves the design.
-
-Avoid:
-
-- Large global state.
-- Framework-heavy abstractions.
-- Magic behavior hidden behind generic helpers.
-- Adding dependencies for small tasks.
-- Premature distributed systems design.
-
-### Dependencies and interfaces
-
-The package that actually invokes a dependency defines a minimal consumer
-interface for it (e.g. `gitssh` declares `Authenticator`/`TokenMinter`, the git
-and control handlers declare their own small interfaces). Composition and router
-layers (`server`, `git`, `githttp`, the control router) hold concrete types and
-forward them down — they don't redeclare interfaces for things they only pass
-through. So a monolithic package that is both router and direct consumer (like
-`gitssh`) defines interfaces, while a router that delegates to sub-handlers (like
-`githttp`) stays concrete; that asymmetry is intentional.
-
-Constructors take a single `Services` struct rather than a long positional
-parameter list. `main` builds the concrete dependencies once and passes them in.
 
 ## Dependency policy
 
-Do not add a new production dependency without a clear reason.
+Add a production dependency only with a clear reason; prefer maintained, boring,
+widely-used packages. Acceptable areas: SSH server library, HTTP router/middleware
+(`chi`), SQLite driver/query tooling, structured logging, config loading, object
+storage clients. Do not roll your own SSH or Git protocol implementation.
 
-Acceptable dependency areas:
+## Planned: webhooks
 
-- SSH server support (a maintained SSH library; do not roll your own).
-- HTTP router/middleware (`chi` on top of `net/http`; not a `fasthttp` framework).
-- SQLite driver/query tooling (Postgres driver only once Postgres is actually needed).
-- Structured logging.
-- Config loading.
-- Object storage clients.
+Not yet implemented. When built:
 
-If adding a dependency, prefer maintained, boring, widely used packages.
-
-## Mental model
-
-`headlessgit` is a secure gateway around Git, not a replacement for Git.
-
-```txt
-Git client
-  -> SSH/HTTP transport
-  -> headlessgit auth and permissions
-  -> system Git subprocess
-  -> bare repo filesystem storage
-```
-
-For large files:
-
-```txt
-git-lfs client
-  -> headlessgit LFS API
-  -> LFS authorization
-  -> local/S3 object storage
-```
+- Emit a push webhook only **after** a successful push, off the push path (an
+  in-process background queue with bounded retries — no external job system).
+- Payload includes at least: `event`, `repo_id`, `ref`, `old_sha`, `new_sha`, `pusher_id`.
+- Sign each delivery with a per-webhook secret (constant-time comparison).
