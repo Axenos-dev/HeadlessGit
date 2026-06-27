@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/config"
+	"github.com/Axenos-dev/HeadlessGit/internal/db"
 	"github.com/Axenos-dev/HeadlessGit/internal/gitcmd"
 	"github.com/Axenos-dev/HeadlessGit/internal/server/control"
 	"github.com/Axenos-dev/HeadlessGit/internal/server/git"
@@ -16,6 +17,16 @@ import (
 	usersservice "github.com/Axenos-dev/HeadlessGit/internal/services/users"
 	"go.uber.org/zap"
 )
+
+type Services struct {
+	Repositories   *reposervice.Service
+	Users          *usersservice.Service
+	Authentication *authservice.Service
+	Authorization  *permsservice.Service
+	GitRunner      *gitcmd.Runner
+	LFS            *lfsservice.Service
+	DB             *db.DB
+}
 
 // clean up expired tokens every hour
 const tokenGCInterval = time.Hour
@@ -32,20 +43,26 @@ type server struct {
 func NewServer(
 	logger *zap.Logger,
 	cfg config.ServerConfig,
-	repos *reposervice.Service,
-	users *usersservice.Service,
-	auth *authservice.Service,
-	perms *permsservice.Service,
-	runner *gitcmd.Runner,
-	lfs *lfsservice.Service,
-	health control.HealthChecker,
+	svc Services,
 ) *server {
 	return &server{
-		cfg:     cfg,
-		logger:  logger,
-		auth:    auth,
-		control: control.NewServer(logger.With(zap.String("component", "control")), repos, users, auth, perms, health),
-		git:     git.NewServer(logger.With(zap.String("component", "git")), cfg.RepoRoot, cfg.HostKeyPath, runner, repos, auth, perms, lfs),
+		cfg:    cfg,
+		logger: logger,
+		auth:   svc.Authentication,
+		control: control.NewServer(logger.With(zap.String("component", "control")), control.Services{
+			Repositories:   svc.Repositories,
+			Authentication: svc.Authentication,
+			Authorization:  svc.Authorization,
+			Users:          svc.Users,
+			Health:         svc.DB,
+		}),
+		git: git.NewServer(logger.With(zap.String("component", "git")), cfg.RepoRoot, cfg.HostKeyPath, git.Services{
+			Repositories:   svc.Repositories,
+			Authentication: svc.Authentication,
+			Authorization:  svc.Authorization,
+			GitRunner:      svc.GitRunner,
+			LFS:            svc.LFS,
+		}),
 	}
 }
 

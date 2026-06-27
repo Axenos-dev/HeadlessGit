@@ -24,6 +24,14 @@ type HealthChecker interface {
 	Health(ctx context.Context) error
 }
 
+type Services struct {
+	Repositories   *reposervice.Service
+	Authentication *authservice.Service
+	Authorization  *permsservice.Service
+	Users          *usersservice.Service
+	Health         HealthChecker
+}
+
 type Server struct {
 	logger *zap.Logger
 
@@ -34,14 +42,14 @@ type Server struct {
 	health HealthChecker
 }
 
-func NewServer(logger *zap.Logger, repos *reposervice.Service, users *usersservice.Service, auth *authservice.Service, perms *permsservice.Service, health HealthChecker) *Server {
+func NewServer(logger *zap.Logger, svc Services) *Server {
 	return &Server{
 		logger: logger,
-		repos:  repos,
-		users:  users,
-		auth:   auth,
-		perms:  perms,
-		health: health,
+		repos:  svc.Repositories,
+		users:  svc.Users,
+		auth:   svc.Authentication,
+		perms:  svc.Authorization,
+		health: svc.Health,
 	}
 }
 

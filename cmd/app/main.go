@@ -99,7 +99,15 @@ func main() {
 	)
 	defer stop()
 
-	srv := server.NewServer(root, config.Server, repoService, usersService, authService, permsService, gitRunner, lfsService, db)
+	srv := server.NewServer(root, config.Server, server.Services{
+		Repositories:   repoService,
+		Users:          usersService,
+		Authentication: authService,
+		Authorization:  permsService,
+		GitRunner:      gitRunner,
+		LFS:            lfsService,
+		DB:             db,
+	})
 	if err := srv.Run(ctx); err != nil {
 		log.Fatal(err)
 	}

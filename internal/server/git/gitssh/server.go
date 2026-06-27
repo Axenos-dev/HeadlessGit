@@ -53,6 +53,15 @@ type LFSEndpoints interface {
 	LFSEndpoint(namespace, name string) string
 }
 
+type Services struct {
+	Runner         GitRunner
+	Resolver       RepositoryResolver
+	Authentication Authenticator
+	Authorization  Authorizer
+	Minter         TokenMinter
+	LFS            LFSEndpoints
+}
+
 type Server struct {
 	logger      *zap.Logger
 	hostKeyPath string
@@ -65,16 +74,16 @@ type Server struct {
 	lfs      LFSEndpoints // nil if LFS is disabled
 }
 
-func NewServer(logger *zap.Logger, hostKeyPath string, runner GitRunner, resolver RepositoryResolver, authn Authenticator, authz Authorizer, minter TokenMinter, lfs LFSEndpoints) *Server {
+func NewServer(logger *zap.Logger, hostKeyPath string, svc Services) *Server {
 	return &Server{
 		logger:      logger,
 		hostKeyPath: hostKeyPath,
-		runner:      runner,
-		resolver:    resolver,
-		auth:        authn,
-		authz:       authz,
-		minter:      minter,
-		lfs:         lfs,
+		runner:      svc.Runner,
+		resolver:    svc.Resolver,
+		auth:        svc.Authentication,
+		authz:       svc.Authorization,
+		minter:      svc.Minter,
+		lfs:         svc.LFS,
 	}
 }
 

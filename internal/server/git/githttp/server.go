@@ -19,6 +19,13 @@ import (
 	"go.uber.org/zap"
 )
 
+type Services struct {
+	Repositories   *reposervice.Service
+	Authentication *authservice.Service
+	Authorization  *permsservice.Service
+	LFS            *lfsservice.Service
+}
+
 type Server struct {
 	logger *zap.Logger
 
@@ -30,14 +37,14 @@ type Server struct {
 	lfs   *lfsservice.Service // nil if disabled
 }
 
-func NewServer(logger *zap.Logger, repoRoot string, repos *reposervice.Service, auth *authservice.Service, perms *permsservice.Service, lfs *lfsservice.Service) *Server {
+func NewServer(logger *zap.Logger, repoRoot string, svc Services) *Server {
 	return &Server{
 		repoRoot: repoRoot,
 		logger:   logger,
-		auth:     auth,
-		repos:    repos,
-		perms:    perms,
-		lfs:      lfs,
+		auth:     svc.Authentication,
+		repos:    svc.Repositories,
+		perms:    svc.Authorization,
+		lfs:      svc.LFS,
 	}
 }
 

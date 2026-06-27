@@ -66,7 +66,11 @@ func TestGitHTTPEndToEnd(t *testing.T) {
 	}
 
 	// serve the git HTTP transport
-	srv := githttp.NewServer(log, repoRoot, repoSvc, authSvc, permsSvc, nil)
+	srv := githttp.NewServer(log, repoRoot, githttp.Services{
+		Repositories:   repoSvc,
+		Authentication: authSvc,
+		Authorization:  permsSvc,
+	})
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 

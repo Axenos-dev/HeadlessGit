@@ -13,25 +13,45 @@ import (
 	"go.uber.org/zap"
 )
 
+type Services struct {
+	Repositories   *reposervice.Service
+	Authentication *authservice.Service
+	Authorization  *permsservice.Service
+	GitRunner      *gitcmd.Runner
+	LFS            *lfsservice.Service
+}
+
 type Server struct {
 	logger *zap.Logger
 	http   *githttp.Server
 	ssh    *gitssh.Server
 }
 
-func NewServer(logger *zap.Logger, repoRoot, hostKeyPath string, runner *gitcmd.Runner, repos *reposervice.Service, auth *authservice.Service, perms *permsservice.Service, lfs *lfsservice.Service) *Server {
+func NewServer(logger *zap.Logger, repoRoot, hostKeyPath string, svc Services) *Server {
 	httpLogger := logger.With(zap.String("transport", "http"))
 
 	// for git over ssh
 	var lfsEndpoints gitssh.LFSEndpoints
-	if lfs != nil {
-		lfsEndpoints = lfs
+	if svc.LFS != nil {
+		lfsEndpoints = svc.LFS
 	}
 
 	return &Server{
 		logger: logger,
-		http:   githttp.NewServer(httpLogger, repoRoot, repos, auth, perms, lfs),
-		ssh:    gitssh.NewServer(logger.With(zap.String("transport", "ssh")), hostKeyPath, runner, repos, auth, perms, auth, lfsEndpoints),
+		http: githttp.NewServer(httpLogger, repoRoot, githttp.Services{
+			Repositories:   svc.Repositories,
+			Authentication: svc.Authentication,
+			Authorization:  svc.Authorization,
+			LFS:            svc.LFS,
+		}),
+		ssh: gitssh.NewServer(logger.With(zap.String("transport", "ssh")), hostKeyPath, gitssh.Services{
+			Runner:         svc.GitRunner,
+			Resolver:       svc.Repositories,
+			Authentication: svc.Authentication,
+			Minter:         svc.Authentication,
+			Authorization:  svc.Authorization,
+			LFS:            lfsEndpoints,
+		}),
 	}
 }
 

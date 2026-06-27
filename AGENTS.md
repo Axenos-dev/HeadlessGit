@@ -287,6 +287,20 @@ Avoid:
 - Adding dependencies for small tasks.
 - Premature distributed systems design.
 
+### Dependencies and interfaces
+
+The package that actually invokes a dependency defines a minimal consumer
+interface for it (e.g. `gitssh` declares `Authenticator`/`TokenMinter`, the git
+and control handlers declare their own small interfaces). Composition and router
+layers (`server`, `git`, `githttp`, the control router) hold concrete types and
+forward them down — they don't redeclare interfaces for things they only pass
+through. So a monolithic package that is both router and direct consumer (like
+`gitssh`) defines interfaces, while a router that delegates to sub-handlers (like
+`githttp`) stays concrete; that asymmetry is intentional.
+
+Constructors take a single `Services` struct rather than a long positional
+parameter list. `main` builds the concrete dependencies once and passes them in.
+
 ## Dependency policy
 
 Do not add a new production dependency without a clear reason.

@@ -94,7 +94,12 @@ func TestGitLFSEndToEnd(t *testing.T) {
 	}
 	lfsSvc := lfs.NewService(log, lfs.NewRegistry(database), store, publicURL)
 
-	srv := githttp.NewServer(log, repoRoot, repoSvc, authSvc, permsSvc, lfsSvc)
+	srv := githttp.NewServer(log, repoRoot, githttp.Services{
+		Repositories:   repoSvc,
+		Authentication: authSvc,
+		Authorization:  permsSvc,
+		LFS:            lfsSvc,
+	})
 	ts.Config.Handler = srv.Handler()
 	ts.Start()
 
