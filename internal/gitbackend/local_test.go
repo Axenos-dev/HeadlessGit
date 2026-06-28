@@ -1,4 +1,4 @@
-package gitcmd
+package gitbackend
 
 import (
 	"path/filepath"
@@ -8,7 +8,7 @@ import (
 
 func TestResolveContainment(t *testing.T) {
 	root := "/srv/repos"
-	r := &Runner{root: root}
+	l := &Local{root: root}
 
 	cases := []struct {
 		name string
@@ -24,7 +24,7 @@ func TestResolveContainment(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := r.resolve(tc.path)
+			got, err := l.resolve(tc.path)
 			if err != nil {
 				t.Fatalf("resolve(%q) error: %v", tc.path, err)
 			}

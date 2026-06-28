@@ -7,7 +7,7 @@ import (
 
 	"github.com/Axenos-dev/HeadlessGit/internal/config"
 	"github.com/Axenos-dev/HeadlessGit/internal/db"
-	"github.com/Axenos-dev/HeadlessGit/internal/gitcmd"
+	"github.com/Axenos-dev/HeadlessGit/internal/gitbackend"
 	"github.com/Axenos-dev/HeadlessGit/internal/server/control"
 	"github.com/Axenos-dev/HeadlessGit/internal/server/git"
 	authservice "github.com/Axenos-dev/HeadlessGit/internal/services/auth"
@@ -23,7 +23,7 @@ type Services struct {
 	Users          *usersservice.Service
 	Authentication *authservice.Service
 	Authorization  *permsservice.Service
-	GitRunner      *gitcmd.Runner
+	GitBackend     *gitbackend.Local
 	LFS            *lfsservice.Service
 	DB             *db.DB
 }
@@ -56,11 +56,11 @@ func NewServer(
 			Users:          svc.Users,
 			Health:         svc.DB,
 		}),
-		git: git.NewServer(logger.With(zap.String("component", "git")), cfg.RepoRoot, cfg.HostKeyPath, git.Services{
+		git: git.NewServer(logger.With(zap.String("component", "git")), cfg.HostKeyPath, git.Services{
 			Repositories:   svc.Repositories,
 			Authentication: svc.Authentication,
 			Authorization:  svc.Authorization,
-			GitRunner:      svc.GitRunner,
+			Backend:        svc.GitBackend,
 			LFS:            svc.LFS,
 		}),
 	}

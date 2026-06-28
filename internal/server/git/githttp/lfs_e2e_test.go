@@ -14,7 +14,7 @@ import (
 	"github.com/Axenos-dev/HeadlessGit/internal/config"
 	"github.com/Axenos-dev/HeadlessGit/internal/db"
 	"github.com/Axenos-dev/HeadlessGit/internal/domain"
-	"github.com/Axenos-dev/HeadlessGit/internal/gitcmd"
+	"github.com/Axenos-dev/HeadlessGit/internal/gitbackend"
 	"github.com/Axenos-dev/HeadlessGit/internal/server/git/githttp"
 	"github.com/Axenos-dev/HeadlessGit/internal/services/auth"
 	"github.com/Axenos-dev/HeadlessGit/internal/services/lfs"
@@ -58,12 +58,12 @@ func TestGitLFSEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runner, err := gitcmd.NewRunner(repoRoot)
+	backend, err := gitbackend.NewLocal(repoRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	repoSvc := repositories.NewService(log, repositories.NewRegistry(database), runner)
+	repoSvc := repositories.NewService(log, repositories.NewRegistry(database), backend)
 	authSvc := auth.NewService(log, auth.NewRegistry(database))
 	permsSvc := permissions.NewService(permissions.NewRegistry(database))
 	usersSvc := users.NewService(users.NewRegistry(database))
@@ -94,10 +94,11 @@ func TestGitLFSEndToEnd(t *testing.T) {
 	}
 	lfsSvc := lfs.NewService(log, lfs.NewRegistry(database), store, publicURL)
 
-	srv := githttp.NewServer(log, repoRoot, githttp.Services{
+	srv := githttp.NewServer(log, githttp.Services{
 		Repositories:   repoSvc,
 		Authentication: authSvc,
 		Authorization:  permsSvc,
+		Backend:        backend,
 		LFS:            lfsSvc,
 	})
 	ts.Config.Handler = srv.Handler()

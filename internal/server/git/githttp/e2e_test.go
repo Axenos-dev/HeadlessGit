@@ -11,7 +11,7 @@ import (
 
 	"github.com/Axenos-dev/HeadlessGit/internal/db"
 	"github.com/Axenos-dev/HeadlessGit/internal/domain"
-	"github.com/Axenos-dev/HeadlessGit/internal/gitcmd"
+	"github.com/Axenos-dev/HeadlessGit/internal/gitbackend"
 	"github.com/Axenos-dev/HeadlessGit/internal/server/git/githttp"
 	"github.com/Axenos-dev/HeadlessGit/internal/services/auth"
 	"github.com/Axenos-dev/HeadlessGit/internal/services/permissions"
@@ -21,7 +21,7 @@ import (
 )
 
 // TestGitHTTPEndToEnd drives the real git binary against the full HTTP stack:
-// DB resolution -> token auth -> authorization -> git-http-backend.
+// DB resolution -> token auth -> authorization -> git pack backend.
 func TestGitHTTPEndToEnd(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
@@ -40,12 +40,12 @@ func TestGitHTTPEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runner, err := gitcmd.NewRunner(repoRoot)
+	backend, err := gitbackend.NewLocal(repoRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	repoSvc := repositories.NewService(log, repositories.NewRegistry(database), runner)
+	repoSvc := repositories.NewService(log, repositories.NewRegistry(database), backend)
 	authSvc := auth.NewService(log, auth.NewRegistry(database))
 	permsSvc := permissions.NewService(permissions.NewRegistry(database))
 	usersSvc := users.NewService(users.NewRegistry(database))
@@ -66,10 +66,11 @@ func TestGitHTTPEndToEnd(t *testing.T) {
 	}
 
 	// serve the git HTTP transport
-	srv := githttp.NewServer(log, repoRoot, githttp.Services{
+	srv := githttp.NewServer(log, githttp.Services{
 		Repositories:   repoSvc,
 		Authentication: authSvc,
 		Authorization:  permsSvc,
+		Backend:        backend,
 	})
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)

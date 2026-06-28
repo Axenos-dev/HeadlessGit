@@ -3,7 +3,7 @@ package git
 import (
 	"context"
 
-	"github.com/Axenos-dev/HeadlessGit/internal/gitcmd"
+	"github.com/Axenos-dev/HeadlessGit/internal/gitbackend"
 	"github.com/Axenos-dev/HeadlessGit/internal/server/git/githttp"
 	"github.com/Axenos-dev/HeadlessGit/internal/server/git/gitssh"
 	authservice "github.com/Axenos-dev/HeadlessGit/internal/services/auth"
@@ -17,7 +17,7 @@ type Services struct {
 	Repositories   *reposervice.Service
 	Authentication *authservice.Service
 	Authorization  *permsservice.Service
-	GitRunner      *gitcmd.Runner
+	Backend        *gitbackend.Local
 	LFS            *lfsservice.Service
 }
 
@@ -27,7 +27,7 @@ type Server struct {
 	ssh    *gitssh.Server
 }
 
-func NewServer(logger *zap.Logger, repoRoot, hostKeyPath string, svc Services) *Server {
+func NewServer(logger *zap.Logger, hostKeyPath string, svc Services) *Server {
 	httpLogger := logger.With(zap.String("transport", "http"))
 
 	// for git over ssh
@@ -38,14 +38,15 @@ func NewServer(logger *zap.Logger, repoRoot, hostKeyPath string, svc Services) *
 
 	return &Server{
 		logger: logger,
-		http: githttp.NewServer(httpLogger, repoRoot, githttp.Services{
+		http: githttp.NewServer(httpLogger, githttp.Services{
 			Repositories:   svc.Repositories,
 			Authentication: svc.Authentication,
 			Authorization:  svc.Authorization,
+			Backend:        svc.Backend,
 			LFS:            svc.LFS,
 		}),
 		ssh: gitssh.NewServer(logger.With(zap.String("transport", "ssh")), hostKeyPath, gitssh.Services{
-			Runner:         svc.GitRunner,
+			Backend:        svc.Backend,
 			Resolver:       svc.Repositories,
 			Authentication: svc.Authentication,
 			Minter:         svc.Authentication,

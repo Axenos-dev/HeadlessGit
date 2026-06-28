@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/domain"
+	"github.com/Axenos-dev/HeadlessGit/internal/gitbackend"
 	"github.com/Axenos-dev/HeadlessGit/internal/server/audit"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/ssh"
@@ -28,9 +29,8 @@ import (
 // how long an LFS bearer token handed back over SSH stays valid
 const lfsTokenTTL = 15 * time.Minute
 
-type GitRunner interface {
-	RunUploadPack(ctx context.Context, storagePath string, stdin io.Reader, stdout, stderr io.Writer) error
-	RunReceivePack(ctx context.Context, storagePath string, stdin io.Reader, stdout, stderr io.Writer) error
+type GitBackend interface {
+	Pack(ctx context.Context, storagePath string, svc gitbackend.Service, stateless bool, stdin io.Reader, stdout, stderr io.Writer) error
 }
 
 type RepositoryResolver interface {
@@ -54,7 +54,7 @@ type LFSEndpoints interface {
 }
 
 type Services struct {
-	Runner         GitRunner
+	Backend        GitBackend
 	Resolver       RepositoryResolver
 	Authentication Authenticator
 	Authorization  Authorizer
@@ -66,7 +66,7 @@ type Server struct {
 	logger      *zap.Logger
 	hostKeyPath string
 
-	runner   GitRunner
+	backend  GitBackend
 	resolver RepositoryResolver
 	auth     Authenticator
 	authz    Authorizer
@@ -78,7 +78,7 @@ func NewServer(logger *zap.Logger, hostKeyPath string, svc Services) *Server {
 	return &Server{
 		logger:      logger,
 		hostKeyPath: hostKeyPath,
-		runner:      svc.Runner,
+		backend:     svc.Backend,
 		resolver:    svc.Resolver,
 		auth:        svc.Authentication,
 		authz:       svc.Authorization,
@@ -269,9 +269,9 @@ func (s *Server) runGit(ctx context.Context, account domain.Account, ch ssh.Chan
 
 	switch subcommand {
 	case "git-upload-pack":
-		err = s.runner.RunUploadPack(ctx, resolved.StoragePath, ch, ch, ch.Stderr())
+		err = s.backend.Pack(ctx, resolved.StoragePath, gitbackend.UploadPack, false, ch, ch, ch.Stderr())
 	case "git-receive-pack":
-		err = s.runner.RunReceivePack(ctx, resolved.StoragePath, ch, ch, ch.Stderr())
+		err = s.backend.Pack(ctx, resolved.StoragePath, gitbackend.ReceivePack, false, ch, ch, ch.Stderr())
 	}
 	if err != nil {
 		s.logger.Warn("git command failed", zap.String("command", command), zap.Error(err))

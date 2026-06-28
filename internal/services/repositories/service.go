@@ -23,7 +23,7 @@ type Registry interface {
 }
 
 type RepositoryStorage interface {
-	InitBareRepository(ctx context.Context, storagePath string) error
+	InitBare(ctx context.Context, storagePath string) error
 	Remove(ctx context.Context, storagePath string) error
 }
 
@@ -67,7 +67,7 @@ func (s *Service) Create(ctx context.Context, ownerID int64, info domain.Reposit
 	}
 
 	// then initiate the bare repo
-	if err := s.storage.InitBareRepository(ctx, storagePath); err != nil {
+	if err := s.storage.InitBare(ctx, storagePath); err != nil {
 		// roll back the row (just delete) in case of an error
 		if delErr := s.registry.DeleteRepository(ctx, repo.ID); delErr != nil {
 			s.logger.Error(

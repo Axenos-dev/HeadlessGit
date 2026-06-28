@@ -1,30 +1,40 @@
 package smart
 
 import (
-	"net/http/httptest"
 	"testing"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/domain"
+	"github.com/Axenos-dev/HeadlessGit/internal/gitbackend"
 )
 
-func TestRequiredRole(t *testing.T) {
+func TestParseServiceAndRole(t *testing.T) {
 	cases := []struct {
 		name    string
 		service string
-		query   string
+		wantOK  bool
+		wantSvc gitbackend.Service
 		want    domain.Role
 	}{
-		{"upload-pack", "/git-upload-pack", "", domain.RoleRead},
-		{"receive-pack", "/git-receive-pack", "", domain.RoleWrite},
-		{"info/refs upload", "/info/refs", "service=git-upload-pack", domain.RoleRead},
-		{"info/refs receive", "/info/refs", "service=git-receive-pack", domain.RoleWrite},
+		{"upload-pack", "git-upload-pack", true, gitbackend.UploadPack, domain.RoleRead},
+		{"receive-pack", "git-receive-pack", true, gitbackend.ReceivePack, domain.RoleWrite},
+		{"empty", "", false, 0, ""},
+		{"unknown", "git-something", false, 0, ""},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest("GET", "/x?"+tc.query, nil)
-			if got := requiredRole(req, tc.service); got != tc.want {
-				t.Errorf("requiredRole(%q, ?%s) = %q, want %q", tc.service, tc.query, got, tc.want)
+			svc, ok := parseService(tc.service)
+			if ok != tc.wantOK {
+				t.Fatalf("parseService(%q) ok = %v, want %v", tc.service, ok, tc.wantOK)
+			}
+			if !ok {
+				return
+			}
+			if svc != tc.wantSvc {
+				t.Errorf("parseService(%q) = %v, want %v", tc.service, svc, tc.wantSvc)
+			}
+			if got := requiredRole(svc); got != tc.want {
+				t.Errorf("requiredRole(%v) = %q, want %q", svc, got, tc.want)
 			}
 		})
 	}

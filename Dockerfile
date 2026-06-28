@@ -12,10 +12,10 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /out/headles
 
 FROM alpine:3.20
 
-# git provides git-upload-pack / git-receive-pack; git-daemon provides
-# git-http-backend on Alpine. The server shells out to all three.
-# No openssh needed: the SSH server is built in.
-RUN apk add --no-cache git git-daemon ca-certificates
+# git provides git-upload-pack / git-receive-pack, which the server shells out to
+# for both SSH and smart HTTP. No git-daemon/git-http-backend needed: the HTTP
+# transport frames the smart protocol itself. No openssh: the SSH server is built in.
+RUN apk add --no-cache git ca-certificates
 
 # Bare repos arrive via a bind mount owned by the host UID; allow git to use
 # them regardless of owner.

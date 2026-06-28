@@ -53,11 +53,11 @@ Package map:
 | `internal/domain`             | Core types (repository, account, role, token, ssh key, lfs).                                                      |
 | `internal/services/*`         | Business logic per area (repositories, users, auth, permissions, lfs); each has a service + a registry over `db`. |
 | `internal/storage`            | LFS object storage behind an interface (`disk`, `s3`).                                                            |
-| `internal/gitcmd`             | Runs the system `git` subprocesses safely.                                                                        |
+| `internal/gitbackend`         | Git pack protocol behind a small interface (`Local` execs system `git`; future `RPC` to storage nodes).           |
 | `internal/server`             | Composition root: wires control + git servers, runs and shuts down listeners.                                     |
 | `internal/server/control`     | Control API (REST); sub-handlers in `repositories/`, `users/`, `permissions/`.                                    |
 | `internal/server/git/gitssh`  | Git-over-SSH transport (custom in-process SSH server).                                                            |
-| `internal/server/git/githttp` | Git-over-HTTP transport; `smart/` (git-http-backend) and `lfs/` (Batch API).                                      |
+| `internal/server/git/githttp` | Git-over-HTTP transport; `smart/` (smart-HTTP framing over the git backend) and `lfs/` (Batch API).               |
 | `internal/server/audit`       | Request-scoped audit event + HTTP middleware.                                                                     |
 | `internal/server/response`    | JSON envelope + error helpers for the control API.                                                                |
 
@@ -66,7 +66,9 @@ Package map:
 ### Git transport
 
 Use the system Git binary; do not reimplement protocol internals:
-`git-upload-pack` (fetch), `git-receive-pack` (push), `git-http-backend` (smart HTTP).
+`git-upload-pack` (fetch), `git-receive-pack` (push). Smart HTTP runs those same
+helpers with `--stateless-rpc`/`--advertise-refs` and frames the pkt-lines
+in-process (no `git-http-backend`/CGI), so both transports share one backend.
 
 ### Repo path safety
 
@@ -122,9 +124,9 @@ take a single `Services` struct, not a long positional list; `main` builds the
 concretes once.
 
 **HTTP.** One `net/http` + `chi` stack (no `fasthttp`/Fiber: the smart-HTTP path
-streams bodies to/from `git-http-backend`). The Git/LFS routes must stay
-streaming-safe — no body-size limits or body-buffering middleware. Health (`/healthz`)
-is unauthenticated and sits outside the audit chain.
+streams bodies to/from the `git-upload-pack`/`git-receive-pack` subprocesses). The
+Git/LFS routes must stay streaming-safe — no body-size limits or body-buffering
+middleware. Health (`/healthz`) is unauthenticated and sits outside the audit chain.
 
 **Logging.** `zap` structured logging. Never log secrets (tokens, webhook secrets,
 SSH key material, full auth headers). Each transport request emits one audit line:

@@ -23,13 +23,14 @@ type Services struct {
 	Repositories   *reposervice.Service
 	Authentication *authservice.Service
 	Authorization  *permsservice.Service
+	Backend        smart.GitBackend
 	LFS            *lfsservice.Service
 }
 
 type Server struct {
 	logger *zap.Logger
 
-	repoRoot string
+	backend smart.GitBackend
 
 	repos *reposervice.Service
 	auth  *authservice.Service
@@ -37,14 +38,14 @@ type Server struct {
 	lfs   *lfsservice.Service // nil if disabled
 }
 
-func NewServer(logger *zap.Logger, repoRoot string, svc Services) *Server {
+func NewServer(logger *zap.Logger, svc Services) *Server {
 	return &Server{
-		repoRoot: repoRoot,
-		logger:   logger,
-		auth:     svc.Authentication,
-		repos:    svc.Repositories,
-		perms:    svc.Authorization,
-		lfs:      svc.LFS,
+		logger:  logger,
+		auth:    svc.Authentication,
+		backend: svc.Backend,
+		repos:   svc.Repositories,
+		perms:   svc.Authorization,
+		lfs:     svc.LFS,
 	}
 }
 
@@ -82,7 +83,7 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) registerRoutes(r chi.Router) {
-	smart.NewHandlers(s.logger, s.repoRoot, s.repos, s.perms).RegisterRoutes(r)
+	smart.NewHandlers(s.logger, s.backend, s.repos, s.perms).RegisterRoutes(r)
 
 	// register LFS handlers if lfs service is provided
 	if s.lfs != nil {
