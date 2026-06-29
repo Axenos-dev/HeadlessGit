@@ -13,6 +13,7 @@ import (
 
 	"github.com/Axenos-dev/HeadlessGit/internal/db/gen"
 	"github.com/Axenos-dev/HeadlessGit/internal/domain"
+	"github.com/Axenos-dev/HeadlessGit/internal/storage"
 	"go.uber.org/zap"
 )
 
@@ -25,28 +26,20 @@ type Registry interface {
 	DeleteLFSObject(ctx context.Context, repositoryID int64, objectID string) error
 	SetLFSObjectVerified(ctx context.Context, repositoryID int64, objectID string, verified bool) (gen.LfsObject, error)
 }
-
-type ObjectStorage interface {
-	Stat(ctx context.Context, key string) (exists bool, size int64, err error)
-	Get(ctx context.Context, key string) (io.ReadCloser, error)
-	Put(ctx context.Context, key string, size int64, r io.Reader) error
-	Delete(ctx context.Context, key string) error
-}
-
-type Presigner interface {
-	PresignPut(ctx context.Context, key string, size int64, ttl time.Duration) (url string, header map[string]string, err error)
-	PresignGet(ctx context.Context, key string, ttl time.Duration) (url string, err error)
-}
-
 type Service struct {
 	logger   *zap.Logger
 	registry Registry
-	storage  ObjectStorage
+
+	storage storage.Storage
+	// both disk and S3 implements basic object storage,
+	// but S3, transparently able to to implement the presigner,
+	// so to check if it does, we just do:
+	// pre, ok := storage.(storage.Presigner)
 
 	publicURL string
 }
 
-func NewService(logger *zap.Logger, registry Registry, storage ObjectStorage, publicURL string) *Service {
+func NewService(logger *zap.Logger, registry Registry, storage storage.Storage, publicURL string) *Service {
 	return &Service{
 		logger:    logger,
 		registry:  registry,
@@ -153,7 +146,7 @@ func (s *Service) uploadActions(ctx context.Context, repo domain.Repository, lfs
 	verify := domain.LFSAction{Href: lfsBase + "/verify"}
 
 	// if we have presigner
-	if pre, ok := s.storage.(Presigner); ok {
+	if pre, ok := s.storage.(storage.Presigner); ok {
 		url, header, err := pre.PresignPut(ctx, objectKey(repo.ID, p.OID), p.Size, presignTTL)
 		if err != nil {
 			return nil, err
@@ -173,7 +166,7 @@ func (s *Service) uploadActions(ctx context.Context, repo domain.Repository, lfs
 }
 
 func (s *Service) downloadAction(ctx context.Context, repo domain.Repository, lfsBase, oid string) (domain.LFSAction, error) {
-	if pre, ok := s.storage.(Presigner); ok {
+	if pre, ok := s.storage.(storage.Presigner); ok {
 		url, err := pre.PresignGet(ctx, objectKey(repo.ID, oid), presignTTL)
 		if err != nil {
 			return domain.LFSAction{}, err

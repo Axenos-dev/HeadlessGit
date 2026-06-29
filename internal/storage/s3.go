@@ -10,17 +10,16 @@ import (
 	"time"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/config"
-	"github.com/Axenos-dev/HeadlessGit/internal/services/lfs"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
 var (
-	_ lfs.ObjectStorage = (*S3)(nil)
-	_ lfs.Presigner     = (*S3)(nil)
+	_ Storage   = (*S3)(nil)
+	_ Presigner = (*S3)(nil)
 )
 
-// implements both the services/lfs ObjectStorage and Presigner interfaces
+// implements the object Storage contract plus the optional Presigner capability
 type S3 struct {
 	client *minio.Client
 	bucket string

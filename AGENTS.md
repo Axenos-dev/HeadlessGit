@@ -10,13 +10,12 @@ It provides:
 
 - Git over SSH and HTTP (clone / fetch / push).
 - Git LFS (object transfer over HTTP; disk or S3 storage).
-- A control API to manage repositories, users, SSH keys, tokens, and permissions.
+- A control API to manage repositories, users, SSH keys, tokens, permissions, and webhooks.
 - A `read` / `write` / `admin` permission model enforced before every Git operation.
+- Push webhooks, signed and delivered off the push path.
 
 Out of scope unless explicitly requested: issues, pull requests, wikis, CI/actions,
 stars, social profiles, a repo-browsing UI, package registries.
-
-Push webhooks are specified but **not yet implemented** — see [Planned: webhooks](#planned-webhooks).
 
 ## Commands
 
@@ -142,11 +141,20 @@ widely-used packages. Acceptable areas: SSH server library, HTTP router/middlewa
 (`chi`), SQLite driver/query tooling, structured logging, config loading, object
 storage clients. Do not roll your own SSH or Git protocol implementation.
 
-## Planned: webhooks
+## Webhooks
 
-Not yet implemented. When built:
-
-- Emit a push webhook only **after** a successful push, off the push path (an
-  in-process background queue with bounded retries — no external job system).
-- Payload includes at least: `event`, `repo_id`, `ref`, `old_sha`, `new_sha`, `pusher_id`.
-- Sign each delivery with a per-webhook secret (constant-time comparison).
+- Emitted only **after** a successful push, off the push path: receive-pack runs,
+  `gitbackend` diffs the repo's refs before/after, and the transport hands the
+  changes to the webhooks service. Delivery is an in-process bounded queue with
+  worker goroutines and retries — no external job system.
+- One delivery per changed ref. Payload is self-describing: `event`, `ref`,
+  `before`/`after`, `created`/`deleted`, a `repository` object (`id`, `name`,
+  `full_name`), a `pusher` object (`id`, `username`), and `timestamp`. Creates/
+  deletes use the all-zero SHA for the missing side.
+- Each delivery is signed with the per-webhook secret: `X-HeadlessGit-Signature:
+  sha256=<hmac>` over the raw body. The secret is generated server-side and
+  returned once at registration; it is stored recoverably (needed to sign), unlike
+  hashed tokens.
+- Registered per repo via the control API; webhook detection lives in `gitbackend`
+  (refs), the service in `internal/services/webhooks`, dispatch at the receive-pack
+  call sites.

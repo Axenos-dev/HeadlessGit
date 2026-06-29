@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/domain"
 	"github.com/Axenos-dev/HeadlessGit/internal/gitbackend"
@@ -26,23 +27,30 @@ type Authorizer interface {
 
 type GitBackend interface {
 	AdvertiseRefs(ctx context.Context, storagePath string, svc gitbackend.Service, stdout io.Writer) error
-	Pack(ctx context.Context, storagePath string, svc gitbackend.Service, stateless bool, stdin io.Reader, stdout, stderr io.Writer) error
+	UploadPack(ctx context.Context, storagePath string, stateless bool, stdin io.Reader, stdout, stderr io.Writer) error
+	ReceivePack(ctx context.Context, storagePath string, stateless bool, stdin io.Reader, stdout, stderr io.Writer) ([]gitbackend.RefChange, error)
+}
+
+type Dispatcher interface {
+	DispatchEvent(ctx context.Context, event domain.RepositoryEvent) error
 }
 
 type Handlers struct {
 	logger *zap.Logger
 
-	backend  GitBackend
-	resolver RepositoryResolver
-	authz    Authorizer
+	backend    GitBackend
+	resolver   RepositoryResolver
+	authz      Authorizer
+	dispatcher Dispatcher
 }
 
-func NewHandlers(logger *zap.Logger, backend GitBackend, resolver RepositoryResolver, authz Authorizer) *Handlers {
+func NewHandlers(logger *zap.Logger, backend GitBackend, resolver RepositoryResolver, authz Authorizer, dispatcher Dispatcher) *Handlers {
 	return &Handlers{
-		logger:   logger,
-		backend:  backend,
-		resolver: resolver,
-		authz:    authz,
+		logger:     logger,
+		backend:    backend,
+		resolver:   resolver,
+		authz:      authz,
+		dispatcher: dispatcher,
 	}
 }
 
@@ -145,12 +153,49 @@ func (h *Handlers) pack(svc gitbackend.Service) http.HandlerFunc {
 		w.Header().Set("Cache-Control", "no-cache")
 
 		var stderr strings.Builder
-		if err := h.backend.Pack(r.Context(), repo.StoragePath, svc, true, body, w, &stderr); err != nil {
+		switch svc {
+		case gitbackend.ReceivePack:
+			var changes []gitbackend.RefChange
+			changes, err = h.backend.ReceivePack(r.Context(), repo.StoragePath, true, body, w, &stderr)
+			if err == nil {
+				namespace := chi.URLParam(r, "namespace")
+				h.dispatchPush(r.Context(), repo, namespace, middleware.AccountFromContext(r.Context()), changes)
+			}
+		case gitbackend.UploadPack:
+			err = h.backend.UploadPack(r.Context(), repo.StoragePath, true, body, w, &stderr)
+		}
+		if err != nil {
 			h.logger.Warn("git pack failed",
 				zap.String("service", svc.Name()),
 				zap.String("stderr", strings.TrimSpace(stderr.String())),
 				zap.Error(err),
 			)
+		}
+	}
+}
+
+func (h *Handlers) dispatchPush(ctx context.Context, repo domain.Repository, namespace string, account *domain.Account, changes []gitbackend.RefChange) {
+	if h.dispatcher == nil {
+		return
+	}
+
+	fullName := namespace + "/" + repo.RepositoryName
+
+	for _, c := range changes {
+		err := h.dispatcher.DispatchEvent(ctx, domain.RepositoryEvent{
+			Event:              "push",
+			RepositoryID:       repo.ID,
+			RepositoryName:     repo.RepositoryName,
+			RepositoryFullName: fullName,
+			PusherID:           account.UserID,
+			PusherUsername:     account.Username,
+			Ref:                c.Ref,
+			OldSHA:             c.OldSHA,
+			NewSHA:             c.NewSHA,
+			Timestamp:          time.Now().UTC(),
+		})
+		if err != nil {
+			h.logger.Warn("failed to enqueue webhook event", zap.String("ref", c.Ref), zap.Error(err))
 		}
 	}
 }
