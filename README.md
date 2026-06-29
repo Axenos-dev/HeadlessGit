@@ -59,6 +59,10 @@ An account is either a `user` (a human with a Git client) or a `service` (a mach
 - Treat `ADMIN_TOKEN` as a secret. Rotate it by changing the env value and restarting the service (to reseed the admin account).
 - Persist `/data` (bare repos, the SQLite file, and the SSH host key all live there).
 
+### Repository storage
+
+Today, bare repositories are stored on the local filesystem under `REPO_ROOT`. Support for keeping repositories on dedicated storage nodes over RPC is planned.
+
 ## Configuration
 
 All configuration is via environment variables.
