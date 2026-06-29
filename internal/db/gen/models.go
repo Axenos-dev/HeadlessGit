@@ -65,3 +65,12 @@ type User struct {
 	CreatedAtUnixMs int64
 	UpdatedAtUnixMs sql.NullInt64
 }
+
+type Webhook struct {
+	ID              int64
+	RepositoryID    int64
+	Secret          string
+	Url             string
+	CreatedAtUnixMs int64
+	UpdatedAtUnixMs sql.NullInt64
+}
