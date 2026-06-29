@@ -141,6 +141,7 @@ func (s *Service) sendWebhook(ctx context.Context, webhook domain.Webhook, event
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "headlessgit")
+	req.Header.Set("X-HeadlessGit-Event", event.Event)
 	req.Header.Set("X-HeadlessGit-Delivery", deliveryID())
 	// HMAC-SHA256 of the raw body, keyed by the webhook secret
 	// receivers recompute it to verify the delivery is authentic

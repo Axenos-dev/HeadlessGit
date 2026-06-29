@@ -12,6 +12,7 @@ Basically, this is a Git layer of infrastructure you'd put _underneath_ a projec
 - **Git LFS** for large files, with object storage on local disk or any S3-compatible bucket (AWS S3, Cloudflare R2, MinIO).
 - A small **control API**, RESTful api to manage repositories, users, SSH keys, tokens, and permissions.
 - Simple **permission model** (`read` / `write` / `admin`) enforced before every Git operation.
+- **Push webhooks** — signed deliveries on every successful push.
 - Bare-repository storage on a filesystem, with SQLite for metadata.
 
 ## Example
@@ -106,34 +107,74 @@ Every request requires `Authorization: Bearer <ADMIN_TOKEN>`. Responses are enve
 
 **Accounts & credentials**
 
-| Method   | Path                              | Body                 | Description                                                   |
-| -------- | --------------------------------- | -------------------- | ------------------------------------------------------------ |
-| `POST`   | `/users`                          | `{username, kind}`   | Create a user/service account (`kind`: `user` \| `service`). |
-| `GET`    | `/users/{id}`                     | —                    | Get an account.                                              |
-| `GET`    | `/users/{id}/repositories`        | —                    | List repositories owned by the account.                     |
-| `POST`   | `/users/{id}/ssh-keys`            | `{title, publicKey}` | Register an SSH public key.                                  |
-| `GET`    | `/users/{id}/ssh-keys`            | —                    | List the account's SSH keys.                                 |
-| `DELETE` | `/users/{id}/ssh-keys/{keyId}`    | —                    | Revoke an SSH key.                                           |
-| `POST`   | `/users/{id}/tokens`              | `{title}`            | Mint a token; the raw value is returned **once**.           |
-| `GET`    | `/users/{id}/tokens`              | —                    | List the account's tokens (never the secret).               |
-| `DELETE` | `/users/{id}/tokens/{tokenId}`    | —                    | Revoke a single token.                                       |
-| `DELETE` | `/users/{id}/tokens`              | —                    | Revoke **all** of the account's tokens.                     |
+| Method   | Path                           | Body                 | Description                                                  |
+| -------- | ------------------------------ | -------------------- | ------------------------------------------------------------ |
+| `POST`   | `/users`                       | `{username, kind}`   | Create a user/service account (`kind`: `user` \| `service`). |
+| `GET`    | `/users/{id}`                  | —                    | Get an account.                                              |
+| `GET`    | `/users/{id}/repositories`     | —                    | List repositories owned by the account.                      |
+| `POST`   | `/users/{id}/ssh-keys`         | `{title, publicKey}` | Register an SSH public key.                                  |
+| `GET`    | `/users/{id}/ssh-keys`         | —                    | List the account's SSH keys.                                 |
+| `DELETE` | `/users/{id}/ssh-keys/{keyId}` | —                    | Revoke an SSH key.                                           |
+| `POST`   | `/users/{id}/tokens`           | `{title}`            | Mint a token; the raw value is returned **once**.            |
+| `GET`    | `/users/{id}/tokens`           | —                    | List the account's tokens (never the secret).                |
+| `DELETE` | `/users/{id}/tokens/{tokenId}` | —                    | Revoke a single token.                                       |
+| `DELETE` | `/users/{id}/tokens`           | —                    | Revoke **all** of the account's tokens.                      |
 
 **Repositories & permissions**
 
-| Method   | Path                                       | Body                          | Description                                                      |
-| -------- | ------------------------------------------ | ----------------------------- | ---------------------------------------------------------------- |
-| `POST`   | `/repositories`                            | `{ownerId, name, visibility}` | Create a repository (`visibility`: `public` \| `private`).       |
-| `GET`    | `/repositories/{id}`                       | —                             | Get repository metadata.                                         |
-| `PUT`    | `/repositories/{id}/visibility`            | `{visibility}`                | Change visibility (`public` \| `private`).                       |
-| `DELETE` | `/repositories/{id}`                       | —                             | Delete a repository (row + bare repo).                          |
-| `GET`    | `/repositories/{id}/permissions`           | —                             | List collaborators.                                             |
-| `PUT`    | `/repositories/{id}/permissions`           | `{userId, role}`              | Grant/update a collaborator role (`read` \| `write` \| `admin`). |
-| `DELETE` | `/repositories/{id}/permissions/{userId}`  | —                             | Revoke a collaborator.                                          |
+| Method   | Path                                      | Body                          | Description                                                       |
+| -------- | ----------------------------------------- | ----------------------------- | ----------------------------------------------------------------- |
+| `POST`   | `/repositories`                           | `{ownerId, name, visibility}` | Create a repository (`visibility`: `public` \| `private`).        |
+| `GET`    | `/repositories/{id}`                      | —                             | Get repository metadata.                                          |
+| `PUT`    | `/repositories/{id}/visibility`           | `{visibility}`                | Change visibility (`public` \| `private`).                        |
+| `DELETE` | `/repositories/{id}`                      | —                             | Delete a repository (row + bare repo).                            |
+| `GET`    | `/repositories/{id}/permissions`          | —                             | List collaborators.                                               |
+| `PUT`    | `/repositories/{id}/permissions`          | `{userId, role}`              | Grant/update a collaborator role (`read` \| `write` \| `admin`).  |
+| `DELETE` | `/repositories/{id}/permissions/{userId}` | —                             | Revoke a collaborator.                                            |
+| `POST`   | `/repositories/{id}/webhooks`             | `{url}`                       | Register a push webhook; the signing secret is returned **once**. |
+| `DELETE` | `/repositories/{id}/webhooks/{hookId}`    | —                             | Delete a webhook.                                                 |
 
 ### Health
 
 The control port also serves an unauthenticated `GET /healthz` readiness probe. It returns `200 {"status":"ok"}` when the database is reachable and `503 {"status":"unavailable"}` otherwise, and backs the container `HEALTHCHECK`.
+
+## Webhooks
+
+Register a webhook on a repository and `headlessgit` will `POST` to it after every successful push.
+
+One delivery is sent **per changed ref** (a branch/tag create, update, or delete — not per file or commit). The JSON body:
+
+```json
+{
+  "event": "push",
+  "repository_id": 6,
+  "ref": "refs/heads/main",
+  "old_sha": "0000000000000000000000000000000000000000",
+  "new_sha": "344018f5c8bce597cfb1b13058edc688f3a13230",
+  "pusher_id": 7
+}
+```
+
+Creates and deletes use the all-zero SHA for the missing side (`old_sha` on a create, `new_sha` on a delete).
+
+Each request carries these headers:
+
+| Header                    | Value                                                                         |
+| ------------------------- | ----------------------------------------------------------------------------- |
+| `X-HeadlessGit-Event`     | `push`                                                                        |
+| `X-HeadlessGit-Delivery`  | Unique id for this delivery attempt.                                          |
+| `X-HeadlessGit-Signature` | `sha256=<hex>` — HMAC-SHA256 of the **raw body** keyed by the webhook secret. |
+
+Verify a delivery by recomputing the HMAC over the exact request body with the secret returned at registration, e.g.:
+
+```go
+mac := hmac.New(sha256.New, []byte(secret))
+mac.Write(body)
+expected := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+ok := hmac.Equal([]byte(expected), []byte(r.Header.Get("X-HeadlessGit-Signature")))
+```
+
+The secret is generated server-side and shown **once** in the registration response.
 
 ## Development
 

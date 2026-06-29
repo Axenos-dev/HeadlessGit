@@ -10,6 +10,7 @@ import (
 	permhandlers "github.com/Axenos-dev/HeadlessGit/internal/server/control/permissions"
 	repohandlers "github.com/Axenos-dev/HeadlessGit/internal/server/control/repositories"
 	userhandlers "github.com/Axenos-dev/HeadlessGit/internal/server/control/users"
+	webhookhandlers "github.com/Axenos-dev/HeadlessGit/internal/server/control/webhooks"
 	authservice "github.com/Axenos-dev/HeadlessGit/internal/services/auth"
 	permsservice "github.com/Axenos-dev/HeadlessGit/internal/services/permissions"
 	reposervice "github.com/Axenos-dev/HeadlessGit/internal/services/repositories"
@@ -100,4 +101,5 @@ func (s *Server) registerRoutes(r chi.Router) {
 	repohandlers.NewHandlers(s.logger, s.repos).RegisterRoutes(r)
 	userhandlers.NewHandlers(s.logger, s.users, s.auth).RegisterRoutes(r)
 	permhandlers.NewHandlers(s.logger, s.perms).RegisterRoutes(r)
+	webhookhandlers.NewHandlers(s.logger, s.webhooks).RegisterRoutes(r)
 }
