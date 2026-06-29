@@ -125,6 +125,10 @@ func (s *Service) sendWebhook(ctx context.Context, webhook domain.Webhook, event
 	body, err := json.Marshal(WebhookPayload{
 		Event:        event.Event,
 		RepositoryID: event.RepositoryID,
+		Ref:          event.Ref,
+		OldSHA:       event.OldSHA,
+		NewSHA:       event.NewSHA,
+		PusherID:     event.PusherID,
 	})
 	if err != nil {
 		return err

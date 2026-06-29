@@ -10,6 +10,7 @@ import (
 	lfsservice "github.com/Axenos-dev/HeadlessGit/internal/services/lfs"
 	permsservice "github.com/Axenos-dev/HeadlessGit/internal/services/permissions"
 	reposervice "github.com/Axenos-dev/HeadlessGit/internal/services/repositories"
+	webhooksservice "github.com/Axenos-dev/HeadlessGit/internal/services/webhooks"
 	"go.uber.org/zap"
 )
 
@@ -17,8 +18,9 @@ type Services struct {
 	Repositories   *reposervice.Service
 	Authentication *authservice.Service
 	Authorization  *permsservice.Service
-	Backend        *gitbackend.Local
+	Backend        gitbackend.Backend
 	LFS            *lfsservice.Service
+	Webhooks       *webhooksservice.Service
 }
 
 type Server struct {
@@ -44,6 +46,7 @@ func NewServer(logger *zap.Logger, hostKeyPath string, svc Services) *Server {
 			Authorization:  svc.Authorization,
 			Backend:        svc.Backend,
 			LFS:            svc.LFS,
+			Dispatcher:     svc.Webhooks,
 		}),
 		ssh: gitssh.NewServer(logger.With(zap.String("transport", "ssh")), hostKeyPath, gitssh.Services{
 			Backend:        svc.Backend,
@@ -52,6 +55,7 @@ func NewServer(logger *zap.Logger, hostKeyPath string, svc Services) *Server {
 			Minter:         svc.Authentication,
 			Authorization:  svc.Authorization,
 			LFS:            lfsEndpoints,
+			Dispatcher:     svc.Webhooks,
 		}),
 	}
 }

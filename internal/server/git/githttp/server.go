@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Axenos-dev/HeadlessGit/internal/gitbackend"
 	"github.com/Axenos-dev/HeadlessGit/internal/server/audit"
 	"github.com/Axenos-dev/HeadlessGit/internal/server/git/githttp/lfs"
 	"github.com/Axenos-dev/HeadlessGit/internal/server/git/githttp/middleware"
@@ -14,6 +15,7 @@ import (
 	lfsservice "github.com/Axenos-dev/HeadlessGit/internal/services/lfs"
 	permsservice "github.com/Axenos-dev/HeadlessGit/internal/services/permissions"
 	reposervice "github.com/Axenos-dev/HeadlessGit/internal/services/repositories"
+	webhooksservice "github.com/Axenos-dev/HeadlessGit/internal/services/webhooks"
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	"go.uber.org/zap"
@@ -23,29 +25,32 @@ type Services struct {
 	Repositories   *reposervice.Service
 	Authentication *authservice.Service
 	Authorization  *permsservice.Service
-	Backend        smart.GitBackend
+	Backend        gitbackend.Backend
 	LFS            *lfsservice.Service
+	Dispatcher     *webhooksservice.Service
 }
 
 type Server struct {
 	logger *zap.Logger
 
-	backend smart.GitBackend
+	backend gitbackend.Backend
 
-	repos *reposervice.Service
-	auth  *authservice.Service
-	perms *permsservice.Service
-	lfs   *lfsservice.Service // nil if disabled
+	dispatcher *webhooksservice.Service
+	repos      *reposervice.Service
+	auth       *authservice.Service
+	perms      *permsservice.Service
+	lfs        *lfsservice.Service // nil if disabled
 }
 
 func NewServer(logger *zap.Logger, svc Services) *Server {
 	return &Server{
-		logger:  logger,
-		auth:    svc.Authentication,
-		backend: svc.Backend,
-		repos:   svc.Repositories,
-		perms:   svc.Authorization,
-		lfs:     svc.LFS,
+		logger:     logger,
+		auth:       svc.Authentication,
+		backend:    svc.Backend,
+		dispatcher: svc.Dispatcher,
+		repos:      svc.Repositories,
+		perms:      svc.Authorization,
+		lfs:        svc.LFS,
 	}
 }
 
@@ -83,7 +88,7 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) registerRoutes(r chi.Router) {
-	smart.NewHandlers(s.logger, s.backend, s.repos, s.perms).RegisterRoutes(r)
+	smart.NewHandlers(s.logger, s.backend, s.repos, s.perms, s.dispatcher).RegisterRoutes(r)
 
 	// register LFS handlers if lfs service is provided
 	if s.lfs != nil {

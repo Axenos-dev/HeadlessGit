@@ -17,6 +17,7 @@ import (
 	"github.com/Axenos-dev/HeadlessGit/internal/services/permissions"
 	"github.com/Axenos-dev/HeadlessGit/internal/services/repositories"
 	"github.com/Axenos-dev/HeadlessGit/internal/services/users"
+	"github.com/Axenos-dev/HeadlessGit/internal/services/webhooks"
 	"github.com/Axenos-dev/HeadlessGit/internal/storage"
 	"go.uber.org/zap"
 )
@@ -92,6 +93,11 @@ func main() {
 		)
 	}
 
+	webhooksService := webhooks.NewService(
+		root.With(zap.String("service", "webhooks")),
+		webhooks.NewRegistry(db),
+	)
+
 	ctx, stop := signal.NotifyContext(
 		context.Background(),
 		syscall.SIGINT,
@@ -104,6 +110,7 @@ func main() {
 		Users:          usersService,
 		Authentication: authService,
 		Authorization:  permsService,
+		Webhooks:       webhooksService,
 		GitBackend:     gitBackend,
 		LFS:            lfsService,
 		DB:             db,
@@ -113,7 +120,7 @@ func main() {
 	}
 }
 
-func newLFSStorage(cfg config.LFSConfig) (lfs.ObjectStorage, error) {
+func newLFSStorage(cfg config.LFSConfig) (storage.Storage, error) {
 	switch cfg.StorageType {
 	case "disk":
 		return storage.NewDisk(cfg.Root)

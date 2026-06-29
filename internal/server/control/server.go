@@ -14,6 +14,7 @@ import (
 	permsservice "github.com/Axenos-dev/HeadlessGit/internal/services/permissions"
 	reposervice "github.com/Axenos-dev/HeadlessGit/internal/services/repositories"
 	usersservice "github.com/Axenos-dev/HeadlessGit/internal/services/users"
+	webhooksservice "github.com/Axenos-dev/HeadlessGit/internal/services/webhooks"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"go.uber.org/zap"
@@ -29,27 +30,30 @@ type Services struct {
 	Authentication *authservice.Service
 	Authorization  *permsservice.Service
 	Users          *usersservice.Service
+	Webhooks       *webhooksservice.Service
 	Health         HealthChecker
 }
 
 type Server struct {
 	logger *zap.Logger
 
-	repos  *reposervice.Service
-	users  *usersservice.Service
-	auth   *authservice.Service
-	perms  *permsservice.Service
-	health HealthChecker
+	repos    *reposervice.Service
+	users    *usersservice.Service
+	auth     *authservice.Service
+	perms    *permsservice.Service
+	webhooks *webhooksservice.Service
+	health   HealthChecker
 }
 
 func NewServer(logger *zap.Logger, svc Services) *Server {
 	return &Server{
-		logger: logger,
-		repos:  svc.Repositories,
-		users:  svc.Users,
-		auth:   svc.Authentication,
-		perms:  svc.Authorization,
-		health: svc.Health,
+		logger:   logger,
+		repos:    svc.Repositories,
+		users:    svc.Users,
+		auth:     svc.Authentication,
+		perms:    svc.Authorization,
+		webhooks: svc.Webhooks,
+		health:   svc.Health,
 	}
 }
 

@@ -30,7 +30,12 @@ import (
 const lfsTokenTTL = 15 * time.Minute
 
 type GitBackend interface {
-	Pack(ctx context.Context, storagePath string, svc gitbackend.Service, stateless bool, stdin io.Reader, stdout, stderr io.Writer) error
+	UploadPack(ctx context.Context, storagePath string, stateless bool, stdin io.Reader, stdout, stderr io.Writer) error
+	ReceivePack(ctx context.Context, storagePath string, stateless bool, stdin io.Reader, stdout, stderr io.Writer) ([]gitbackend.RefChange, error)
+}
+
+type Dispatcher interface {
+	DispatchEvent(ctx context.Context, event domain.RepositoryEvent) error
 }
 
 type RepositoryResolver interface {
@@ -60,18 +65,20 @@ type Services struct {
 	Authorization  Authorizer
 	Minter         TokenMinter
 	LFS            LFSEndpoints
+	Dispatcher     Dispatcher
 }
 
 type Server struct {
 	logger      *zap.Logger
 	hostKeyPath string
 
-	backend  GitBackend
-	resolver RepositoryResolver
-	auth     Authenticator
-	authz    Authorizer
-	minter   TokenMinter
-	lfs      LFSEndpoints // nil if LFS is disabled
+	backend    GitBackend
+	resolver   RepositoryResolver
+	auth       Authenticator
+	authz      Authorizer
+	minter     TokenMinter
+	lfs        LFSEndpoints // nil if LFS is disabled
+	dispatcher Dispatcher
 }
 
 func NewServer(logger *zap.Logger, hostKeyPath string, svc Services) *Server {
@@ -84,6 +91,7 @@ func NewServer(logger *zap.Logger, hostKeyPath string, svc Services) *Server {
 		authz:       svc.Authorization,
 		minter:      svc.Minter,
 		lfs:         svc.LFS,
+		dispatcher:  svc.Dispatcher,
 	}
 }
 
@@ -269,9 +277,13 @@ func (s *Server) runGit(ctx context.Context, account domain.Account, ch ssh.Chan
 
 	switch subcommand {
 	case "git-upload-pack":
-		err = s.backend.Pack(ctx, resolved.StoragePath, gitbackend.UploadPack, false, ch, ch, ch.Stderr())
+		err = s.backend.UploadPack(ctx, resolved.StoragePath, false, ch, ch, ch.Stderr())
 	case "git-receive-pack":
-		err = s.backend.Pack(ctx, resolved.StoragePath, gitbackend.ReceivePack, false, ch, ch, ch.Stderr())
+		var changes []gitbackend.RefChange
+		changes, err = s.backend.ReceivePack(ctx, resolved.StoragePath, false, ch, ch, ch.Stderr())
+		if err == nil {
+			s.dispatchPush(ctx, resolved.ID, account.UserID, changes)
+		}
 	}
 	if err != nil {
 		s.logger.Warn("git command failed", zap.String("command", command), zap.Error(err))
@@ -281,6 +293,25 @@ func (s *Server) runGit(ctx context.Context, account domain.Account, ch ssh.Chan
 
 	e.Result = "ok"
 	sendExit(ch, 0)
+}
+
+func (s *Server) dispatchPush(ctx context.Context, repoID, pusherID int64, changes []gitbackend.RefChange) {
+	if s.dispatcher == nil {
+		return
+	}
+	for _, c := range changes {
+		err := s.dispatcher.DispatchEvent(ctx, domain.RepositoryEvent{
+			RepositoryID: repoID,
+			Event:        "push",
+			Ref:          c.Ref,
+			OldSHA:       c.OldSHA,
+			NewSHA:       c.NewSHA,
+			PusherID:     pusherID,
+		})
+		if err != nil {
+			s.logger.Warn("failed to enqueue webhook event", zap.String("ref", c.Ref), zap.Error(err))
+		}
+	}
 }
 
 func (s *Server) runLFSAuthenticate(ctx context.Context, account domain.Account, ch ssh.Channel, command string) {

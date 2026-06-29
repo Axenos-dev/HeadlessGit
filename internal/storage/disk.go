@@ -9,16 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/Axenos-dev/HeadlessGit/internal/services/lfs"
 )
 
-var (
-	_ lfs.ObjectStorage = (*Disk)(nil)
-)
+var _ Storage = (*Disk)(nil)
 
-// filesystem-backed object store
-// implements the services/lfs ObjectStorage interface
+// filesystem-backed object store, implements Storage
 type Disk struct {
 	root string
 }
