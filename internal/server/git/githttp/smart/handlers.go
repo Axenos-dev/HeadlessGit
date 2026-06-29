@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/domain"
 	"github.com/Axenos-dev/HeadlessGit/internal/gitbackend"
@@ -157,7 +158,8 @@ func (h *Handlers) pack(svc gitbackend.Service) http.HandlerFunc {
 			var changes []gitbackend.RefChange
 			changes, err = h.backend.ReceivePack(r.Context(), repo.StoragePath, true, body, w, &stderr)
 			if err == nil {
-				h.dispatchPush(r.Context(), repo.ID, changes)
+				namespace := chi.URLParam(r, "namespace")
+				h.dispatchPush(r.Context(), repo, namespace, middleware.AccountFromContext(r.Context()), changes)
 			}
 		case gitbackend.UploadPack:
 			err = h.backend.UploadPack(r.Context(), repo.StoragePath, true, body, w, &stderr)
@@ -172,24 +174,25 @@ func (h *Handlers) pack(svc gitbackend.Service) http.HandlerFunc {
 	}
 }
 
-func (h *Handlers) dispatchPush(ctx context.Context, repoID int64, changes []gitbackend.RefChange) {
+func (h *Handlers) dispatchPush(ctx context.Context, repo domain.Repository, namespace string, account *domain.Account, changes []gitbackend.RefChange) {
 	if h.dispatcher == nil {
 		return
 	}
 
-	var pusherID int64
-	if account := middleware.AccountFromContext(ctx); account != nil {
-		pusherID = account.UserID
-	}
+	fullName := namespace + "/" + repo.RepositoryName
 
 	for _, c := range changes {
 		err := h.dispatcher.DispatchEvent(ctx, domain.RepositoryEvent{
-			RepositoryID: repoID,
-			Event:        "push",
-			Ref:          c.Ref,
-			OldSHA:       c.OldSHA,
-			NewSHA:       c.NewSHA,
-			PusherID:     pusherID,
+			Event:              "push",
+			RepositoryID:       repo.ID,
+			RepositoryName:     repo.RepositoryName,
+			RepositoryFullName: fullName,
+			PusherID:           account.UserID,
+			PusherUsername:     account.Username,
+			Ref:                c.Ref,
+			OldSHA:             c.OldSHA,
+			NewSHA:             c.NewSHA,
+			Timestamp:          time.Now().UTC(),
 		})
 		if err != nil {
 			h.logger.Warn("failed to enqueue webhook event", zap.String("ref", c.Ref), zap.Error(err))

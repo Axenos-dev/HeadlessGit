@@ -147,15 +147,22 @@ One delivery is sent **per changed ref** (a branch/tag create, update, or delete
 ```json
 {
   "event": "push",
-  "repository_id": 6,
   "ref": "refs/heads/main",
-  "old_sha": "0000000000000000000000000000000000000000",
-  "new_sha": "344018f5c8bce597cfb1b13058edc688f3a13230",
-  "pusher_id": 7
+  "before": "0000000000000000000000000000000000000000",
+  "after": "344018f5c8bce597cfb1b13058edc688f3a13230",
+  "created": true,
+  "deleted": false,
+  "repository": {
+    "id": 6,
+    "name": "HeadlessGit",
+    "full_name": "Axenos-dev/HeadlessGit"
+  },
+  "pusher": { "id": 7, "username": "Axenos-dev" },
+  "timestamp": "2026-06-29T19:06:48Z"
 }
 ```
 
-Creates and deletes use the all-zero SHA for the missing side (`old_sha` on a create, `new_sha` on a delete).
+`before`/`after` are the ref's SHAs around the push; a create has `before` all-zero (`created: true`), a delete has `after` all-zero (`deleted: true`). `repository.full_name` is `namespace/name`.
 
 Each request carries these headers:
 

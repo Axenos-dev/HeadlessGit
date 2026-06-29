@@ -12,11 +12,18 @@ type Webhook struct {
 }
 
 type RepositoryEvent struct {
-	RepositoryID int64
-	PusherID     int64
-	Event        string
+	Event string
+
+	RepositoryID       int64
+	RepositoryName     string
+	RepositoryFullName string // namespace/name
+
+	PusherID       int64
+	PusherUsername string
 
 	Ref    string
 	OldSHA string
 	NewSHA string
+
+	Timestamp time.Time
 }

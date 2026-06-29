@@ -122,14 +122,7 @@ func (s *Service) handleEvent(ctx context.Context, event domain.RepositoryEvent)
 }
 
 func (s *Service) sendWebhook(ctx context.Context, webhook domain.Webhook, event domain.RepositoryEvent) error {
-	body, err := json.Marshal(WebhookPayload{
-		Event:        event.Event,
-		RepositoryID: event.RepositoryID,
-		Ref:          event.Ref,
-		OldSHA:       event.OldSHA,
-		NewSHA:       event.NewSHA,
-		PusherID:     event.PusherID,
-	})
+	body, err := json.Marshal(newWebhookPayload(event))
 	if err != nil {
 		return err
 	}
