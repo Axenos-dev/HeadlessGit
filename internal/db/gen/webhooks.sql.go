@@ -39,11 +39,16 @@ func (q *Queries) CreateWebhook(ctx context.Context, arg CreateWebhookParams) (W
 
 const deleteWebhook = `-- name: DeleteWebhook :exec
 delete from webhooks
-where id=?
+where id=? and repository_id=?
 `
 
-func (q *Queries) DeleteWebhook(ctx context.Context, id int64) error {
-	_, err := q.db.ExecContext(ctx, deleteWebhook, id)
+type DeleteWebhookParams struct {
+	ID           int64
+	RepositoryID int64
+}
+
+func (q *Queries) DeleteWebhook(ctx context.Context, arg DeleteWebhookParams) error {
+	_, err := q.db.ExecContext(ctx, deleteWebhook, arg.ID, arg.RepositoryID)
 	return err
 }
 

@@ -11,4 +11,4 @@ where repository_id=?;
 
 -- name: DeleteWebhook :exec
 delete from webhooks
-where id=?;
+where id=? and repository_id=?;
