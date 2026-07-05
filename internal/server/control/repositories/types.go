@@ -54,6 +54,52 @@ func newRepositories(repos []domain.Repository) []Repository {
 	return out
 }
 
+type Contents struct {
+	Ref       string         `json:"ref"`
+	SHA       string         `json:"sha"`
+	Path      string         `json:"path"`
+	Entries   []ContentEntry `json:"entries"`
+	Truncated bool           `json:"truncated,omitempty"`
+}
+
+type ContentEntry struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+	Type string `json:"type"` // file | dir | symlink | submodule
+	Mode string `json:"mode"`
+	Size *int64 `json:"size,omitempty"` // blobs only; note: LFS pointers report pointer size
+	SHA  string `json:"sha"`
+}
+
+func newContents(c domain.RepositoryContents) Contents {
+	entries := make([]ContentEntry, len(c.Entries))
+	for i, e := range c.Entries {
+		entries[i] = newContentEntry(e)
+	}
+	return Contents{
+		Ref:       c.Ref,
+		SHA:       c.CommitSHA,
+		Path:      c.Path,
+		Entries:   entries,
+		Truncated: c.Truncated,
+	}
+}
+
+func newContentEntry(e domain.TreeEntry) ContentEntry {
+	entry := ContentEntry{
+		Name: e.Name,
+		Path: e.Path,
+		Type: string(e.Type),
+		Mode: e.Mode,
+		SHA:  e.SHA,
+	}
+	if e.Size >= 0 {
+		size := e.Size
+		entry.Size = &size
+	}
+	return entry
+}
+
 type UpdateVisibilityRequest struct {
 	Visibility string `json:"visibility"`
 }

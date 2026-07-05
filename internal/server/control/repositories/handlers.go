@@ -15,6 +15,7 @@ type RepositoryManager interface {
 	Delete(ctx context.Context, repositoryID int64) error
 	SetVisibility(ctx context.Context, repositoryID int64, visibility domain.RepoVisibility) (domain.Repository, error)
 	ListByOwner(ctx context.Context, ownerID int64) ([]domain.Repository, error)
+	Contents(ctx context.Context, repositoryID int64, ref, treePath string) (domain.RepositoryContents, error)
 }
 
 type handlers struct {
@@ -33,6 +34,7 @@ func (h *handlers) RegisterRoutes(parent chi.Router) {
 	parent.Route("/repositories", func(r chi.Router) {
 		r.Post("/", response.Handler(h.logger, h.createRepository))
 		r.Get("/{repositoryID}", response.Handler(h.logger, h.getRepository))
+		r.Get("/{repositoryID}/contents", response.Handler(h.logger, h.getContents))
 		r.Put("/{repositoryID}/visibility", response.Handler(h.logger, h.setVisibility))
 		r.Delete("/{repositoryID}", response.Handler(h.logger, h.deleteRepository))
 	})

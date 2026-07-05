@@ -10,4 +10,6 @@ const (
 	CodeUserNotFound       = "user_not_found"
 	CodeSSHKeyNotFound     = "ssh_key_not_found"
 	CodeTokenNotFound      = "token_not_found"
+	CodeRefNotFound        = "ref_not_found"
+	CodePathNotFound       = "path_not_found"
 )

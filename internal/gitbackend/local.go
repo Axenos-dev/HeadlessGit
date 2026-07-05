@@ -8,7 +8,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -196,6 +198,128 @@ func (l *Local) listRefs(ctx context.Context, storagePath string) (map[string]st
 		refs[ref] = sha
 	}
 	return refs, sc.Err()
+}
+
+func (l *Local) ListTree(ctx context.Context, storagePath, rev, treePath string) (TreeListing, error) {
+	dir, err := l.resolve(storagePath)
+	if err != nil {
+		return TreeListing{}, err
+	}
+
+	rev, err = normalizeRev(rev)
+	if err != nil {
+		return TreeListing{}, err
+	}
+	treePath, err = normalizeTreePath(treePath)
+	if err != nil {
+		return TreeListing{}, err
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, l.timeout)
+	defer cancel()
+
+	commitSHA, err := l.revParse(ctx, dir, rev+"^{commit}")
+	if err != nil {
+		return TreeListing{}, fmt.Errorf("%w: %s", ErrRevNotFound, rev)
+	}
+
+	treeish := commitSHA
+	if treePath != "" {
+		treeish += ":" + treePath
+	}
+
+	cmd := exec.CommandContext(ctx, l.gitPath, "-C", dir, "ls-tree", "--long", "-z", "--end-of-options", treeish)
+	var out, stderr bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		// the rev already resolved, so this is a missing path or a non-directory
+		return TreeListing{}, fmt.Errorf("%w: %q", ErrPathNotFound, treePath)
+	}
+
+	entries, truncated, err := parseLsTree(out.Bytes(), treePath)
+	if err != nil {
+		return TreeListing{}, err
+	}
+	return TreeListing{CommitSHA: commitSHA, Entries: entries, Truncated: truncated}, nil
+}
+
+// revParse resolves a rev expression to an object id, failing when the object does not exist
+func (l *Local) revParse(ctx context.Context, dir, spec string) (string, error) {
+	cmd := exec.CommandContext(ctx, l.gitPath, "-C", dir, "rev-parse", "--verify", "--end-of-options", spec)
+	var out, stderr bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("rev-parse: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return strings.TrimSpace(out.String()), nil
+}
+
+func parseLsTree(out []byte, treePath string) ([]TreeEntry, bool, error) {
+	var entries []TreeEntry
+	// each record has a shape like "<mode> <type> <sha> <size>\t<name>"
+	for record := range bytes.SplitSeq(out, []byte{0}) {
+		if len(record) == 0 {
+			continue
+		}
+		if len(entries) == maxTreeEntries {
+			return entries, true, nil
+		}
+
+		// header never contains a tab, but a filename can, so cut at the first one
+		header, name, ok := bytes.Cut(record, []byte{'\t'})
+		if !ok {
+			return nil, false, fmt.Errorf("malformed ls-tree record: %q", record)
+		}
+		fields := strings.Fields(string(header))
+		if len(fields) != 4 {
+			return nil, false, fmt.Errorf("malformed ls-tree header: %q", header)
+		}
+
+		size := int64(-1)
+		// if size is "-" -> its non-blob item -> size = -1
+		if fields[3] != "-" {
+			parsed, err := strconv.ParseInt(fields[3], 10, 64)
+			if err != nil {
+				return nil, false, fmt.Errorf("malformed ls-tree size %q: %w", fields[3], err)
+			}
+			size = parsed
+		}
+
+		entries = append(entries, TreeEntry{
+			Mode: fields[0],
+			Type: fields[1],
+			SHA:  fields[2],
+			Size: size,
+			Path: path.Join(treePath, string(name)),
+		})
+	}
+	return entries, false, nil
+}
+
+// normalizeRev validates an untrusted revision expression; empty means HEAD
+func normalizeRev(rev string) (string, error) {
+	if rev == "" {
+		return "HEAD", nil
+	}
+	if strings.HasPrefix(rev, "-") {
+		return "", fmt.Errorf("%w: %q", ErrInvalidRev, rev)
+	}
+	for _, r := range rev {
+		if r < 0x20 || r == 0x7f {
+			return "", fmt.Errorf("%w: control character", ErrInvalidRev)
+		}
+	}
+	return rev, nil
+}
+
+// normalizeTreePath validates an untrusted tree path and normalizes it
+func normalizeTreePath(p string) (string, error) {
+	if strings.ContainsRune(p, 0) {
+		return "", fmt.Errorf("%w: contains NUL", ErrInvalidPath)
+	}
+	return path.Clean("/" + p)[1:], nil
 }
 
 func (l *Local) lockRepo(storagePath string) func() {

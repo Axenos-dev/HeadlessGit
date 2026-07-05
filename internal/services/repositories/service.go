@@ -5,11 +5,13 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"path"
 	"strings"
 	"time"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/db/gen"
 	"github.com/Axenos-dev/HeadlessGit/internal/domain"
+	"github.com/Axenos-dev/HeadlessGit/internal/gitbackend"
 	"go.uber.org/zap"
 )
 
@@ -25,6 +27,7 @@ type Registry interface {
 type RepositoryStorage interface {
 	InitBare(ctx context.Context, storagePath string) error
 	Remove(ctx context.Context, storagePath string) error
+	ListTree(ctx context.Context, storagePath, rev, treePath string) (gitbackend.TreeListing, error)
 }
 
 type Service struct {
@@ -139,6 +142,35 @@ func (s *Service) ListByOwner(ctx context.Context, ownerID int64) ([]domain.Repo
 	return out, nil
 }
 
+func (s *Service) Contents(ctx context.Context, repositoryID int64, ref, treePath string) (domain.RepositoryContents, error) {
+	repo, err := s.registry.GetRepository(ctx, repositoryID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.RepositoryContents{}, ErrRepositoryNotFound
+	}
+	if err != nil {
+		return domain.RepositoryContents{}, err
+	}
+
+	listing, err := s.storage.ListTree(ctx, repo.StoragePath, ref, treePath)
+	switch {
+	case errors.Is(err, gitbackend.ErrInvalidRev):
+		return domain.RepositoryContents{}, ErrInvalidRef
+	case errors.Is(err, gitbackend.ErrInvalidPath):
+		return domain.RepositoryContents{}, ErrInvalidPath
+	case errors.Is(err, gitbackend.ErrRevNotFound):
+		return domain.RepositoryContents{}, ErrRefNotFound
+	case errors.Is(err, gitbackend.ErrPathNotFound):
+		return domain.RepositoryContents{}, ErrPathNotFound
+	case err != nil:
+		return domain.RepositoryContents{}, err
+	}
+
+	if ref == "" {
+		ref = "HEAD"
+	}
+	return toContents(ref, treePath, listing), nil
+}
+
 func (s *Service) GetRepositoryByPath(ctx context.Context, namespace, name string) (domain.Repository, error) {
 	repo, err := s.registry.GetRepositoryByPath(ctx, namespace, name)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -171,4 +203,25 @@ func validRepositoryName(name string) bool {
 		return false
 	}
 	return !strings.ContainsAny(name, "/\\")
+}
+
+func toContents(ref, treePath string, listing gitbackend.TreeListing) domain.RepositoryContents {
+	entries := make([]domain.TreeEntry, len(listing.Entries))
+	for i, e := range listing.Entries {
+		entries[i] = domain.TreeEntry{
+			Name: path.Base(e.Path),
+			Path: e.Path,
+			Type: domain.TreeEntryTypeFromMode(e.Mode),
+			Mode: e.Mode,
+			SHA:  e.SHA,
+			Size: e.Size,
+		}
+	}
+	return domain.RepositoryContents{
+		Ref:       ref,
+		CommitSHA: listing.CommitSHA,
+		Path:      treePath,
+		Entries:   entries,
+		Truncated: listing.Truncated,
+	}
 }
