@@ -11,6 +11,8 @@ It provides:
 - Git over SSH and HTTP (clone / fetch / push).
 - Git LFS (object transfer over HTTP; disk or S3 storage).
 - A control API to manage repositories, users, SSH keys, tokens, permissions, and webhooks.
+- Read-only repo APIs on the control plane: contents listing (`ls-tree`) and
+  streamed zip/tar.gz archives (`git archive`, optional in-flight LFS smudging).
 - A `read` / `write` / `admin` permission model enforced before every Git operation.
 - Push webhooks, signed and delivered off the push path.
 
@@ -52,7 +54,8 @@ Package map:
 | `internal/domain`             | Core types (repository, account, role, token, ssh key, lfs).                                                      |
 | `internal/services/*`         | Business logic per area (repositories, users, auth, permissions, lfs); each has a service + a registry over `db`. |
 | `internal/storage`            | LFS object storage behind an interface (`disk`, `s3`).                                                            |
-| `internal/gitbackend`         | Git pack protocol behind a small interface (`Local` execs system `git`; future `RPC` to storage nodes).           |
+| `internal/archive`            | Pure mechanism, no service deps: streaming tar re-encode to zip/tar.gz with an injected LFS smudge callback.      |
+| `internal/gitbackend`         | Git subprocesses behind a small interface: pack protocol plus read ops (ls-tree, rev resolution, tar archive).    |
 | `internal/server`             | Composition root: wires control + git servers, runs and shuts down listeners.                                     |
 | `internal/server/control`     | Control API (REST); sub-handlers in `repositories/`, `users/`, `permissions/`.                                    |
 | `internal/server/git/gitssh`  | Git-over-SSH transport (custom in-process SSH server).                                                            |
@@ -125,7 +128,9 @@ concretes once.
 **HTTP.** One `net/http` + `chi` stack (no `fasthttp`/Fiber: the smart-HTTP path
 streams bodies to/from the `git-upload-pack`/`git-receive-pack` subprocesses). The
 Git/LFS routes must stay streaming-safe — no body-size limits or body-buffering
-middleware. Health (`/healthz`) is unauthenticated and sits outside the audit chain.
+middleware; the same applies to the control API's archive route, which streams
+`git archive` output. Health (`/healthz`) is unauthenticated and sits outside the
+audit chain.
 
 **Logging.** `zap` structured logging. Never log secrets (tokens, webhook secrets,
 SSH key material, full auth headers). Each transport request emits one audit line:

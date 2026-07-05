@@ -45,7 +45,7 @@ func TestGitHTTPEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	repoSvc := repositories.NewService(log, repositories.NewRegistry(database), backend)
+	repoSvc := repositories.NewService(log, repositories.NewRegistry(database), backend, nil)
 	authSvc := auth.NewService(log, auth.NewRegistry(database))
 	permsSvc := permissions.NewService(permissions.NewRegistry(database))
 	usersSvc := users.NewService(users.NewRegistry(database))

@@ -13,4 +13,6 @@ type Backend interface {
 	UploadPack(ctx context.Context, storagePath string, stateless bool, stdin io.Reader, stdout, stderr io.Writer) error
 	ReceivePack(ctx context.Context, storagePath string, stateless bool, stdin io.Reader, stdout, stderr io.Writer) ([]RefChange, error)
 	ListTree(ctx context.Context, storagePath, rev, treePath string) (TreeListing, error)
+	ResolveCommit(ctx context.Context, storagePath, rev string) (string, error)
+	ArchiveTar(ctx context.Context, storagePath, rev string, out io.Writer) (string, error)
 }

@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"path"
 	"strings"
 	"time"
 
+	"github.com/Axenos-dev/HeadlessGit/internal/archive"
 	"github.com/Axenos-dev/HeadlessGit/internal/db/gen"
 	"github.com/Axenos-dev/HeadlessGit/internal/domain"
 	"github.com/Axenos-dev/HeadlessGit/internal/gitbackend"
@@ -28,19 +30,27 @@ type RepositoryStorage interface {
 	InitBare(ctx context.Context, storagePath string) error
 	Remove(ctx context.Context, storagePath string) error
 	ListTree(ctx context.Context, storagePath, rev, treePath string) (gitbackend.TreeListing, error)
+	ResolveCommit(ctx context.Context, storagePath, rev string) (string, error)
+	ArchiveTar(ctx context.Context, storagePath, rev string, out io.Writer) (string, error)
+}
+
+type LFSObjects interface {
+	GetObject(ctx context.Context, repo domain.Repository, oid string) (io.ReadCloser, int64, error)
 }
 
 type Service struct {
 	logger   *zap.Logger
 	registry Registry
 	storage  RepositoryStorage
+	lfs      LFSObjects
 }
 
-func NewService(logger *zap.Logger, registry Registry, storage RepositoryStorage) *Service {
+func NewService(logger *zap.Logger, registry Registry, storage RepositoryStorage, lfs LFSObjects) *Service {
 	return &Service{
 		logger:   logger,
 		registry: registry,
 		storage:  storage,
+		lfs:      lfs,
 	}
 }
 
@@ -180,6 +190,78 @@ func (s *Service) GetRepositoryByPath(ctx context.Context, namespace, name strin
 		return domain.Repository{}, err
 	}
 	return toDomain(repo), nil
+}
+
+func (s *Service) PrepareArchive(ctx context.Context, repositoryID int64, ref, format string, includeLFS bool) (domain.ArchiveRequest, error) {
+	f, ok := domain.ParseArchiveFormat(format)
+	if !ok {
+		return domain.ArchiveRequest{}, ErrUnsupportedFormat
+	}
+	if includeLFS && s.lfs == nil {
+		return domain.ArchiveRequest{}, ErrLFSNotEnabled
+	}
+
+	repo, err := s.Get(ctx, repositoryID)
+	if err != nil {
+		return domain.ArchiveRequest{}, err
+	}
+
+	sha, err := s.storage.ResolveCommit(ctx, repo.StoragePath, ref)
+	switch {
+	case errors.Is(err, gitbackend.ErrInvalidRev):
+		return domain.ArchiveRequest{}, ErrInvalidRef
+	case errors.Is(err, gitbackend.ErrRevNotFound):
+		return domain.ArchiveRequest{}, ErrRefNotFound
+	case err != nil:
+		return domain.ArchiveRequest{}, err
+	}
+
+	return domain.ArchiveRequest{
+		Repository: repo,
+		CommitSHA:  sha,
+		Format:     f,
+		IncludeLFS: includeLFS,
+	}, nil
+}
+
+func (s *Service) StreamArchive(ctx context.Context, req domain.ArchiveRequest, out io.Writer) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// create pipe and stream git archive to writer
+	pr, pw := io.Pipe()
+	go func() {
+		_, err := s.storage.ArchiveTar(ctx, req.Repository.StoragePath, req.CommitSHA, pw)
+		pw.CloseWithError(err)
+	}()
+
+	// create archive endocer depending on the archive type, connect it to output writer
+	var enc archive.Encoder
+	if req.Format == domain.ArchiveFormatTarGz {
+		enc = archive.NewTarGzEncoder(out)
+	} else {
+		enc = archive.NewZipEncoder(out)
+	}
+
+	// define a spefic smudge function for LFS objects
+	// to translate LFS pointers into a real blobs
+	var smudge archive.SmudgeFunc
+	if req.IncludeLFS {
+		smudge = func(oid string) (io.ReadCloser, int64, error) {
+			rc, size, err := s.lfs.GetObject(ctx, req.Repository, oid)
+			if err != nil {
+				s.logger.Warn("lfs object unavailable for archive, keeping pointer",
+					zap.Int64("repository_id", req.Repository.ID),
+					zap.String("oid", oid),
+					zap.Error(err),
+				)
+			}
+			return rc, size, err
+		}
+	}
+
+	prefix := fmt.Sprintf("%s-%s/", req.Repository.RepositoryName, domain.ShortSHA(req.CommitSHA))
+	return archive.Transform(pr, prefix, smudge, enc)
 }
 
 func toDomain(r gen.Repository) domain.Repository {

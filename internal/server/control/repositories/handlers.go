@@ -2,6 +2,7 @@ package repositories
 
 import (
 	"context"
+	"io"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/domain"
 	"github.com/Axenos-dev/HeadlessGit/internal/server/response"
@@ -16,6 +17,8 @@ type RepositoryManager interface {
 	SetVisibility(ctx context.Context, repositoryID int64, visibility domain.RepoVisibility) (domain.Repository, error)
 	ListByOwner(ctx context.Context, ownerID int64) ([]domain.Repository, error)
 	Contents(ctx context.Context, repositoryID int64, ref, treePath string) (domain.RepositoryContents, error)
+	PrepareArchive(ctx context.Context, repositoryID int64, ref, format string, includeLFS bool) (domain.ArchiveRequest, error)
+	StreamArchive(ctx context.Context, req domain.ArchiveRequest, out io.Writer) error
 }
 
 type handlers struct {
@@ -35,6 +38,7 @@ func (h *handlers) RegisterRoutes(parent chi.Router) {
 		r.Post("/", response.Handler(h.logger, h.createRepository))
 		r.Get("/{repositoryID}", response.Handler(h.logger, h.getRepository))
 		r.Get("/{repositoryID}/contents", response.Handler(h.logger, h.getContents))
+		r.Get("/{repositoryID}/archive", response.Handler(h.logger, h.getArchive))
 		r.Put("/{repositoryID}/visibility", response.Handler(h.logger, h.setVisibility))
 		r.Delete("/{repositoryID}", response.Handler(h.logger, h.deleteRepository))
 	})

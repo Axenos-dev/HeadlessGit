@@ -1,9 +1,12 @@
 package gitbackend
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +14,19 @@ import (
 	"strings"
 	"testing"
 )
+
+// runs a git command in dir with a deterministic identity, failing the test on error
+func gitRun(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, out)
+	}
+}
 
 func TestResolveContainment(t *testing.T) {
 	root := "/srv/repos"
@@ -172,18 +188,7 @@ func TestListTree(t *testing.T) {
 
 	// build a working tree and push it to a known branch name
 	wt := filepath.Join(t.TempDir(), "wt")
-	git := func(dir string, args ...string) {
-		t.Helper()
-		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-		cmd.Env = append(os.Environ(),
-			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
-			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t",
-		)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v: %s", args, err, out)
-		}
-	}
-	git(".", "clone", filepath.Join(root, "1/test.git"), wt)
+	gitRun(t, ".", "clone", filepath.Join(root, "1/test.git"), wt)
 	writeFile := func(rel, content string, mode os.FileMode) {
 		t.Helper()
 		full := filepath.Join(wt, rel)
@@ -197,9 +202,9 @@ func TestListTree(t *testing.T) {
 	writeFile("README.md", "hello\n", 0o644)
 	writeFile("src/main.go", "package main\n", 0o644)
 	writeFile("src/run.sh", "#!/bin/sh\n", 0o755)
-	git(wt, "add", "-A")
-	git(wt, "commit", "-m", "init")
-	git(wt, "push", "origin", "HEAD:refs/heads/main")
+	gitRun(t, wt, "add", "-A")
+	gitRun(t, wt, "commit", "-m", "init")
+	gitRun(t, wt, "push", "origin", "HEAD:refs/heads/main")
 
 	t.Run("root listing", func(t *testing.T) {
 		listing, err := l.ListTree(ctx, "1/test.git", "main", "")
@@ -258,6 +263,99 @@ func TestListTree(t *testing.T) {
 			})
 		}
 	})
+}
+
+func TestArchiveTar(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	root := t.TempDir()
+	l, err := NewLocal(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	if err := l.InitBare(ctx, "1/test.git"); err != nil {
+		t.Fatal(err)
+	}
+
+	// empty repo: HEAD is unborn
+	if _, err := l.ArchiveTar(ctx, "1/test.git", "", io.Discard); !errors.Is(err, ErrRevNotFound) {
+		t.Fatalf("empty repo: want ErrRevNotFound, got %v", err)
+	}
+
+	// an LFS-pointer-shaped blob: the archive must carry it byte-for-byte,
+	// smudging is explicitly not this layer's job
+	pointer := "version https://git-lfs.github.com/spec/v1\n" +
+		"oid sha256:" + strings.Repeat("a", 64) + "\n" +
+		"size 12345\n"
+
+	wt := filepath.Join(t.TempDir(), "wt")
+	gitRun(t, ".", "clone", filepath.Join(root, "1/test.git"), wt)
+	files := map[string]string{
+		"README.md":   "hello\n",
+		"src/main.go": "package main\n",
+		"big.bin":     pointer,
+	}
+	for rel, content := range files {
+		full := filepath.Join(wt, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitRun(t, wt, "add", "-A")
+	gitRun(t, wt, "commit", "-m", "init")
+	gitRun(t, wt, "push", "origin", "HEAD:refs/heads/main")
+
+	var buf bytes.Buffer
+	sha, err := l.ArchiveTar(ctx, "1/test.git", "main", &buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sha) != 40 {
+		t.Errorf("want 40-hex commit sha, got %q", sha)
+	}
+
+	// the stream must be a valid tar containing exactly the committed files
+	got := map[string]string{}
+	tr := tar.NewReader(&buf)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hdr.Typeflag != tar.TypeReg { // skip dirs and the pax global header
+			continue
+		}
+		body, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got[hdr.Name] = string(body)
+	}
+	if len(got) != len(files) {
+		t.Fatalf("got %d regular files, want %d: %v", len(got), len(files), got)
+	}
+	for rel, content := range files {
+		if got[rel] != content {
+			t.Errorf("%s = %q, want %q", rel, got[rel], content)
+		}
+	}
+
+	if _, err := l.ArchiveTar(ctx, "1/test.git", "nope", io.Discard); !errors.Is(err, ErrRevNotFound) {
+		t.Errorf("unknown rev: want ErrRevNotFound, got %v", err)
+	}
+	if _, err := l.ArchiveTar(ctx, "1/test.git", "--help", io.Discard); !errors.Is(err, ErrInvalidRev) {
+		t.Errorf("hostile rev: want ErrInvalidRev, got %v", err)
+	}
 }
 
 func TestDiffRefs(t *testing.T) {

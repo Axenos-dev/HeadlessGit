@@ -206,22 +206,18 @@ func (l *Local) ListTree(ctx context.Context, storagePath, rev, treePath string)
 		return TreeListing{}, err
 	}
 
-	rev, err = normalizeRev(rev)
+	treePath, err = normalizeTreePath(treePath)
 	if err != nil {
 		return TreeListing{}, err
 	}
-	treePath, err = normalizeTreePath(treePath)
+
+	commitSHA, err := l.ResolveCommit(ctx, storagePath, rev)
 	if err != nil {
 		return TreeListing{}, err
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, l.timeout)
 	defer cancel()
-
-	commitSHA, err := l.revParse(ctx, dir, rev+"^{commit}")
-	if err != nil {
-		return TreeListing{}, fmt.Errorf("%w: %s", ErrRevNotFound, rev)
-	}
 
 	treeish := commitSHA
 	if treePath != "" {
@@ -242,6 +238,52 @@ func (l *Local) ListTree(ctx context.Context, storagePath, rev, treePath string)
 		return TreeListing{}, err
 	}
 	return TreeListing{CommitSHA: commitSHA, Entries: entries, Truncated: truncated}, nil
+}
+
+// streams an uncompressed tar archive of the repo tree,
+// the tar entries carries LFS pointers files as-is, smudging is a service concern!
+func (l *Local) ArchiveTar(ctx context.Context, storagePath, rev string, out io.Writer) (string, error) {
+	dir, err := l.resolve(storagePath)
+	if err != nil {
+		return "", err
+	}
+
+	// only the resolution step gets the short timeout
+	commitSHA, err := l.ResolveCommit(ctx, storagePath, rev)
+	if err != nil {
+		return "", err
+	}
+
+	cmd := exec.CommandContext(ctx, l.gitPath, "-C", dir, "archive", "--format=tar", "--end-of-options", commitSHA)
+	cmd.Stdout = out
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("git archive: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return commitSHA, nil
+}
+
+func (l *Local) ResolveCommit(ctx context.Context, storagePath, rev string) (string, error) {
+	dir, err := l.resolve(storagePath)
+	if err != nil {
+		return "", err
+	}
+
+	rev, err = normalizeRev(rev)
+	if err != nil {
+		return "", err
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, l.timeout)
+	defer cancel()
+
+	// ^{commit} forces the object to exist and peel to a commit
+	commitSHA, err := l.revParse(ctx, dir, rev+"^{commit}")
+	if err != nil {
+		return "", fmt.Errorf("%w: %s", ErrRevNotFound, rev)
+	}
+	return commitSHA, nil
 }
 
 // revParse resolves a rev expression to an object id, failing when the object does not exist
