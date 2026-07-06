@@ -1,7 +1,6 @@
 package gitbackend
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -176,28 +175,21 @@ func (l *Local) listRefs(ctx context.Context, storagePath string) (map[string]st
 		return nil, err
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, l.timeout)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, l.gitPath, "-C", dir, "for-each-ref", "--format=%(objectname) %(refname)")
-	var out, stderr bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("for-each-ref: %w: %s", err, strings.TrimSpace(stderr.String()))
+	out, err := l.runGit(ctx, dir, nil, nil, "for-each-ref", "--format=%(objectname) %(refname)")
+	if err != nil {
+		return nil, err
 	}
 
 	refs := make(map[string]string)
-	sc := bufio.NewScanner(&out)
-	for sc.Scan() {
+	for line := range strings.SplitSeq(out, "\n") {
 		// cut the string by " ", to separate sha from ref
-		sha, ref, ok := strings.Cut(sc.Text(), " ")
+		sha, ref, ok := strings.Cut(line, " ")
 		if !ok {
 			continue
 		}
 		refs[ref] = sha
 	}
-	return refs, sc.Err()
+	return refs, nil
 }
 
 func (l *Local) ListTree(ctx context.Context, storagePath, rev, treePath string) (TreeListing, error) {
@@ -216,24 +208,18 @@ func (l *Local) ListTree(ctx context.Context, storagePath, rev, treePath string)
 		return TreeListing{}, err
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, l.timeout)
-	defer cancel()
-
 	treeish := commitSHA
 	if treePath != "" {
 		treeish += ":" + treePath
 	}
 
-	cmd := exec.CommandContext(ctx, l.gitPath, "-C", dir, "ls-tree", "--long", "-z", "--end-of-options", treeish)
-	var out, stderr bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	out, err := l.runGit(ctx, dir, nil, nil, "ls-tree", "--long", "-z", "--end-of-options", treeish)
+	if err != nil {
 		// the rev already resolved, so this is a missing path or a non-directory
 		return TreeListing{}, fmt.Errorf("%w: %q", ErrPathNotFound, treePath)
 	}
 
-	entries, truncated, err := parseLsTree(out.Bytes(), treePath)
+	entries, truncated, err := parseLsTree([]byte(out), treePath)
 	if err != nil {
 		return TreeListing{}, err
 	}
@@ -284,27 +270,20 @@ func (l *Local) StatBlob(ctx context.Context, storagePath, rev, treePath string)
 		return BlobInfo{}, err
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, l.timeout)
-	defer cancel()
-
 	blobSHA, err := l.revParse(ctx, dir, commitSHA+":"+treePath)
 	if err != nil {
 		return BlobInfo{}, fmt.Errorf("%w: %q", ErrPathNotFound, treePath)
 	}
 
-	cmd := exec.CommandContext(ctx, l.gitPath, "-C", dir, "cat-file", "--batch-check")
-	cmd.Stdin = strings.NewReader(blobSHA + "\n")
-	var out, stderr bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return BlobInfo{}, fmt.Errorf("cat-file --batch-check: %w: %s", err, strings.TrimSpace(stderr.String()))
+	out, err := l.runGit(ctx, dir, nil, strings.NewReader(blobSHA+"\n"), "cat-file", "--batch-check")
+	if err != nil {
+		return BlobInfo{}, err
 	}
 
 	// output shape: "<sha> <type> <size>"
-	fields := strings.Fields(out.String())
+	fields := strings.Fields(out)
 	if len(fields) != 3 {
-		return BlobInfo{}, fmt.Errorf("malformed batch-check output: %q", out.String())
+		return BlobInfo{}, fmt.Errorf("malformed batch-check output: %q", out)
 	}
 	if fields[1] != "blob" {
 		return BlobInfo{}, fmt.Errorf("%w: %q is a %s", ErrNotABlob, treePath, fields[1])
@@ -348,9 +327,6 @@ func (l *Local) ResolveCommit(ctx context.Context, storagePath, rev string) (str
 		return "", err
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, l.timeout)
-	defer cancel()
-
 	// ^{commit} forces the object to exist and peel to a commit
 	commitSHA, err := l.revParse(ctx, dir, rev+"^{commit}")
 	if err != nil {
@@ -379,16 +355,358 @@ func (l *Local) WriteBlob(ctx context.Context, storagePath string, r io.Reader) 
 	return strings.TrimSpace(out.String()), counter.n, nil
 }
 
-// revParse resolves a rev expression to an object id, failing when the object does not exist
-func (l *Local) revParse(ctx context.Context, dir, spec string) (string, error) {
-	cmd := exec.CommandContext(ctx, l.gitPath, "-C", dir, "rev-parse", "--verify", "--end-of-options", spec)
+// creates a commit on a branch from already-uploaded blobs
+func (l *Local) ApplyCommit(ctx context.Context, storagePath string, spec CommitSpec, ops []CommitOp, clean CleanFunc) (RefChange, error) {
+	dir, err := l.resolve(storagePath)
+	if err != nil {
+		return RefChange{}, err
+	}
+
+	spec, err = l.validateCommitSpec(ctx, dir, spec)
+	if err != nil {
+		return RefChange{}, err
+	}
+	ops, err = validateCommitOps(ops)
+	if err != nil {
+		return RefChange{}, err
+	}
+
+	// resolve the current branch head
+	ref := "refs/heads/" + spec.Branch
+	oldSHA, err := l.revParse(ctx, dir, ref)
+	unborn := err != nil
+	switch {
+	case unborn && spec.ExpectedOld != zeroSHA:
+		return RefChange{}, fmt.Errorf("%w: branch %s", ErrRevNotFound, spec.Branch)
+	case !unborn && spec.ExpectedOld == zeroSHA:
+		return RefChange{}, fmt.Errorf("%w: branch %s already exists", ErrHeadMismatch, spec.Branch)
+	case !unborn && spec.ExpectedOld != "" && spec.ExpectedOld != oldSHA:
+		return RefChange{}, fmt.Errorf("%w: expected %s, head is %s", ErrHeadMismatch, spec.ExpectedOld, oldSHA)
+	}
+	if unborn {
+		oldSHA = zeroSHA
+	}
+
+	// one batch-check verifies every referenced blob (and captures sizes for
+	// the clean filter) plus the existence of every delete target
+	sizes, err := l.verifyCommitInputs(ctx, dir, oldSHA, unborn, ops)
+	if err != nil {
+		return RefChange{}, err
+	}
+
+	// private index file: commits never touch the repo's real index (bare
+	// repos have none) and concurrent commits cannot see each other
+	idx, err := os.CreateTemp(dir, "headlessgit-index-*")
+	if err != nil {
+		return RefChange{}, fmt.Errorf("create temp index: %w", err)
+	}
+	idx.Close()
+	defer os.Remove(idx.Name())
+	env := []string{"GIT_INDEX_FILE=" + idx.Name()}
+
+	if unborn {
+		if _, err := l.runGit(ctx, dir, env, nil, "read-tree", "--empty"); err != nil {
+			return RefChange{}, err
+		}
+	} else {
+		if _, err := l.runGit(ctx, dir, env, nil, "read-tree", oldSHA); err != nil {
+			return RefChange{}, err
+		}
+	}
+
+	// .gitattributes changes land first, so lfs tracking added in this very
+	// commit already applies to the files committed alongside it
+	attrOps, fileOps := splitAttrOps(ops)
+	if err := l.updateIndex(ctx, dir, env, attrOps); err != nil {
+		return RefChange{}, err
+	}
+
+	fileOps, err = l.cleanLFSTracked(ctx, dir, env, fileOps, sizes, clean)
+	if err != nil {
+		return RefChange{}, err
+	}
+	if err := l.updateIndex(ctx, dir, env, fileOps); err != nil {
+		return RefChange{}, err
+	}
+
+	treeSHA, err := l.runGit(ctx, dir, env, nil, "write-tree")
+	if err != nil {
+		return RefChange{}, fmt.Errorf("%w: %s", ErrInvalidOps, err)
+	}
+	if !unborn {
+		oldTree, err := l.revParse(ctx, dir, oldSHA+"^{tree}")
+		if err != nil {
+			return RefChange{}, err
+		}
+		if treeSHA == oldTree {
+			return RefChange{}, ErrNothingToCommit
+		}
+	}
+
+	commitEnv := []string{
+		"GIT_AUTHOR_NAME=" + spec.Author.Name,
+		"GIT_AUTHOR_EMAIL=" + spec.Author.Email,
+		"GIT_COMMITTER_NAME=" + spec.Committer.Name,
+		"GIT_COMMITTER_EMAIL=" + spec.Committer.Email,
+	}
+	args := []string{"commit-tree", treeSHA}
+	if !unborn {
+		args = append(args, "-p", oldSHA)
+	}
+	args = append(args, "-m", spec.Message)
+	newSHA, err := l.runGit(ctx, dir, commitEnv, nil, args...)
+	if err != nil {
+		return RefChange{}, err
+	}
+
+	// update-ref only moves the branch if it still points at oldSHA
+	if _, err := l.runGit(ctx, dir, nil, nil, "update-ref", ref, newSHA, oldSHA); err != nil {
+		return RefChange{}, fmt.Errorf("%w: %s", ErrHeadMismatch, err)
+	}
+
+	return RefChange{Ref: ref, OldSHA: oldSHA, NewSHA: newSHA}, nil
+}
+
+// validateCommitSpec checks the branch name and identities
+func (l *Local) validateCommitSpec(ctx context.Context, dir string, spec CommitSpec) (CommitSpec, error) {
+	if spec.Branch == "" || strings.HasPrefix(spec.Branch, "-") {
+		return spec, fmt.Errorf("%w: %q", ErrInvalidBranch, spec.Branch)
+	}
+	for _, r := range spec.Branch {
+		if r < 0x20 || r == 0x7f {
+			return spec, fmt.Errorf("%w: control character", ErrInvalidBranch)
+		}
+	}
+	// git itself is the authority on ref name rules
+	if _, err := l.runGit(ctx, dir, nil, nil, "check-ref-format", "--branch", spec.Branch); err != nil {
+		return spec, fmt.Errorf("%w: %q", ErrInvalidBranch, spec.Branch)
+	}
+
+	if spec.ExpectedOld != "" && !isHexSHA(spec.ExpectedOld) {
+		return spec, fmt.Errorf("%w: expected old %q", ErrInvalidRev, spec.ExpectedOld)
+	}
+	if spec.Author.Name == "" || spec.Author.Email == "" {
+		return spec, fmt.Errorf("%w: author name and email are required", ErrInvalidOps)
+	}
+	if spec.Committer.Name == "" {
+		spec.Committer = spec.Author
+	}
+	if spec.Message == "" {
+		return spec, fmt.Errorf("%w: message is required", ErrInvalidOps)
+	}
+	return spec, nil
+}
+
+// normalizes paths and enforces the op rules
+func validateCommitOps(ops []CommitOp) ([]CommitOp, error) {
+	if len(ops) == 0 {
+		return nil, fmt.Errorf("%w: no operations", ErrInvalidOps)
+	}
+	if len(ops) > maxCommitOps {
+		return nil, fmt.Errorf("%w: more than %d operations", ErrInvalidOps, maxCommitOps)
+	}
+
+	out := make([]CommitOp, len(ops))
+	seen := make(map[string]bool, len(ops))
+	for i, op := range ops {
+		p, err := normalizeTreePath(op.Path)
+		if err != nil || p == "" {
+			return nil, fmt.Errorf("%w: path %q", ErrInvalidOps, op.Path)
+		}
+		// the batch-check and check-attr line protocols cannot carry these
+		for _, r := range p {
+			if r < 0x20 || r == 0x7f {
+				return nil, fmt.Errorf("%w: control character in path", ErrInvalidOps)
+			}
+		}
+		if seen[p] {
+			return nil, fmt.Errorf("%w: duplicate path %q", ErrInvalidOps, p)
+		}
+		seen[p] = true
+
+		op.Path = p
+		if !op.Delete {
+			if !isHexSHA(op.BlobSHA) {
+				return nil, fmt.Errorf("%w: blob sha %q", ErrInvalidOps, op.BlobSHA)
+			}
+			switch op.Mode {
+			case "":
+				op.Mode = "100644"
+			case "100644", "100755":
+			default:
+				return nil, fmt.Errorf("%w: mode %q", ErrInvalidOps, op.Mode)
+			}
+		}
+		out[i] = op
+	}
+	return out, nil
+}
+
+// runs one cat-file --batch-check over every put blob sha (returning their sizes)
+// and every delete target
+// so unknown blobs and missing delete paths fail
+func (l *Local) verifyCommitInputs(ctx context.Context, dir, oldSHA string, unborn bool, ops []CommitOp) (map[string]int64, error) {
+	var in strings.Builder
+	type query struct {
+		op    CommitOp
+		isPut bool
+	}
+	var queries []query
+	for _, op := range ops {
+		if op.Delete {
+			if unborn {
+				return nil, fmt.Errorf("%w: %q", ErrPathNotFound, op.Path)
+			}
+			in.WriteString(oldSHA + ":" + op.Path + "\n")
+		} else {
+			in.WriteString(op.BlobSHA + "\n")
+		}
+		queries = append(queries, query{op: op, isPut: !op.Delete})
+	}
+
+	out, err := l.runGit(ctx, dir, nil, strings.NewReader(in.String()), "cat-file", "--batch-check")
+	if err != nil {
+		return nil, err
+	}
+
+	lines := strings.Split(out, "\n")
+	if len(lines) != len(queries) {
+		return nil, fmt.Errorf("unexpected batch-check output: %d lines for %d queries", len(lines), len(queries))
+	}
+
+	sizes := make(map[string]int64)
+	for i, line := range lines {
+		q := queries[i]
+		fields := strings.Fields(line)
+		switch {
+		case len(fields) >= 2 && fields[len(fields)-1] == "missing":
+			if q.isPut {
+				return nil, fmt.Errorf("%w: %s", ErrUnknownBlob, q.op.BlobSHA)
+			}
+			return nil, fmt.Errorf("%w: %q", ErrPathNotFound, q.op.Path)
+		case len(fields) == 3 && fields[1] == "blob":
+			size, err := strconv.ParseInt(fields[2], 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("malformed batch-check size %q: %w", fields[2], err)
+			}
+			if q.isPut {
+				sizes[q.op.BlobSHA] = size
+			}
+		case len(fields) == 3:
+			// a delete target resolving to a tree or a put sha naming a non-blob
+			if q.isPut {
+				return nil, fmt.Errorf("%w: %s is a %s", ErrUnknownBlob, q.op.BlobSHA, fields[1])
+			}
+			return nil, fmt.Errorf("%w: %q is a %s", ErrNotABlob, q.op.Path, fields[1])
+		default:
+			return nil, fmt.Errorf("malformed batch-check line: %q", line)
+		}
+	}
+	return sizes, nil
+}
+
+// separates .gitattributes changes from regular file changes
+func splitAttrOps(ops []CommitOp) (attr, files []CommitOp) {
+	for _, op := range ops {
+		if op.Path == ".gitattributes" || strings.HasSuffix(op.Path, "/.gitattributes") {
+			attr = append(attr, op)
+		} else {
+			files = append(files, op)
+		}
+	}
+	return attr, files
+}
+
+// asks git which put paths are lfs-tracked,
+// and swaps their blobs for the pointer blobs produced by the clean filter
+func (l *Local) cleanLFSTracked(ctx context.Context, dir string, env []string, ops []CommitOp, sizes map[string]int64, clean CleanFunc) ([]CommitOp, error) {
+	var paths []string
+	byPath := make(map[string]int)
+	for i, op := range ops {
+		if !op.Delete {
+			paths = append(paths, op.Path)
+			byPath[op.Path] = i
+		}
+	}
+	if len(paths) == 0 {
+		return ops, nil
+	}
+
+	args := append([]string{"check-attr", "-z", "--cached", "filter", "--"}, paths...)
+	out, err := l.runGit(ctx, dir, env, nil, args...)
+	if err != nil {
+		return nil, err
+	}
+
+	// -z output is NUL-separated (path, attr, value) triples
+	fields := strings.Split(out, "\x00")
+	for i := 0; i+2 < len(fields); i += 3 {
+		path, value := fields[i], fields[i+2]
+		if value != "lfs" {
+			continue
+		}
+		idx, ok := byPath[path]
+		if !ok {
+			continue
+		}
+		if clean == nil {
+			return nil, fmt.Errorf("%w: %q", ErrLFSRequired, path)
+		}
+
+		pointerSHA, err := clean(path, ops[idx].BlobSHA, sizes[ops[idx].BlobSHA])
+		if err != nil {
+			return nil, fmt.Errorf("lfs clean %q: %w", path, err)
+		}
+		if !isHexSHA(pointerSHA) {
+			return nil, fmt.Errorf("lfs clean %q returned invalid sha %q", path, pointerSHA)
+		}
+		ops[idx].BlobSHA = pointerSHA
+	}
+	return ops, nil
+}
+
+// applies puts and deletes in one subprocess
+func (l *Local) updateIndex(ctx context.Context, dir string, env []string, ops []CommitOp) error {
+	if len(ops) == 0 {
+		return nil
+	}
+	var in strings.Builder
+	for _, op := range ops {
+		if op.Delete {
+			in.WriteString("0 " + zeroSHA + "\t" + op.Path + "\x00")
+		} else {
+			in.WriteString(op.Mode + " " + op.BlobSHA + "\t" + op.Path + "\x00")
+		}
+	}
+	if _, err := l.runGit(ctx, dir, env, strings.NewReader(in.String()), "update-index", "-z", "--index-info"); err != nil {
+		return fmt.Errorf("%w: %s", ErrInvalidOps, err)
+	}
+	return nil
+}
+
+// runGit executes one short-lived git command with the repo as context,
+// applying the standard timeout, and returns its trimmed stdout
+func (l *Local) runGit(ctx context.Context, dir string, env []string, stdin io.Reader, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, l.timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, l.gitPath, append([]string{"-C", dir}, args...)...)
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
+	cmd.Stdin = stdin
 	var out, stderr bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("rev-parse: %w: %s", err, strings.TrimSpace(stderr.String()))
+		return "", fmt.Errorf("git %s: %w: %s", args[0], err, strings.TrimSpace(stderr.String()))
 	}
 	return strings.TrimSpace(out.String()), nil
+}
+
+// revParse resolves a rev expression to an object id, failing when the object does not exist
+func (l *Local) revParse(ctx context.Context, dir, spec string) (string, error) {
+	return l.runGit(ctx, dir, nil, nil, "rev-parse", "--verify", "--end-of-options", spec)
 }
 
 func parseLsTree(out []byte, treePath string) ([]TreeEntry, bool, error) {

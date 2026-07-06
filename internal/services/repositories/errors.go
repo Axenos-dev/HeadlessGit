@@ -17,4 +17,11 @@ var (
 
 	ErrNotAFile          = errors.New("path is not a file")
 	ErrLFSObjectNotFound = errors.New("lfs object not found")
+
+	// api commits
+	ErrInvalidBranch    = errors.New("invalid branch name")
+	ErrInvalidCommitOps = errors.New("invalid commit operations")
+	ErrHeadMismatch     = errors.New("branch head mismatch")
+	ErrUnknownBlob      = errors.New("blob not found in repository")
+	ErrNothingToCommit  = errors.New("nothing to commit")
 )

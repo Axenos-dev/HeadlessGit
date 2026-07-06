@@ -22,6 +22,7 @@ type RepositoryManager interface {
 	PrepareBlob(ctx context.Context, repositoryID int64, ref, treePath string, includeLFS bool) (domain.BlobRequest, error)
 	StreamBlob(ctx context.Context, req domain.BlobRequest, out io.Writer) error
 	WriteBlob(ctx context.Context, repositoryID int64, in io.Reader) (string, int64, error)
+	Commit(ctx context.Context, repositoryID int64, req domain.CommitRequest) (domain.CommitResult, error)
 }
 
 type handlers struct {
@@ -40,6 +41,7 @@ func (h *handlers) RegisterRoutes(parent chi.Router) {
 	parent.Route("/repositories", func(r chi.Router) {
 		r.Post("/", response.Handler(h.logger, h.createRepository))
 		r.Post("/{repositoryID}/blobs", response.Handler(h.logger, h.uploadBlob))
+		r.Post("/{repositoryID}/commits", response.Handler(h.logger, h.createCommit))
 		r.Get("/{repositoryID}", response.Handler(h.logger, h.getRepository))
 		r.Get("/{repositoryID}/contents", response.Handler(h.logger, h.getContents))
 		r.Get("/{repositoryID}/archive", response.Handler(h.logger, h.getArchive))

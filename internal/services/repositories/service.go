@@ -3,7 +3,9 @@ package repositories
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -36,10 +38,17 @@ type RepositoryStorage interface {
 	StatBlob(ctx context.Context, storagePath, rev, treePath string) (gitbackend.BlobInfo, error)
 	ReadBlob(ctx context.Context, storagePath, blobSHA string, out io.Writer) error
 	WriteBlob(ctx context.Context, storagePath string, r io.Reader) (string, int64, error)
+	ApplyCommit(ctx context.Context, storagePath string, spec gitbackend.CommitSpec, ops []gitbackend.CommitOp, clean gitbackend.CleanFunc) (gitbackend.RefChange, error)
 }
 
 type LFSObjects interface {
 	GetObject(ctx context.Context, repo domain.Repository, oid string) (io.ReadCloser, int64, error)
+	StoreObject(ctx context.Context, repo domain.Repository, uploaderID int64, oid string, size int64, r io.Reader) error
+}
+
+// implemented by the webhooks service; nil disables push events for api commits
+type PushDispatcher interface {
+	DispatchEvent(ctx context.Context, event domain.RepositoryEvent) error
 }
 
 type Service struct {
@@ -47,14 +56,16 @@ type Service struct {
 	registry Registry
 	storage  RepositoryStorage
 	lfs      LFSObjects
+	events   PushDispatcher
 }
 
-func NewService(logger *zap.Logger, registry Registry, storage RepositoryStorage, lfs LFSObjects) *Service {
+func NewService(logger *zap.Logger, registry Registry, storage RepositoryStorage, lfs LFSObjects, events PushDispatcher) *Service {
 	return &Service{
 		logger:   logger,
 		registry: registry,
 		storage:  storage,
 		lfs:      lfs,
+		events:   events,
 	}
 }
 
@@ -348,6 +359,142 @@ func (s *Service) WriteBlob(ctx context.Context, repositoryID int64, in io.Reade
 	}
 
 	return s.storage.WriteBlob(ctx, repo.StoragePath, in)
+}
+
+func (s *Service) Commit(ctx context.Context, repositoryID int64, req domain.CommitRequest) (domain.CommitResult, error) {
+	repo, err := s.Get(ctx, repositoryID)
+	if err != nil {
+		return domain.CommitResult{}, err
+	}
+
+	ops := make([]gitbackend.CommitOp, len(req.Operations))
+	for i, op := range req.Operations {
+		mode := ""
+		if op.Executable {
+			mode = "100755"
+		}
+		ops[i] = gitbackend.CommitOp{
+			Delete:  op.Delete,
+			Path:    op.Path,
+			BlobSHA: op.BlobSHA,
+			Mode:    mode,
+		}
+	}
+
+	spec := gitbackend.CommitSpec{
+		Branch:      req.Branch,
+		ExpectedOld: req.ExpectedHeadSHA,
+		Author: gitbackend.Identity{
+			Name:  req.Author.Name,
+			Email: req.Author.Email,
+		},
+		Message: req.Message,
+	}
+
+	// nil when LFS is disabled
+	// lfs-tracked paths then fail with ErrLFSRequired
+	var clean gitbackend.CleanFunc
+	if s.lfs != nil {
+		clean = s.lfsCleanFunc(ctx, repo, req.PusherID)
+	}
+
+	change, err := s.storage.ApplyCommit(ctx, repo.StoragePath, spec, ops, clean)
+	switch {
+	case errors.Is(err, gitbackend.ErrInvalidBranch):
+		return domain.CommitResult{}, ErrInvalidBranch
+	case errors.Is(err, gitbackend.ErrInvalidOps), errors.Is(err, gitbackend.ErrInvalidPath), errors.Is(err, gitbackend.ErrInvalidRev):
+		return domain.CommitResult{}, fmt.Errorf("%w: %s", ErrInvalidCommitOps, err)
+	case errors.Is(err, gitbackend.ErrRevNotFound):
+		return domain.CommitResult{}, ErrRefNotFound
+	case errors.Is(err, gitbackend.ErrPathNotFound):
+		return domain.CommitResult{}, ErrPathNotFound
+	case errors.Is(err, gitbackend.ErrNotABlob):
+		return domain.CommitResult{}, ErrNotAFile
+	case errors.Is(err, gitbackend.ErrHeadMismatch):
+		return domain.CommitResult{}, ErrHeadMismatch
+	case errors.Is(err, gitbackend.ErrUnknownBlob):
+		return domain.CommitResult{}, ErrUnknownBlob
+	case errors.Is(err, gitbackend.ErrNothingToCommit):
+		return domain.CommitResult{}, ErrNothingToCommit
+	case errors.Is(err, gitbackend.ErrLFSRequired):
+		return domain.CommitResult{}, ErrLFSNotEnabled
+	case err != nil:
+		return domain.CommitResult{}, err
+	}
+
+	s.dispatchPush(ctx, repo, req, change)
+
+	return domain.CommitResult{
+		Branch:    req.Branch,
+		CommitSHA: change.NewSHA,
+		Before:    change.OldSHA,
+	}, nil
+}
+
+func (s *Service) lfsCleanFunc(ctx context.Context, repo domain.Repository, pusherID int64) gitbackend.CleanFunc {
+	uploaderID := pusherID
+	if uploaderID == 0 {
+		uploaderID = repo.OwnerID
+	}
+
+	return func(path, blobSHA string, size int64) (string, error) {
+		// check if blob is already LFS pointer
+		if size <= domain.LFSPointerMaxSize {
+			var buf bytes.Buffer
+			if err := s.storage.ReadBlob(ctx, repo.StoragePath, blobSHA, &buf); err != nil {
+				return "", err
+			}
+			if _, ok := domain.ParseLFSPointer(buf.Bytes()); ok {
+				return blobSHA, nil
+			}
+		}
+
+		// hash the local blob to get the lfs oid
+		hasher := sha256.New()
+		if err := s.storage.ReadBlob(ctx, repo.StoragePath, blobSHA, hasher); err != nil {
+			return "", err
+		}
+		oid := hex.EncodeToString(hasher.Sum(nil))
+
+		// stream the same blob into lfs storage
+		pr, pw := io.Pipe()
+		go func() {
+			pw.CloseWithError(s.storage.ReadBlob(ctx, repo.StoragePath, blobSHA, pw))
+		}()
+		err := s.lfs.StoreObject(ctx, repo, uploaderID, oid, size, pr)
+		pr.Close() // unblocks the writer when StoreObject returned without draining
+		if err != nil {
+			return "", err
+		}
+
+		// construct pointer by "hands"
+		pointer := fmt.Sprintf("version https://git-lfs.github.com/spec/v1\noid sha256:%s\nsize %d\n", oid, size)
+		pointerSHA, _, err := s.storage.WriteBlob(ctx, repo.StoragePath, strings.NewReader(pointer))
+		return pointerSHA, err
+	}
+}
+
+// dispatch webhook event
+func (s *Service) dispatchPush(ctx context.Context, repo domain.Repository, req domain.CommitRequest, change gitbackend.RefChange) {
+	if s.events == nil {
+		return
+	}
+
+	err := s.events.DispatchEvent(ctx, domain.RepositoryEvent{
+		Event:              "push",
+		RepositoryID:       repo.ID,
+		RepositoryName:     repo.RepositoryName,
+		RepositoryFullName: fmt.Sprintf("%d/%s", repo.OwnerID, repo.RepositoryName),
+		PusherID:           req.PusherID,
+		PusherUsername:     req.Author.Name,
+		Ref:                change.Ref,
+		OldSHA:             change.OldSHA,
+		NewSHA:             change.NewSHA,
+		Timestamp:          time.Now().UTC(),
+	})
+	if err != nil {
+		s.logger.Warn("failed to enqueue webhook event", zap.String("ref", change.Ref), zap.Error(err))
+	}
 }
 
 func toDomain(r gen.Repository) domain.Repository {

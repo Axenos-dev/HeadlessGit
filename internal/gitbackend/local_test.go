@@ -28,6 +28,17 @@ func gitRun(t *testing.T, dir string, args ...string) {
 	}
 }
 
+// like gitRun but returns the trimmed stdout
+func gitOut(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git %v: %v", args, err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
 func TestResolveContainment(t *testing.T) {
 	root := "/srv/repos"
 	l := &Local{root: root}
@@ -470,6 +481,177 @@ func TestBlob(t *testing.T) {
 			if err := l.ReadBlob(ctx, "1/test.git", sha, io.Discard); !errors.Is(err, ErrInvalidRev) {
 				t.Errorf("ReadBlob(%q) = %v, want ErrInvalidRev", sha, err)
 			}
+		}
+	})
+}
+
+func TestApplyCommit(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	root := t.TempDir()
+	l, err := NewLocal(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	const repo = "1/test.git"
+
+	if err := l.InitBare(ctx, repo); err != nil {
+		t.Fatal(err)
+	}
+
+	author := Identity{Name: "api-user", Email: "api@test"}
+	spec := func(expectedOld, msg string) CommitSpec {
+		return CommitSpec{Branch: "main", ExpectedOld: expectedOld, Author: author, Message: msg}
+	}
+	blob := func(content string) string {
+		t.Helper()
+		sha, _, err := l.WriteBlob(ctx, repo, strings.NewReader(content))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sha
+	}
+
+	hello := blob("hello\n")
+	script := blob("#!/bin/sh\n")
+
+	// creating a branch requires explicitly expecting non-existence
+	if _, err := l.ApplyCommit(ctx, repo, spec("", "init"), []CommitOp{{Path: "README.md", BlobSHA: hello}}, nil); !errors.Is(err, ErrRevNotFound) {
+		t.Fatalf("missing branch without zero expected-old: want ErrRevNotFound, got %v", err)
+	}
+
+	first, err := l.ApplyCommit(ctx, repo, spec(zeroSHA, "init"), []CommitOp{
+		{Path: "README.md", BlobSHA: hello},
+		{Path: "src/run.sh", BlobSHA: script, Mode: "100755"},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.OldSHA != zeroSHA || !isHexSHA(first.NewSHA) || first.Ref != "refs/heads/main" {
+		t.Fatalf("first change = %+v", first)
+	}
+
+	// a real git client must see exactly what we committed
+	wt := filepath.Join(t.TempDir(), "wt")
+	gitRun(t, ".", "clone", "-b", "main", filepath.Join(root, repo), wt)
+
+	readme, err := os.ReadFile(filepath.Join(wt, "README.md"))
+	if err != nil || string(readme) != "hello\n" {
+		t.Errorf("README.md = %q, %v", readme, err)
+	}
+	info, err := os.Stat(filepath.Join(wt, "src", "run.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&0o100 == 0 {
+		t.Errorf("run.sh not executable: %v", info.Mode())
+	}
+
+	logOut := gitOut(t, wt, "log", "-1", "--format=%H|%an|%ae|%s")
+	if logOut != first.NewSHA+"|api-user|api@test|init" {
+		t.Errorf("log = %q", logOut)
+	}
+
+	// second commit: CAS on the known head, update one file, delete another
+	v2 := blob("hello v2\n")
+	second, err := l.ApplyCommit(ctx, repo, spec(first.NewSHA, "update"), []CommitOp{
+		{Path: "README.md", BlobSHA: v2},
+		{Path: "src/run.sh", Delete: true},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.OldSHA != first.NewSHA {
+		t.Errorf("second change = %+v", second)
+	}
+
+	gitRun(t, wt, "pull")
+	if readme, _ := os.ReadFile(filepath.Join(wt, "README.md")); string(readme) != "hello v2\n" {
+		t.Errorf("README.md after pull = %q", readme)
+	}
+	if _, err := os.Stat(filepath.Join(wt, "src", "run.sh")); !os.IsNotExist(err) {
+		t.Errorf("run.sh should be deleted, stat err = %v", err)
+	}
+
+	t.Run("errors", func(t *testing.T) {
+		cases := []struct {
+			name string
+			spec CommitSpec
+			ops  []CommitOp
+			want error
+		}{
+			{"stale cas", spec(first.NewSHA, "x"), []CommitOp{{Path: "a", BlobSHA: hello}}, ErrHeadMismatch},
+			{"create existing branch", spec(zeroSHA, "x"), []CommitOp{{Path: "a", BlobSHA: hello}}, ErrHeadMismatch},
+			{"unknown blob", spec("", "x"), []CommitOp{{Path: "a", BlobSHA: strings.Repeat("d", 40)}}, ErrUnknownBlob},
+			{"nothing to commit", spec("", "x"), []CommitOp{{Path: "README.md", BlobSHA: v2}}, ErrNothingToCommit},
+			{"delete missing path", spec("", "x"), []CommitOp{{Path: "nope.txt", Delete: true}}, ErrPathNotFound},
+			{"bad branch", CommitSpec{Branch: "a..b", ExpectedOld: "", Author: author, Message: "x"}, []CommitOp{{Path: "a", BlobSHA: hello}}, ErrInvalidBranch},
+			{"hostile branch", CommitSpec{Branch: "--help", Author: author, Message: "x"}, []CommitOp{{Path: "a", BlobSHA: hello}}, ErrInvalidBranch},
+			{"no ops", spec("", "x"), nil, ErrInvalidOps},
+			{"duplicate path", spec("", "x"), []CommitOp{{Path: "a", BlobSHA: hello}, {Path: "a", Delete: true}}, ErrInvalidOps},
+			{"bad mode", spec("", "x"), []CommitOp{{Path: "a", BlobSHA: hello, Mode: "120000"}}, ErrInvalidOps},
+			{"missing author", CommitSpec{Branch: "main", Author: Identity{}, Message: "x"}, []CommitOp{{Path: "a", BlobSHA: hello}}, ErrInvalidOps},
+			{"missing message", CommitSpec{Branch: "main", Author: author}, []CommitOp{{Path: "a", BlobSHA: hello}}, ErrInvalidOps},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				if _, err := l.ApplyCommit(ctx, repo, tc.spec, tc.ops, nil); !errors.Is(err, tc.want) {
+					t.Errorf("ApplyCommit = %v, want %v", err, tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("lfs clean", func(t *testing.T) {
+		attrs := blob("*.bin filter=lfs diff=lfs merge=lfs -text\n")
+		payload := blob("REAL BINARY CONTENT")
+		pointerText := "version https://git-lfs.github.com/spec/v1\noid sha256:" + strings.Repeat("ab", 32) + "\nsize 19\n"
+		pointer := blob(pointerText)
+
+		// tracked path without a clean filter fails loudly
+		if _, err := l.ApplyCommit(ctx, repo, spec("", "track"), []CommitOp{
+			{Path: ".gitattributes", BlobSHA: attrs},
+			{Path: "big.bin", BlobSHA: payload},
+		}, nil); !errors.Is(err, ErrLFSRequired) {
+			t.Fatalf("want ErrLFSRequired, got %v", err)
+		}
+
+		// tracking added in the SAME commit must clean the file next to it
+		var gotPath, gotSHA string
+		var gotSize int64
+		clean := func(path, blobSHA string, size int64) (string, error) {
+			gotPath, gotSHA, gotSize = path, blobSHA, size
+			return pointer, nil
+		}
+		change, err := l.ApplyCommit(ctx, repo, spec("", "track + add"), []CommitOp{
+			{Path: ".gitattributes", BlobSHA: attrs},
+			{Path: "big.bin", BlobSHA: payload},
+			{Path: "notes.txt", BlobSHA: hello}, // untracked, must NOT be cleaned
+		}, clean)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if gotPath != "big.bin" || gotSHA != payload || gotSize != 19 {
+			t.Errorf("clean called with (%q, %q, %d)", gotPath, gotSHA, gotSize)
+		}
+
+		// the committed tree holds the pointer, not the payload
+		committed, err := l.StatBlob(ctx, repo, change.NewSHA, "big.bin")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if committed.BlobSHA != pointer {
+			t.Errorf("big.bin blob = %s, want pointer %s", committed.BlobSHA, pointer)
+		}
+		notes, err := l.StatBlob(ctx, repo, change.NewSHA, "notes.txt")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if notes.BlobSHA != hello {
+			t.Errorf("notes.txt was cleaned but is not lfs-tracked")
 		}
 	})
 }

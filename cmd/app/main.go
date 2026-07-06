@@ -79,11 +79,17 @@ func main() {
 		repoLFS = lfsService
 	}
 
+	webhooksService := webhooks.NewService(
+		root.With(zap.String("service", "webhooks")),
+		webhooks.NewRegistry(db),
+	)
+
 	repoService := repositories.NewService(
 		root.With(zap.String("service", "repositories")),
 		repositories.NewRegistry(db),
 		gitBackend,
 		repoLFS,
+		webhooksService,
 	)
 
 	authService := auth.NewService(
@@ -99,11 +105,6 @@ func main() {
 
 	permsService := permissions.NewService(permissions.NewRegistry(db))
 	usersService := users.NewService(users.NewRegistry(db))
-
-	webhooksService := webhooks.NewService(
-		root.With(zap.String("service", "webhooks")),
-		webhooks.NewRegistry(db),
-	)
 
 	ctx, stop := signal.NotifyContext(
 		context.Background(),

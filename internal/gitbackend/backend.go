@@ -18,4 +18,5 @@ type Backend interface {
 	StatBlob(ctx context.Context, storagePath, rev, treePath string) (BlobInfo, error)
 	ReadBlob(ctx context.Context, storagePath, blobSHA string, out io.Writer) error
 	WriteBlob(ctx context.Context, storagePath string, r io.Reader) (string, int64, error)
+	ApplyCommit(ctx context.Context, storagePath string, spec CommitSpec, ops []CommitOp, clean CleanFunc) (RefChange, error)
 }

@@ -33,6 +33,17 @@ type fakeManager struct {
 
 	writeSHA string
 	writeErr error
+
+	commitResult domain.CommitResult
+	commitErr    error
+	commitReq    domain.CommitRequest
+	commitCalled bool
+}
+
+func (f *fakeManager) Commit(ctx context.Context, repositoryID int64, req domain.CommitRequest) (domain.CommitResult, error) {
+	f.commitCalled = true
+	f.commitReq = req
+	return f.commitResult, f.commitErr
 }
 
 func (f fakeManager) PrepareArchive(ctx context.Context, repositoryID int64, ref, format string, includeLFS bool) (domain.ArchiveRequest, error) {
@@ -96,7 +107,7 @@ func testArchiveRequest() domain.ArchiveRequest {
 }
 
 func TestGetArchive(t *testing.T) {
-	router := newTestRouter(fakeManager{prepareReq: testArchiveRequest(), streamBody: "hello"})
+	router := newTestRouter(&fakeManager{prepareReq: testArchiveRequest(), streamBody: "hello"})
 
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/repositories/7/archive?ref=main", nil))
@@ -128,7 +139,7 @@ func TestGetArchive(t *testing.T) {
 }
 
 func TestGetArchiveNotModified(t *testing.T) {
-	router := newTestRouter(fakeManager{prepareReq: testArchiveRequest(), streamBody: "hello"})
+	router := newTestRouter(&fakeManager{prepareReq: testArchiveRequest(), streamBody: "hello"})
 
 	req := httptest.NewRequest(http.MethodGet, "/repositories/7/archive?ref=main", nil)
 	req.Header.Set("If-None-Match", `W/"`+testSHA+`-zip"`)
@@ -164,7 +175,7 @@ func TestGetArchiveErrors(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			router := newTestRouter(fakeManager{prepareReq: testArchiveRequest(), prepareErr: tc.prepareErr, streamErr: tc.streamErr})
+			router := newTestRouter(&fakeManager{prepareReq: testArchiveRequest(), prepareErr: tc.prepareErr, streamErr: tc.streamErr})
 			rec := httptest.NewRecorder()
 			router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tc.target, nil))
 
@@ -201,7 +212,7 @@ func testBlobRequest(lfsOID string) domain.BlobRequest {
 }
 
 func TestGetBlob(t *testing.T) {
-	router := newTestRouter(fakeManager{blobReq: testBlobRequest(""), streamBody: "hello\n"})
+	router := newTestRouter(&fakeManager{blobReq: testBlobRequest(""), streamBody: "hello\n"})
 
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/repositories/7/blob?ref=main&path=src/main.go", nil))
@@ -227,7 +238,7 @@ func TestGetBlob(t *testing.T) {
 }
 
 func TestGetBlobLFSVariantETag(t *testing.T) {
-	router := newTestRouter(fakeManager{blobReq: testBlobRequest("deadbeef"), streamBody: "hello\n"})
+	router := newTestRouter(&fakeManager{blobReq: testBlobRequest("deadbeef"), streamBody: "hello\n"})
 
 	// the raw etag must not satisfy a smudged request
 	req := httptest.NewRequest(http.MethodGet, "/repositories/7/blob?ref=main&path=src/main.go&lfs=true", nil)
@@ -244,7 +255,7 @@ func TestGetBlobLFSVariantETag(t *testing.T) {
 }
 
 func TestGetBlobNotModified(t *testing.T) {
-	router := newTestRouter(fakeManager{blobReq: testBlobRequest(""), streamBody: "hello\n"})
+	router := newTestRouter(&fakeManager{blobReq: testBlobRequest(""), streamBody: "hello\n"})
 
 	req := httptest.NewRequest(http.MethodGet, "/repositories/7/blob?ref=main&path=src/main.go", nil)
 	req.Header.Set("If-None-Match", `"1111222233334444555566667777888899990000"`)
@@ -260,7 +271,7 @@ func TestGetBlobNotModified(t *testing.T) {
 }
 
 func TestUploadBlob(t *testing.T) {
-	router := newTestRouter(fakeManager{writeSHA: "ce013625030ba8dba906f756967f9e9ca394464a"})
+	router := newTestRouter(&fakeManager{writeSHA: "ce013625030ba8dba906f756967f9e9ca394464a"})
 
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/repositories/7/blobs", strings.NewReader("hello\n")))
@@ -300,7 +311,7 @@ func TestUploadBlobErrors(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			router := newTestRouter(fakeManager{writeErr: tc.writeErr})
+			router := newTestRouter(&fakeManager{writeErr: tc.writeErr})
 			rec := httptest.NewRecorder()
 			router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, tc.target, strings.NewReader("x")))
 
@@ -345,7 +356,7 @@ func TestGetBlobErrors(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			router := newTestRouter(fakeManager{blobReq: testBlobRequest(""), blobErr: tc.blobErr, streamErr: tc.streamErr})
+			router := newTestRouter(&fakeManager{blobReq: testBlobRequest(""), blobErr: tc.blobErr, streamErr: tc.streamErr})
 			rec := httptest.NewRecorder()
 			router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tc.target, nil))
 
@@ -365,6 +376,129 @@ func TestGetBlobErrors(t *testing.T) {
 			}
 			if got := rec.Header().Get("Content-Disposition"); got != "" {
 				t.Errorf("error response leaked Content-Disposition %q", got)
+			}
+		})
+	}
+}
+
+func validCommitBody() string {
+	return `{
+		"branch": "main",
+		"message": "update",
+		"author": {"name": "api-user", "email": "api@test"},
+		"expectedHeadSha": "` + strings.Repeat("a", 40) + `",
+		"pusherId": 42,
+		"operations": [
+			{"op": "put", "path": "run.sh", "blobSha": "` + strings.Repeat("b", 40) + `", "executable": true},
+			{"op": "delete", "path": "old.txt"}
+		]
+	}`
+}
+
+func TestCreateCommit(t *testing.T) {
+	result := domain.CommitResult{Branch: "main", CommitSHA: testSHA, Before: strings.Repeat("a", 40)}
+	fake := &fakeManager{commitResult: result}
+
+	rec := httptest.NewRecorder()
+	newTestRouter(fake).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/repositories/7/commits", strings.NewReader(validCommitBody())))
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+	}
+
+	var body struct {
+		Data Commit `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Data.CommitSHA != testSHA || body.Data.Before != result.Before || body.Data.Branch != "main" {
+		t.Errorf("body = %+v", body.Data)
+	}
+
+	// the service must receive the fully mapped domain request
+	req := fake.commitReq
+	if req.Branch != "main" || req.Message != "update" || req.PusherID != 42 ||
+		req.Author.Name != "api-user" || req.ExpectedHeadSHA != strings.Repeat("a", 40) {
+		t.Errorf("service request = %+v", req)
+	}
+	if len(req.Operations) != 2 ||
+		req.Operations[0].Delete || !req.Operations[0].Executable || req.Operations[0].BlobSHA != strings.Repeat("b", 40) ||
+		!req.Operations[1].Delete || req.Operations[1].Path != "old.txt" {
+		t.Errorf("service operations = %+v", req.Operations)
+	}
+}
+
+func TestCreateCommitValidation(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"not json", "nope"},
+		{"missing branch", `{"message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"delete","path":"a"}]}`},
+		{"missing message", `{"branch":"main","author":{"name":"a","email":"e"},"operations":[{"op":"delete","path":"a"}]}`},
+		{"missing author", `{"branch":"main","message":"x","operations":[{"op":"delete","path":"a"}]}`},
+		{"no operations", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[]}`},
+		{"bad op kind", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"move","path":"a"}]}`},
+		{"put without blobSha", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"put","path":"a"}]}`},
+		{"delete with blobSha", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"delete","path":"a","blobSha":"abc"}]}`},
+		{"missing path", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"delete"}]}`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeManager{}
+			rec := httptest.NewRecorder()
+			newTestRouter(fake).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/repositories/7/commits", strings.NewReader(tc.body)))
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+			}
+			if fake.commitCalled {
+				t.Error("service must not be called on validation failure")
+			}
+		})
+	}
+}
+
+func TestCreateCommitErrors(t *testing.T) {
+	cases := []struct {
+		name       string
+		commitErr  error
+		wantStatus int
+		wantCode   string
+	}{
+		{"repo not found", reposervice.ErrRepositoryNotFound, http.StatusNotFound, "repository_not_found"},
+		{"branch not found", reposervice.ErrRefNotFound, http.StatusNotFound, "ref_not_found"},
+		{"delete target missing", reposervice.ErrPathNotFound, http.StatusNotFound, "path_not_found"},
+		{"head mismatch", reposervice.ErrHeadMismatch, http.StatusConflict, "head_mismatch"},
+		{"unknown blob", reposervice.ErrUnknownBlob, http.StatusUnprocessableEntity, "unknown_blob"},
+		{"nothing to commit", reposervice.ErrNothingToCommit, http.StatusUnprocessableEntity, "nothing_to_commit"},
+		{"delete target is a dir", reposervice.ErrNotAFile, http.StatusBadRequest, "invalid_request"},
+		{"invalid branch", reposervice.ErrInvalidBranch, http.StatusBadRequest, "invalid_request"},
+		{"invalid ops", reposervice.ErrInvalidCommitOps, http.StatusBadRequest, "invalid_request"},
+		{"lfs not enabled", reposervice.ErrLFSNotEnabled, http.StatusBadRequest, "invalid_request"},
+		{"internal", io.ErrUnexpectedEOF, http.StatusInternalServerError, "internal_error"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			newTestRouter(&fakeManager{commitErr: tc.commitErr}).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/repositories/7/commits", strings.NewReader(validCommitBody())))
+
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			var body struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Error.Code != tc.wantCode {
+				t.Errorf("code = %q, want %q", body.Error.Code, tc.wantCode)
 			}
 		})
 	}
