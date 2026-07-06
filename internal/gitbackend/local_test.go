@@ -358,6 +358,81 @@ func TestArchiveTar(t *testing.T) {
 	}
 }
 
+func TestBlob(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	root := t.TempDir()
+	l, err := NewLocal(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	if err := l.InitBare(ctx, "1/test.git"); err != nil {
+		t.Fatal(err)
+	}
+
+	wt := filepath.Join(t.TempDir(), "wt")
+	gitRun(t, ".", "clone", filepath.Join(root, "1/test.git"), wt)
+	if err := os.MkdirAll(filepath.Join(wt, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt, "src", "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, wt, "add", "-A")
+	gitRun(t, wt, "commit", "-m", "init")
+	gitRun(t, wt, "push", "origin", "HEAD:refs/heads/main")
+
+	info, err := l.StatBlob(ctx, "1/test.git", "main", "src/main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size != int64(len("package main\n")) {
+		t.Errorf("size = %d", info.Size)
+	}
+	if !isHexSHA(info.CommitSHA) || !isHexSHA(info.BlobSHA) {
+		t.Errorf("shas not resolved: %+v", info)
+	}
+
+	var buf bytes.Buffer
+	if err := l.ReadBlob(ctx, "1/test.git", info.BlobSHA, &buf); err != nil {
+		t.Fatal(err)
+	}
+	if buf.String() != "package main\n" {
+		t.Errorf("content = %q", buf.String())
+	}
+
+	t.Run("errors", func(t *testing.T) {
+		cases := []struct {
+			name, rev, path string
+			want            error
+		}{
+			{"root is a tree", "main", "", ErrNotABlob},
+			{"dir is a tree", "main", "src", ErrNotABlob},
+			{"missing path", "main", "nope.txt", ErrPathNotFound},
+			{"unknown rev", "nope", "src/main.go", ErrRevNotFound},
+			{"hostile rev", "--help", "src/main.go", ErrInvalidRev},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				if _, err := l.StatBlob(ctx, "1/test.git", tc.rev, tc.path); !errors.Is(err, tc.want) {
+					t.Errorf("StatBlob(%q, %q) = %v, want %v", tc.rev, tc.path, err, tc.want)
+				}
+			})
+		}
+
+		// ReadBlob refuses anything that is not a plain object id
+		for _, sha := range []string{"main", "--help", "HEAD", strings.Repeat("a", 39), strings.Repeat("A", 40)} {
+			if err := l.ReadBlob(ctx, "1/test.git", sha, io.Discard); !errors.Is(err, ErrInvalidRev) {
+				t.Errorf("ReadBlob(%q) = %v, want ErrInvalidRev", sha, err)
+			}
+		}
+	})
+}
+
 func TestDiffRefs(t *testing.T) {
 	cases := []struct {
 		name          string

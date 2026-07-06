@@ -1,7 +1,5 @@
 package gitbackend
 
-import "errors"
-
 // the all-zero object id git uses to denote a missing ref
 // its zero in before, if it was created after
 // or its zero after, if it was deleted before
@@ -9,13 +7,6 @@ const zeroSHA = "0000000000000000000000000000000000000000"
 
 // hard cap on entries returned per directory level
 const maxTreeEntries = 10_000
-
-var (
-	ErrInvalidRev   = errors.New("invalid revision")
-	ErrInvalidPath  = errors.New("invalid tree path")
-	ErrRevNotFound  = errors.New("revision not found")
-	ErrPathNotFound = errors.New("path not found in tree")
-)
 
 type RefChange struct {
 	Ref    string
@@ -35,4 +26,10 @@ type TreeListing struct {
 	CommitSHA string // the exact commit the listing is a snapshot of
 	Entries   []TreeEntry
 	Truncated bool
+}
+
+type BlobInfo struct {
+	CommitSHA string
+	BlobSHA   string
+	Size      int64
 }

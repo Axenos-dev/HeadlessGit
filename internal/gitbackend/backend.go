@@ -15,4 +15,6 @@ type Backend interface {
 	ListTree(ctx context.Context, storagePath, rev, treePath string) (TreeListing, error)
 	ResolveCommit(ctx context.Context, storagePath, rev string) (string, error)
 	ArchiveTar(ctx context.Context, storagePath, rev string, out io.Writer) (string, error)
+	StatBlob(ctx context.Context, storagePath, rev, treePath string) (BlobInfo, error)
+	ReadBlob(ctx context.Context, storagePath, blobSHA string, out io.Writer) error
 }

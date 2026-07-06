@@ -14,4 +14,7 @@ var (
 
 	ErrUnsupportedFormat = errors.New("unsupported archive format")
 	ErrLFSNotEnabled     = errors.New("lfs is not enabled")
+
+	ErrNotAFile          = errors.New("path is not a file")
+	ErrLFSObjectNotFound = errors.New("lfs object not found")
 )

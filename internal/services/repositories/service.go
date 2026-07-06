@@ -1,6 +1,7 @@
 package repositories
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -32,6 +33,8 @@ type RepositoryStorage interface {
 	ListTree(ctx context.Context, storagePath, rev, treePath string) (gitbackend.TreeListing, error)
 	ResolveCommit(ctx context.Context, storagePath, rev string) (string, error)
 	ArchiveTar(ctx context.Context, storagePath, rev string, out io.Writer) (string, error)
+	StatBlob(ctx context.Context, storagePath, rev, treePath string) (gitbackend.BlobInfo, error)
+	ReadBlob(ctx context.Context, storagePath, blobSHA string, out io.Writer) error
 }
 
 type LFSObjects interface {
@@ -262,6 +265,79 @@ func (s *Service) StreamArchive(ctx context.Context, req domain.ArchiveRequest, 
 
 	prefix := fmt.Sprintf("%s-%s/", req.Repository.RepositoryName, domain.ShortSHA(req.CommitSHA))
 	return archive.Transform(pr, prefix, smudge, enc)
+}
+
+func (s *Service) PrepareBlob(ctx context.Context, repositoryID int64, ref, treePath string, includeLFS bool) (domain.BlobRequest, error) {
+	if includeLFS && s.lfs == nil {
+		return domain.BlobRequest{}, ErrLFSNotEnabled
+	}
+
+	repo, err := s.Get(ctx, repositoryID)
+	if err != nil {
+		return domain.BlobRequest{}, err
+	}
+
+	info, err := s.storage.StatBlob(ctx, repo.StoragePath, ref, treePath)
+	switch {
+	case errors.Is(err, gitbackend.ErrInvalidRev):
+		return domain.BlobRequest{}, ErrInvalidRef
+	case errors.Is(err, gitbackend.ErrInvalidPath):
+		return domain.BlobRequest{}, ErrInvalidPath
+	case errors.Is(err, gitbackend.ErrRevNotFound):
+		return domain.BlobRequest{}, ErrRefNotFound
+	case errors.Is(err, gitbackend.ErrPathNotFound):
+		return domain.BlobRequest{}, ErrPathNotFound
+	case errors.Is(err, gitbackend.ErrNotABlob):
+		return domain.BlobRequest{}, ErrNotAFile
+	case err != nil:
+		return domain.BlobRequest{}, err
+	}
+
+	req := domain.BlobRequest{
+		Repository: repo,
+		CommitSHA:  info.CommitSHA,
+		BlobSHA:    info.BlobSHA,
+		Path:       treePath,
+		Size:       info.Size,
+	}
+
+	// check pointer-sized blobs
+	if includeLFS && info.Size <= domain.LFSPointerMaxSize {
+		// read it
+		var buf bytes.Buffer
+		if err := s.storage.ReadBlob(ctx, repo.StoragePath, info.BlobSHA, &buf); err != nil {
+			return domain.BlobRequest{}, err
+		}
+		// then parse to see if its a pointer
+		if ptr, ok := domain.ParseLFSPointer(buf.Bytes()); ok {
+			// but the oid is repo content and untrusted
+			// so to be safe, we would pull it from dedicated lfs service with respect to repoID
+			rc, size, err := s.lfs.GetObject(ctx, repo, ptr.OID)
+			if err != nil {
+				return domain.BlobRequest{}, ErrLFSObjectNotFound
+			}
+			rc.Close()
+
+			req.LFSOID = ptr.OID
+			req.Size = size
+		}
+	}
+
+	return req, nil
+}
+
+func (s *Service) StreamBlob(ctx context.Context, req domain.BlobRequest, out io.Writer) error {
+	if req.LFSOID != "" {
+		rc, _, err := s.lfs.GetObject(ctx, req.Repository, req.LFSOID)
+		if err != nil {
+			return err
+		}
+		defer rc.Close()
+
+		_, err = io.Copy(out, rc)
+		return err
+	}
+	return s.storage.ReadBlob(ctx, req.Repository.StoragePath, req.BlobSHA, out)
 }
 
 func toDomain(r gen.Repository) domain.Repository {

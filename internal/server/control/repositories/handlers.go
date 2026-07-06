@@ -19,6 +19,8 @@ type RepositoryManager interface {
 	Contents(ctx context.Context, repositoryID int64, ref, treePath string) (domain.RepositoryContents, error)
 	PrepareArchive(ctx context.Context, repositoryID int64, ref, format string, includeLFS bool) (domain.ArchiveRequest, error)
 	StreamArchive(ctx context.Context, req domain.ArchiveRequest, out io.Writer) error
+	PrepareBlob(ctx context.Context, repositoryID int64, ref, treePath string, includeLFS bool) (domain.BlobRequest, error)
+	StreamBlob(ctx context.Context, req domain.BlobRequest, out io.Writer) error
 }
 
 type handlers struct {
@@ -39,6 +41,7 @@ func (h *handlers) RegisterRoutes(parent chi.Router) {
 		r.Get("/{repositoryID}", response.Handler(h.logger, h.getRepository))
 		r.Get("/{repositoryID}/contents", response.Handler(h.logger, h.getContents))
 		r.Get("/{repositoryID}/archive", response.Handler(h.logger, h.getArchive))
+		r.Get("/{repositoryID}/blob", response.Handler(h.logger, h.getBlob))
 		r.Put("/{repositoryID}/visibility", response.Handler(h.logger, h.setVisibility))
 		r.Delete("/{repositoryID}", response.Handler(h.logger, h.deleteRepository))
 	})

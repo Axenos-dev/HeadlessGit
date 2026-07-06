@@ -264,6 +264,79 @@ func (l *Local) ArchiveTar(ctx context.Context, storagePath, rev string, out io.
 	return commitSHA, nil
 }
 
+func (l *Local) StatBlob(ctx context.Context, storagePath, rev, treePath string) (BlobInfo, error) {
+	dir, err := l.resolve(storagePath)
+	if err != nil {
+		return BlobInfo{}, err
+	}
+
+	treePath, err = normalizeTreePath(treePath)
+	if err != nil {
+		return BlobInfo{}, err
+	}
+	if treePath == "" {
+		// the root is a tree by definition (and its not a blob)
+		return BlobInfo{}, fmt.Errorf("%w: %q", ErrNotABlob, treePath)
+	}
+
+	commitSHA, err := l.ResolveCommit(ctx, storagePath, rev)
+	if err != nil {
+		return BlobInfo{}, err
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, l.timeout)
+	defer cancel()
+
+	blobSHA, err := l.revParse(ctx, dir, commitSHA+":"+treePath)
+	if err != nil {
+		return BlobInfo{}, fmt.Errorf("%w: %q", ErrPathNotFound, treePath)
+	}
+
+	cmd := exec.CommandContext(ctx, l.gitPath, "-C", dir, "cat-file", "--batch-check")
+	cmd.Stdin = strings.NewReader(blobSHA + "\n")
+	var out, stderr bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return BlobInfo{}, fmt.Errorf("cat-file --batch-check: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+
+	// output shape: "<sha> <type> <size>"
+	fields := strings.Fields(out.String())
+	if len(fields) != 3 {
+		return BlobInfo{}, fmt.Errorf("malformed batch-check output: %q", out.String())
+	}
+	if fields[1] != "blob" {
+		return BlobInfo{}, fmt.Errorf("%w: %q is a %s", ErrNotABlob, treePath, fields[1])
+	}
+	size, err := strconv.ParseInt(fields[2], 10, 64)
+	if err != nil {
+		return BlobInfo{}, fmt.Errorf("malformed blob size %q: %w", fields[2], err)
+	}
+
+	return BlobInfo{CommitSHA: commitSHA, BlobSHA: blobSHA, Size: size}, nil
+}
+
+func (l *Local) ReadBlob(ctx context.Context, storagePath, blobSHA string, out io.Writer) error {
+	dir, err := l.resolve(storagePath)
+	if err != nil {
+		return err
+	}
+
+	if !isHexSHA(blobSHA) {
+		return fmt.Errorf("%w: %q", ErrInvalidRev, blobSHA)
+	}
+
+	cmd := exec.CommandContext(ctx, l.gitPath, "-C", dir, "cat-file", "blob", blobSHA)
+	cmd.Stdout = out
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("cat-file blob: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
 func (l *Local) ResolveCommit(ctx context.Context, storagePath, rev string) (string, error) {
 	dir, err := l.resolve(storagePath)
 	if err != nil {
@@ -411,4 +484,16 @@ func (l *Local) resolve(storagePath string) (string, error) {
 		return "", fmt.Errorf("invalid storage path: %s", storagePath)
 	}
 	return full, nil
+}
+
+func isHexSHA(s string) bool {
+	if len(s) != 40 {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }

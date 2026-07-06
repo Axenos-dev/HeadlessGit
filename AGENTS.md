@@ -54,7 +54,7 @@ Package map:
 | `internal/domain`             | Core types (repository, account, role, token, ssh key, lfs).                                                      |
 | `internal/services/*`         | Business logic per area (repositories, users, auth, permissions, lfs); each has a service + a registry over `db`. |
 | `internal/storage`            | LFS object storage behind an interface (`disk`, `s3`).                                                            |
-| `internal/archive`            | Pure mechanism, no service deps: streaming tar re-encode to zip/tar.gz with an injected LFS smudge callback.      |
+| `internal/archive`            | Pure mechanism: streaming tar re-encode to zip/tar.gz with an injected LFS smudge callback.                       |
 | `internal/gitbackend`         | Git subprocesses behind a small interface: pack protocol plus read ops (ls-tree, rev resolution, tar archive).    |
 | `internal/server`             | Composition root: wires control + git servers, runs and shuts down listeners.                                     |
 | `internal/server/control`     | Control API (REST); sub-handlers in `repositories/`, `users/`, `permissions/`.                                    |
@@ -115,6 +115,12 @@ Never:
 Prefer simple Go: small interfaces at module boundaries, context-aware I/O, explicit
 errors with context, table-driven tests, standard library first. Avoid large global
 state, framework-heavy abstractions, and dependencies added for small tasks.
+
+**File layout.** Do not multiply files or packages. A service is `service.go` +
+`errors.go` + `registry.go` — new service methods go into `service.go`, not new
+files. One test file per package where practical (`service_test.go`,
+`handlers_test.go`). Small parsing/vocabulary helpers (formats, pointers, modes)
+belong in `domain` next to the types they produce, not in new packages.
 
 **Dependencies & interfaces.** The package that _invokes_ a dependency defines a
 minimal consumer interface for it (e.g. `gitssh`'s `Authenticator`/`TokenMinter`,

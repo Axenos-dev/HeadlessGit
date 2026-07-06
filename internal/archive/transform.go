@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"io"
+
+	"github.com/Axenos-dev/HeadlessGit/internal/domain"
 )
 
 type SmudgeFunc func(oid string) (io.ReadCloser, int64, error)
@@ -33,7 +35,7 @@ func Transform(src io.Reader, prefix string, smudge SmudgeFunc, enc Encoder) err
 
 func writeEntry(enc Encoder, hdr *tar.Header, body io.Reader, smudge SmudgeFunc) error {
 	// only small regular files can be LFS pointers, everything else passes through
-	if smudge == nil || hdr.Typeflag != tar.TypeReg || hdr.Size > lfsPointerMaxSize {
+	if smudge == nil || hdr.Typeflag != tar.TypeReg || hdr.Size > domain.LFSPointerMaxSize {
 		return enc.Write(hdr, body)
 	}
 
@@ -41,12 +43,12 @@ func writeEntry(enc Encoder, hdr *tar.Header, body io.Reader, smudge SmudgeFunc)
 	if err != nil {
 		return err
 	}
-	ptr, ok := parseLFSPointer(data)
+	ptr, ok := domain.ParseLFSPointer(data)
 	if !ok {
 		return enc.Write(hdr, bytes.NewReader(data))
 	}
 
-	rc, size, err := smudge(ptr.oid)
+	rc, size, err := smudge(ptr.OID)
 	if err != nil {
 		// missing or foreign object: keep the pointer bytes, never fail the archive
 		return enc.Write(hdr, bytes.NewReader(data))
