@@ -359,6 +359,26 @@ func (l *Local) ResolveCommit(ctx context.Context, storagePath, rev string) (str
 	return commitSHA, nil
 }
 
+func (l *Local) WriteBlob(ctx context.Context, storagePath string, r io.Reader) (string, int64, error) {
+	dir, err := l.resolve(storagePath)
+	if err != nil {
+		return "", 0, err
+	}
+
+	counter := &countingReader{r: r}
+	cmd := exec.CommandContext(ctx, l.gitPath, "-C", dir, "hash-object", "-w", "--stdin")
+	cmd.Stdin = counter
+
+	var out, stderr bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", 0, fmt.Errorf("hash-object: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+
+	return strings.TrimSpace(out.String()), counter.n, nil
+}
+
 // revParse resolves a rev expression to an object id, failing when the object does not exist
 func (l *Local) revParse(ctx context.Context, dir, spec string) (string, error) {
 	cmd := exec.CommandContext(ctx, l.gitPath, "-C", dir, "rev-parse", "--verify", "--end-of-options", spec)
@@ -496,4 +516,16 @@ func isHexSHA(s string) bool {
 		}
 	}
 	return true
+}
+
+// just to keep track how much bytes were streamed
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
 }

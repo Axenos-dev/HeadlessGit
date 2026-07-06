@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/domain"
@@ -29,6 +30,9 @@ type fakeManager struct {
 
 	blobReq domain.BlobRequest
 	blobErr error
+
+	writeSHA string
+	writeErr error
 }
 
 func (f fakeManager) PrepareArchive(ctx context.Context, repositoryID int64, ref, format string, includeLFS bool) (domain.ArchiveRequest, error) {
@@ -63,6 +67,17 @@ func (f fakeManager) StreamBlob(ctx context.Context, req domain.BlobRequest, out
 		}
 	}
 	return f.streamErr
+}
+
+func (f fakeManager) WriteBlob(ctx context.Context, repositoryID int64, in io.Reader) (string, int64, error) {
+	n, err := io.Copy(io.Discard, in) // consume the stream like the real thing
+	if err != nil {
+		return "", 0, err
+	}
+	if f.writeErr != nil {
+		return "", 0, f.writeErr
+	}
+	return f.writeSHA, n, nil
 }
 
 // newTestRouter mounts the handlers the same way the control server does
@@ -241,6 +256,69 @@ func TestGetBlobNotModified(t *testing.T) {
 	}
 	if rec.Body.Len() != 0 {
 		t.Errorf("304 must have no body, got %d bytes", rec.Body.Len())
+	}
+}
+
+func TestUploadBlob(t *testing.T) {
+	router := newTestRouter(fakeManager{writeSHA: "ce013625030ba8dba906f756967f9e9ca394464a"})
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/repositories/7/blobs", strings.NewReader("hello\n")))
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Data struct {
+			SHA  string `json:"sha"`
+			Size int64  `json:"size"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Data.SHA != "ce013625030ba8dba906f756967f9e9ca394464a" {
+		t.Errorf("sha = %q", body.Data.SHA)
+	}
+	if body.Data.Size != 6 {
+		t.Errorf("size = %d", body.Data.Size)
+	}
+}
+
+func TestUploadBlobErrors(t *testing.T) {
+	cases := []struct {
+		name       string
+		target     string
+		writeErr   error
+		wantStatus int
+		wantCode   string
+	}{
+		{"bad id", "/repositories/abc/blobs", nil, http.StatusBadRequest, "invalid_request"},
+		{"repo not found", "/repositories/7/blobs", reposervice.ErrRepositoryNotFound, http.StatusNotFound, "repository_not_found"},
+		{"write fails", "/repositories/7/blobs", io.ErrUnexpectedEOF, http.StatusInternalServerError, "internal_error"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			router := newTestRouter(fakeManager{writeErr: tc.writeErr})
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, tc.target, strings.NewReader("x")))
+
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			var body struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Error.Code != tc.wantCode {
+				t.Errorf("code = %q, want %q", body.Error.Code, tc.wantCode)
+			}
+		})
 	}
 }
 

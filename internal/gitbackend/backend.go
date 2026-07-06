@@ -17,4 +17,5 @@ type Backend interface {
 	ArchiveTar(ctx context.Context, storagePath, rev string, out io.Writer) (string, error)
 	StatBlob(ctx context.Context, storagePath, rev, treePath string) (BlobInfo, error)
 	ReadBlob(ctx context.Context, storagePath, blobSHA string, out io.Writer) error
+	WriteBlob(ctx context.Context, storagePath string, r io.Reader) (string, int64, error)
 }

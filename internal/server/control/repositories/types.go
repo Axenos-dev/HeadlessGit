@@ -110,3 +110,8 @@ func (r UpdateVisibilityRequest) Validate() error {
 	}
 	return nil
 }
+
+type UploadBlobResponse struct {
+	SHA  string `json:"sha"`
+	Size int64  `json:"size"`
+}

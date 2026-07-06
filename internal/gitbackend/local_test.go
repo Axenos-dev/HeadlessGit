@@ -405,6 +405,47 @@ func TestBlob(t *testing.T) {
 		t.Errorf("content = %q", buf.String())
 	}
 
+	t.Run("write blob", func(t *testing.T) {
+		// git blob shas are deterministic: "hello\n" is famously 0xce0136...
+		sha, size, err := l.WriteBlob(ctx, "1/test.git", strings.NewReader("hello\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sha != "ce013625030ba8dba906f756967f9e9ca394464a" {
+			t.Errorf("sha = %q", sha)
+		}
+		if size != 6 {
+			t.Errorf("size = %d", size)
+		}
+
+		// the object must be readable back before any commit references it
+		var buf bytes.Buffer
+		if err := l.ReadBlob(ctx, "1/test.git", sha, &buf); err != nil {
+			t.Fatal(err)
+		}
+		if buf.String() != "hello\n" {
+			t.Errorf("content = %q", buf.String())
+		}
+
+		// uploading the same content again dedupes to the same sha
+		again, _, err := l.WriteBlob(ctx, "1/test.git", strings.NewReader("hello\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if again != sha {
+			t.Errorf("re-upload sha = %q, want %q", again, sha)
+		}
+
+		// empty content is the canonical empty blob
+		empty, size, err := l.WriteBlob(ctx, "1/test.git", strings.NewReader(""))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if empty != "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391" || size != 0 {
+			t.Errorf("empty blob = %q size %d", empty, size)
+		}
+	})
+
 	t.Run("errors", func(t *testing.T) {
 		cases := []struct {
 			name, rev, path string

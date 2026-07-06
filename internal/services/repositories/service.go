@@ -35,6 +35,7 @@ type RepositoryStorage interface {
 	ArchiveTar(ctx context.Context, storagePath, rev string, out io.Writer) (string, error)
 	StatBlob(ctx context.Context, storagePath, rev, treePath string) (gitbackend.BlobInfo, error)
 	ReadBlob(ctx context.Context, storagePath, blobSHA string, out io.Writer) error
+	WriteBlob(ctx context.Context, storagePath string, r io.Reader) (string, int64, error)
 }
 
 type LFSObjects interface {
@@ -338,6 +339,15 @@ func (s *Service) StreamBlob(ctx context.Context, req domain.BlobRequest, out io
 		return err
 	}
 	return s.storage.ReadBlob(ctx, req.Repository.StoragePath, req.BlobSHA, out)
+}
+
+func (s *Service) WriteBlob(ctx context.Context, repositoryID int64, in io.Reader) (string, int64, error) {
+	repo, err := s.Get(ctx, repositoryID)
+	if err != nil {
+		return "", 0, err
+	}
+
+	return s.storage.WriteBlob(ctx, repo.StoragePath, in)
 }
 
 func toDomain(r gen.Repository) domain.Repository {

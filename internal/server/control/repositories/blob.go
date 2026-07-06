@@ -14,6 +14,27 @@ import (
 	"go.uber.org/zap"
 )
 
+func (h *handlers) uploadBlob(w http.ResponseWriter, r *http.Request) error {
+	id, err := strconv.ParseInt(chi.URLParam(r, "repositoryID"), 10, 64)
+	if err != nil {
+		return response.NewError(http.StatusBadRequest, response.CodeInvalidRequest, "invalid repository id")
+	}
+
+	sha, byteCount, err := h.service.WriteBlob(r.Context(), id, r.Body)
+	switch {
+	case errors.Is(err, reposervice.ErrRepositoryNotFound):
+		return response.NewError(http.StatusNotFound, response.CodeRepositoryNotFound, "repository not found")
+	case err != nil:
+		h.logger.Error("failed to write blob", zap.Error(err))
+		return response.NewError(http.StatusInternalServerError, response.CodeInternalError, "failed to write blob")
+	}
+
+	return response.Data(w, http.StatusCreated, UploadBlobResponse{
+		SHA:  sha,
+		Size: byteCount,
+	})
+}
+
 func (h *handlers) getBlob(w http.ResponseWriter, r *http.Request) error {
 	id, err := strconv.ParseInt(chi.URLParam(r, "repositoryID"), 10, 64)
 	if err != nil {
