@@ -36,6 +36,10 @@ func (r *RepositoryRegistry) ListUserRepositories(ctx context.Context, ownerID i
 	return r.db.ListUserRepositories(ctx, ownerID)
 }
 
+func (r *RepositoryRegistry) ListRepositories(ctx context.Context) ([]gen.Repository, error) {
+	return r.db.ListRepositories(ctx)
+}
+
 func (r *RepositoryRegistry) CreateRepository(ctx context.Context, ownerID int64, name, storagePath, visibility string) (gen.Repository, error) {
 	return r.db.CreateRepository(ctx, gen.CreateRepositoryParams{
 		OwnerID:        ownerID,

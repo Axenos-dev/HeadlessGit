@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/config"
 	"github.com/Axenos-dev/HeadlessGit/internal/db"
@@ -31,18 +30,13 @@ type Services struct {
 	DB             *db.DB
 }
 
-// clean up expired tokens every hour
-const tokenGCInterval = time.Hour
-
-// number of workers which going to handle webhooks
-const webhookWorkers = 3
-
 type server struct {
 	cfg    config.ServerConfig
 	logger *zap.Logger
 
 	auth     *authservice.Service
 	webhooks *webhooksservice.Service
+	repos    *reposervice.Service
 
 	control *control.Server
 	git     *git.Server
@@ -58,6 +52,7 @@ func NewServer(
 		logger:   logger,
 		auth:     svc.Authentication,
 		webhooks: svc.Webhooks,
+		repos:    svc.Repositories,
 		control: control.NewServer(logger.With(zap.String("component", "control")), control.Services{
 			Repositories:   svc.Repositories,
 			Authentication: svc.Authentication,
@@ -81,11 +76,18 @@ func (s *server) Run(ctx context.Context) error {
 	errCh := make(chan error, 3)
 
 	// clean up expired tokens
-	go s.auth.RunExpiredTokenGC(ctx, tokenGCInterval)
+	if s.cfg.TokenGCInterval > 0 {
+		go s.auth.RunExpiredTokenGC(ctx, s.cfg.TokenGCInterval)
+	}
+
+	// run git GC, to remove orphaned blobs in OBD
+	if s.cfg.RepoGCInterval > 0 {
+		go s.repos.StartGC(ctx, s.cfg.RepoGCInterval)
+	}
 
 	// handle webhooks
 	// it runs N goroutines for us, so dont Start in goroutine
-	s.webhooks.Start(ctx, webhookWorkers)
+	s.webhooks.Start(ctx, s.cfg.WebhookWorkers)
 
 	go func() {
 		errCh <- s.control.Run(ctx, fmt.Sprintf(":%d", s.cfg.ControlPort))

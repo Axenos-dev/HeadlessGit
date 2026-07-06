@@ -6,6 +6,9 @@ where id=? limit 1;
 select * from repositories 
 where owner_id=?;
 
+-- name: ListRepositories :many
+select * from repositories;
+
 -- name: CreateRepository :one
 insert into repositories (
   owner_id, repository_name, storage_path, visibility

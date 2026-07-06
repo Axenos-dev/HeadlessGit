@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 // runs a git command in dir with a deterministic identity, failing the test on error
@@ -654,6 +655,56 @@ func TestApplyCommit(t *testing.T) {
 			t.Errorf("notes.txt was cleaned but is not lfs-tracked")
 		}
 	})
+}
+
+func TestGC(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	root := t.TempDir()
+	l, err := NewLocal(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	const repo = "1/test.git"
+
+	if err := l.InitBare(ctx, repo); err != nil {
+		t.Fatal(err)
+	}
+
+	// a fresh orphan must survive gc: the prune grace period protects
+	// uploads whose commit has not happened yet
+	fresh, _, err := l.WriteBlob(ctx, repo, strings.NewReader("pending upload\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := l.GC(ctx, repo); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.ReadBlob(ctx, repo, fresh, io.Discard); err != nil {
+		t.Fatalf("fresh orphan pruned: %v", err)
+	}
+
+	// an orphan backdated past gc.pruneExpire (2 weeks) must be pruned;
+	// backdate before gc runs, since gc moves loose objects into cruft packs
+	orphan, _, err := l.WriteBlob(ctx, repo, strings.NewReader("abandoned upload\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	loose := filepath.Join(root, repo, "objects", orphan[:2], orphan[2:])
+	old := time.Now().Add(-21 * 24 * time.Hour)
+	if err := os.Chtimes(loose, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := l.GC(ctx, repo); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.ReadBlob(ctx, repo, orphan, io.Discard); err == nil {
+		t.Error("expired orphan survived gc")
+	}
 }
 
 func TestDiffRefs(t *testing.T) {

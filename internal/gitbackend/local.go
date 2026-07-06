@@ -25,6 +25,9 @@ const (
 	ReceivePack                // push
 )
 
+// repacking a large repo can take a while
+const gcTimeout = 30 * time.Minute
+
 // returns the command name of the service
 func (s Service) Name() string {
 	if s == ReceivePack {
@@ -353,6 +356,24 @@ func (l *Local) WriteBlob(ctx context.Context, storagePath string, r io.Reader) 
 	}
 
 	return strings.TrimSpace(out.String()), counter.n, nil
+}
+
+func (l *Local) GC(ctx context.Context, storagePath string) error {
+	dir, err := l.resolve(storagePath)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, gcTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, l.gitPath, "-C", dir, "gc", "--quiet")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("git gc: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
 }
 
 // creates a commit on a branch from already-uploaded blobs

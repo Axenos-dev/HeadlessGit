@@ -27,6 +27,7 @@ type Registry interface {
 	GetRepositoryByPath(ctx context.Context, namespace, name string) (gen.Repository, error)
 	UpdateRepositoryVisibility(ctx context.Context, repositoryID int64, visibility string) (gen.Repository, error)
 	ListUserRepositories(ctx context.Context, ownerID int64) ([]gen.Repository, error)
+	ListRepositories(ctx context.Context) ([]gen.Repository, error)
 }
 
 type RepositoryStorage interface {
@@ -39,6 +40,7 @@ type RepositoryStorage interface {
 	ReadBlob(ctx context.Context, storagePath, blobSHA string, out io.Writer) error
 	WriteBlob(ctx context.Context, storagePath string, r io.Reader) (string, int64, error)
 	ApplyCommit(ctx context.Context, storagePath string, spec gitbackend.CommitSpec, ops []gitbackend.CommitOp, clean gitbackend.CleanFunc) (gitbackend.RefChange, error)
+	GC(ctx context.Context, storagePath string) error
 }
 
 type LFSObjects interface {
@@ -66,6 +68,37 @@ func NewService(logger *zap.Logger, registry Registry, storage RepositoryStorage
 		storage:  storage,
 		lfs:      lfs,
 		events:   events,
+	}
+}
+
+func (s *Service) StartGC(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		repos, err := s.registry.ListRepositories(ctx)
+		if err != nil {
+			s.logger.Error("gc: failed to list repositories", zap.Error(err))
+			continue
+		}
+
+		for _, repo := range repos {
+			if err := s.storage.GC(ctx, repo.StoragePath); err != nil {
+				s.logger.Warn("gc failed", zap.Int64("repository_id", repo.ID), zap.Error(err))
+			}
+
+			// pace the sweep so gc never hammers the whole disk at once
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Second):
+			}
+		}
 	}
 }
 

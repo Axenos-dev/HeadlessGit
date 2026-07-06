@@ -101,6 +101,41 @@ func (q *Queries) GetRepositoryByPath(ctx context.Context, arg GetRepositoryByPa
 	return i, err
 }
 
+const listRepositories = `-- name: ListRepositories :many
+select id, owner_id, repository_name, storage_path, visibility, created_at_unix_ms, updated_at_unix_ms from repositories
+`
+
+func (q *Queries) ListRepositories(ctx context.Context) ([]Repository, error) {
+	rows, err := q.db.QueryContext(ctx, listRepositories)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Repository
+	for rows.Next() {
+		var i Repository
+		if err := rows.Scan(
+			&i.ID,
+			&i.OwnerID,
+			&i.RepositoryName,
+			&i.StoragePath,
+			&i.Visibility,
+			&i.CreatedAtUnixMs,
+			&i.UpdatedAtUnixMs,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listUserRepositories = `-- name: ListUserRepositories :many
 select id, owner_id, repository_name, storage_path, visibility, created_at_unix_ms, updated_at_unix_ms from repositories 
 where owner_id=?
