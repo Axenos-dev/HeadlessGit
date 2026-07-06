@@ -55,26 +55,6 @@ func main() {
 		log.Fatal(err)
 	}
 
-	repoService := repositories.NewService(
-		root.With(zap.String("service", "repositories")),
-		repositories.NewRegistry(db),
-		gitBackend,
-	)
-
-	authService := auth.NewService(
-		root.With(zap.String("service", "auth")),
-		auth.NewRegistry(db),
-	)
-
-	if config.AdminToken != "" {
-		if err := authService.SeedAdmin(context.Background(), config.AdminToken); err != nil {
-			log.Fatal(err)
-		}
-	}
-
-	permsService := permissions.NewService(permissions.NewRegistry(db))
-	usersService := users.NewService(users.NewRegistry(db))
-
 	// nil when LFS is disabled
 	var lfsService *lfs.Service
 	if config.LFS.Enabled {
@@ -93,10 +73,38 @@ func main() {
 		)
 	}
 
+	// assign through a typed variable so a disabled LFS stays a real nil interface
+	var repoLFS repositories.LFSObjects
+	if lfsService != nil {
+		repoLFS = lfsService
+	}
+
 	webhooksService := webhooks.NewService(
 		root.With(zap.String("service", "webhooks")),
 		webhooks.NewRegistry(db),
 	)
+
+	repoService := repositories.NewService(
+		root.With(zap.String("service", "repositories")),
+		repositories.NewRegistry(db),
+		gitBackend,
+		repoLFS,
+		webhooksService,
+	)
+
+	authService := auth.NewService(
+		root.With(zap.String("service", "auth")),
+		auth.NewRegistry(db),
+	)
+
+	if config.AdminToken != "" {
+		if err := authService.SeedAdmin(context.Background(), config.AdminToken); err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	permsService := permissions.NewService(permissions.NewRegistry(db))
+	usersService := users.NewService(users.NewRegistry(db))
 
 	ctx, stop := signal.NotifyContext(
 		context.Background(),

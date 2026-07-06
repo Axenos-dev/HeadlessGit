@@ -1,15 +1,22 @@
 package repositories
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"path"
 	"strings"
 	"time"
 
+	"github.com/Axenos-dev/HeadlessGit/internal/archive"
 	"github.com/Axenos-dev/HeadlessGit/internal/db/gen"
 	"github.com/Axenos-dev/HeadlessGit/internal/domain"
+	"github.com/Axenos-dev/HeadlessGit/internal/gitbackend"
 	"go.uber.org/zap"
 )
 
@@ -20,24 +27,78 @@ type Registry interface {
 	GetRepositoryByPath(ctx context.Context, namespace, name string) (gen.Repository, error)
 	UpdateRepositoryVisibility(ctx context.Context, repositoryID int64, visibility string) (gen.Repository, error)
 	ListUserRepositories(ctx context.Context, ownerID int64) ([]gen.Repository, error)
+	ListRepositories(ctx context.Context) ([]gen.Repository, error)
 }
 
 type RepositoryStorage interface {
 	InitBare(ctx context.Context, storagePath string) error
 	Remove(ctx context.Context, storagePath string) error
+	ListTree(ctx context.Context, storagePath, rev, treePath string) (gitbackend.TreeListing, error)
+	ResolveCommit(ctx context.Context, storagePath, rev string) (string, error)
+	ArchiveTar(ctx context.Context, storagePath, rev string, out io.Writer) (string, error)
+	StatBlob(ctx context.Context, storagePath, rev, treePath string) (gitbackend.BlobInfo, error)
+	ReadBlob(ctx context.Context, storagePath, blobSHA string, out io.Writer) error
+	WriteBlob(ctx context.Context, storagePath string, r io.Reader) (string, int64, error)
+	ApplyCommit(ctx context.Context, storagePath string, spec gitbackend.CommitSpec, ops []gitbackend.CommitOp, clean gitbackend.CleanFunc) (gitbackend.RefChange, error)
+	GC(ctx context.Context, storagePath string) error
+}
+
+type LFSObjects interface {
+	GetObject(ctx context.Context, repo domain.Repository, oid string) (io.ReadCloser, int64, error)
+	StoreObject(ctx context.Context, repo domain.Repository, uploaderID int64, oid string, size int64, r io.Reader) error
+}
+
+// implemented by the webhooks service; nil disables push events for api commits
+type PushDispatcher interface {
+	DispatchEvent(ctx context.Context, event domain.RepositoryEvent) error
 }
 
 type Service struct {
 	logger   *zap.Logger
 	registry Registry
 	storage  RepositoryStorage
+	lfs      LFSObjects
+	events   PushDispatcher
 }
 
-func NewService(logger *zap.Logger, registry Registry, storage RepositoryStorage) *Service {
+func NewService(logger *zap.Logger, registry Registry, storage RepositoryStorage, lfs LFSObjects, events PushDispatcher) *Service {
 	return &Service{
 		logger:   logger,
 		registry: registry,
 		storage:  storage,
+		lfs:      lfs,
+		events:   events,
+	}
+}
+
+func (s *Service) StartGC(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		repos, err := s.registry.ListRepositories(ctx)
+		if err != nil {
+			s.logger.Error("gc: failed to list repositories", zap.Error(err))
+			continue
+		}
+
+		for _, repo := range repos {
+			if err := s.storage.GC(ctx, repo.StoragePath); err != nil {
+				s.logger.Warn("gc failed", zap.Int64("repository_id", repo.ID), zap.Error(err))
+			}
+
+			// pace the sweep so gc never hammers the whole disk at once
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Second):
+			}
+		}
 	}
 }
 
@@ -139,6 +200,35 @@ func (s *Service) ListByOwner(ctx context.Context, ownerID int64) ([]domain.Repo
 	return out, nil
 }
 
+func (s *Service) Contents(ctx context.Context, repositoryID int64, ref, treePath string) (domain.RepositoryContents, error) {
+	repo, err := s.registry.GetRepository(ctx, repositoryID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.RepositoryContents{}, ErrRepositoryNotFound
+	}
+	if err != nil {
+		return domain.RepositoryContents{}, err
+	}
+
+	listing, err := s.storage.ListTree(ctx, repo.StoragePath, ref, treePath)
+	switch {
+	case errors.Is(err, gitbackend.ErrInvalidRev):
+		return domain.RepositoryContents{}, ErrInvalidRef
+	case errors.Is(err, gitbackend.ErrInvalidPath):
+		return domain.RepositoryContents{}, ErrInvalidPath
+	case errors.Is(err, gitbackend.ErrRevNotFound):
+		return domain.RepositoryContents{}, ErrRefNotFound
+	case errors.Is(err, gitbackend.ErrPathNotFound):
+		return domain.RepositoryContents{}, ErrPathNotFound
+	case err != nil:
+		return domain.RepositoryContents{}, err
+	}
+
+	if ref == "" {
+		ref = "HEAD"
+	}
+	return toContents(ref, treePath, listing), nil
+}
+
 func (s *Service) GetRepositoryByPath(ctx context.Context, namespace, name string) (domain.Repository, error) {
 	repo, err := s.registry.GetRepositoryByPath(ctx, namespace, name)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -148,6 +238,296 @@ func (s *Service) GetRepositoryByPath(ctx context.Context, namespace, name strin
 		return domain.Repository{}, err
 	}
 	return toDomain(repo), nil
+}
+
+func (s *Service) PrepareArchive(ctx context.Context, repositoryID int64, ref, format string, includeLFS bool) (domain.ArchiveRequest, error) {
+	f, ok := domain.ParseArchiveFormat(format)
+	if !ok {
+		return domain.ArchiveRequest{}, ErrUnsupportedFormat
+	}
+	if includeLFS && s.lfs == nil {
+		return domain.ArchiveRequest{}, ErrLFSNotEnabled
+	}
+
+	repo, err := s.Get(ctx, repositoryID)
+	if err != nil {
+		return domain.ArchiveRequest{}, err
+	}
+
+	sha, err := s.storage.ResolveCommit(ctx, repo.StoragePath, ref)
+	switch {
+	case errors.Is(err, gitbackend.ErrInvalidRev):
+		return domain.ArchiveRequest{}, ErrInvalidRef
+	case errors.Is(err, gitbackend.ErrRevNotFound):
+		return domain.ArchiveRequest{}, ErrRefNotFound
+	case err != nil:
+		return domain.ArchiveRequest{}, err
+	}
+
+	return domain.ArchiveRequest{
+		Repository: repo,
+		CommitSHA:  sha,
+		Format:     f,
+		IncludeLFS: includeLFS,
+	}, nil
+}
+
+func (s *Service) StreamArchive(ctx context.Context, req domain.ArchiveRequest, out io.Writer) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// create pipe and stream git archive to writer
+	pr, pw := io.Pipe()
+	go func() {
+		_, err := s.storage.ArchiveTar(ctx, req.Repository.StoragePath, req.CommitSHA, pw)
+		pw.CloseWithError(err)
+	}()
+
+	// create archive endocer depending on the archive type, connect it to output writer
+	var enc archive.Encoder
+	if req.Format == domain.ArchiveFormatTarGz {
+		enc = archive.NewTarGzEncoder(out)
+	} else {
+		enc = archive.NewZipEncoder(out)
+	}
+
+	// define a spefic smudge function for LFS objects
+	// to translate LFS pointers into a real blobs
+	var smudge archive.SmudgeFunc
+	if req.IncludeLFS {
+		smudge = func(oid string) (io.ReadCloser, int64, error) {
+			rc, size, err := s.lfs.GetObject(ctx, req.Repository, oid)
+			if err != nil {
+				s.logger.Warn("lfs object unavailable for archive, keeping pointer",
+					zap.Int64("repository_id", req.Repository.ID),
+					zap.String("oid", oid),
+					zap.Error(err),
+				)
+			}
+			return rc, size, err
+		}
+	}
+
+	prefix := fmt.Sprintf("%s-%s/", req.Repository.RepositoryName, domain.ShortSHA(req.CommitSHA))
+	return archive.Transform(pr, prefix, smudge, enc)
+}
+
+func (s *Service) PrepareBlob(ctx context.Context, repositoryID int64, ref, treePath string, includeLFS bool) (domain.BlobRequest, error) {
+	if includeLFS && s.lfs == nil {
+		return domain.BlobRequest{}, ErrLFSNotEnabled
+	}
+
+	repo, err := s.Get(ctx, repositoryID)
+	if err != nil {
+		return domain.BlobRequest{}, err
+	}
+
+	info, err := s.storage.StatBlob(ctx, repo.StoragePath, ref, treePath)
+	switch {
+	case errors.Is(err, gitbackend.ErrInvalidRev):
+		return domain.BlobRequest{}, ErrInvalidRef
+	case errors.Is(err, gitbackend.ErrInvalidPath):
+		return domain.BlobRequest{}, ErrInvalidPath
+	case errors.Is(err, gitbackend.ErrRevNotFound):
+		return domain.BlobRequest{}, ErrRefNotFound
+	case errors.Is(err, gitbackend.ErrPathNotFound):
+		return domain.BlobRequest{}, ErrPathNotFound
+	case errors.Is(err, gitbackend.ErrNotABlob):
+		return domain.BlobRequest{}, ErrNotAFile
+	case err != nil:
+		return domain.BlobRequest{}, err
+	}
+
+	req := domain.BlobRequest{
+		Repository: repo,
+		CommitSHA:  info.CommitSHA,
+		BlobSHA:    info.BlobSHA,
+		Path:       treePath,
+		Size:       info.Size,
+	}
+
+	// check pointer-sized blobs
+	if includeLFS && info.Size <= domain.LFSPointerMaxSize {
+		// read it
+		var buf bytes.Buffer
+		if err := s.storage.ReadBlob(ctx, repo.StoragePath, info.BlobSHA, &buf); err != nil {
+			return domain.BlobRequest{}, err
+		}
+		// then parse to see if its a pointer
+		if ptr, ok := domain.ParseLFSPointer(buf.Bytes()); ok {
+			// but the oid is repo content and untrusted
+			// so to be safe, we would pull it from dedicated lfs service with respect to repoID
+			rc, size, err := s.lfs.GetObject(ctx, repo, ptr.OID)
+			if err != nil {
+				return domain.BlobRequest{}, ErrLFSObjectNotFound
+			}
+			rc.Close()
+
+			req.LFSOID = ptr.OID
+			req.Size = size
+		}
+	}
+
+	return req, nil
+}
+
+func (s *Service) StreamBlob(ctx context.Context, req domain.BlobRequest, out io.Writer) error {
+	if req.LFSOID != "" {
+		rc, _, err := s.lfs.GetObject(ctx, req.Repository, req.LFSOID)
+		if err != nil {
+			return err
+		}
+		defer rc.Close()
+
+		_, err = io.Copy(out, rc)
+		return err
+	}
+	return s.storage.ReadBlob(ctx, req.Repository.StoragePath, req.BlobSHA, out)
+}
+
+func (s *Service) WriteBlob(ctx context.Context, repositoryID int64, in io.Reader) (string, int64, error) {
+	repo, err := s.Get(ctx, repositoryID)
+	if err != nil {
+		return "", 0, err
+	}
+
+	return s.storage.WriteBlob(ctx, repo.StoragePath, in)
+}
+
+func (s *Service) Commit(ctx context.Context, repositoryID int64, req domain.CommitRequest) (domain.CommitResult, error) {
+	repo, err := s.Get(ctx, repositoryID)
+	if err != nil {
+		return domain.CommitResult{}, err
+	}
+
+	ops := make([]gitbackend.CommitOp, len(req.Operations))
+	for i, op := range req.Operations {
+		mode := ""
+		if op.Executable {
+			mode = "100755"
+		}
+		ops[i] = gitbackend.CommitOp{
+			Delete:  op.Delete,
+			Path:    op.Path,
+			BlobSHA: op.BlobSHA,
+			Mode:    mode,
+		}
+	}
+
+	spec := gitbackend.CommitSpec{
+		Branch:      req.Branch,
+		ExpectedOld: req.ExpectedHeadSHA,
+		Author: gitbackend.Identity{
+			Name:  req.Author.Name,
+			Email: req.Author.Email,
+		},
+		Message: req.Message,
+	}
+
+	// nil when LFS is disabled
+	// lfs-tracked paths then fail with ErrLFSRequired
+	var clean gitbackend.CleanFunc
+	if s.lfs != nil {
+		clean = s.lfsCleanFunc(ctx, repo, req.PusherID)
+	}
+
+	change, err := s.storage.ApplyCommit(ctx, repo.StoragePath, spec, ops, clean)
+	switch {
+	case errors.Is(err, gitbackend.ErrInvalidBranch):
+		return domain.CommitResult{}, ErrInvalidBranch
+	case errors.Is(err, gitbackend.ErrInvalidOps), errors.Is(err, gitbackend.ErrInvalidPath), errors.Is(err, gitbackend.ErrInvalidRev):
+		return domain.CommitResult{}, fmt.Errorf("%w: %s", ErrInvalidCommitOps, err)
+	case errors.Is(err, gitbackend.ErrRevNotFound):
+		return domain.CommitResult{}, ErrRefNotFound
+	case errors.Is(err, gitbackend.ErrPathNotFound):
+		return domain.CommitResult{}, ErrPathNotFound
+	case errors.Is(err, gitbackend.ErrNotABlob):
+		return domain.CommitResult{}, ErrNotAFile
+	case errors.Is(err, gitbackend.ErrHeadMismatch):
+		return domain.CommitResult{}, ErrHeadMismatch
+	case errors.Is(err, gitbackend.ErrUnknownBlob):
+		return domain.CommitResult{}, ErrUnknownBlob
+	case errors.Is(err, gitbackend.ErrNothingToCommit):
+		return domain.CommitResult{}, ErrNothingToCommit
+	case errors.Is(err, gitbackend.ErrLFSRequired):
+		return domain.CommitResult{}, ErrLFSNotEnabled
+	case err != nil:
+		return domain.CommitResult{}, err
+	}
+
+	s.dispatchPush(ctx, repo, req, change)
+
+	return domain.CommitResult{
+		Branch:    req.Branch,
+		CommitSHA: change.NewSHA,
+		Before:    change.OldSHA,
+	}, nil
+}
+
+func (s *Service) lfsCleanFunc(ctx context.Context, repo domain.Repository, pusherID int64) gitbackend.CleanFunc {
+	uploaderID := pusherID
+	if uploaderID == 0 {
+		uploaderID = repo.OwnerID
+	}
+
+	return func(path, blobSHA string, size int64) (string, error) {
+		// check if blob is already LFS pointer
+		if size <= domain.LFSPointerMaxSize {
+			var buf bytes.Buffer
+			if err := s.storage.ReadBlob(ctx, repo.StoragePath, blobSHA, &buf); err != nil {
+				return "", err
+			}
+			if _, ok := domain.ParseLFSPointer(buf.Bytes()); ok {
+				return blobSHA, nil
+			}
+		}
+
+		// hash the local blob to get the lfs oid
+		hasher := sha256.New()
+		if err := s.storage.ReadBlob(ctx, repo.StoragePath, blobSHA, hasher); err != nil {
+			return "", err
+		}
+		oid := hex.EncodeToString(hasher.Sum(nil))
+
+		// stream the same blob into lfs storage
+		pr, pw := io.Pipe()
+		go func() {
+			pw.CloseWithError(s.storage.ReadBlob(ctx, repo.StoragePath, blobSHA, pw))
+		}()
+		err := s.lfs.StoreObject(ctx, repo, uploaderID, oid, size, pr)
+		pr.Close() // unblocks the writer when StoreObject returned without draining
+		if err != nil {
+			return "", err
+		}
+
+		// construct pointer by "hands"
+		pointer := fmt.Sprintf("version https://git-lfs.github.com/spec/v1\noid sha256:%s\nsize %d\n", oid, size)
+		pointerSHA, _, err := s.storage.WriteBlob(ctx, repo.StoragePath, strings.NewReader(pointer))
+		return pointerSHA, err
+	}
+}
+
+// dispatch webhook event
+func (s *Service) dispatchPush(ctx context.Context, repo domain.Repository, req domain.CommitRequest, change gitbackend.RefChange) {
+	if s.events == nil {
+		return
+	}
+
+	err := s.events.DispatchEvent(ctx, domain.RepositoryEvent{
+		Event:              "push",
+		RepositoryID:       repo.ID,
+		RepositoryName:     repo.RepositoryName,
+		RepositoryFullName: fmt.Sprintf("%d/%s", repo.OwnerID, repo.RepositoryName),
+		PusherID:           req.PusherID,
+		PusherUsername:     req.Author.Name,
+		Ref:                change.Ref,
+		OldSHA:             change.OldSHA,
+		NewSHA:             change.NewSHA,
+		Timestamp:          time.Now().UTC(),
+	})
+	if err != nil {
+		s.logger.Warn("failed to enqueue webhook event", zap.String("ref", change.Ref), zap.Error(err))
+	}
 }
 
 func toDomain(r gen.Repository) domain.Repository {
@@ -171,4 +551,25 @@ func validRepositoryName(name string) bool {
 		return false
 	}
 	return !strings.ContainsAny(name, "/\\")
+}
+
+func toContents(ref, treePath string, listing gitbackend.TreeListing) domain.RepositoryContents {
+	entries := make([]domain.TreeEntry, len(listing.Entries))
+	for i, e := range listing.Entries {
+		entries[i] = domain.TreeEntry{
+			Name: path.Base(e.Path),
+			Path: e.Path,
+			Type: domain.TreeEntryTypeFromMode(e.Mode),
+			Mode: e.Mode,
+			SHA:  e.SHA,
+			Size: e.Size,
+		}
+	}
+	return domain.RepositoryContents{
+		Ref:       ref,
+		CommitSHA: listing.CommitSHA,
+		Path:      treePath,
+		Entries:   entries,
+		Truncated: listing.Truncated,
+	}
 }

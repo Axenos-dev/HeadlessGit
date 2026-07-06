@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/caarlos0/env/v11"
 )
@@ -18,6 +19,12 @@ type ServerConfig struct {
 	GitSSHPort  int    `env:"GIT_SSH_PORT" envDefault:"2222"`
 	RepoRoot    string `env:"REPO_ROOT" envDefault:"data/repos"`
 	HostKeyPath string `env:"SSH_HOST_KEY_PATH" envDefault:"data/ssh/host_ed25519"`
+
+	// background maintenance,
+	// a zero duration disables the loop
+	TokenGCInterval time.Duration `env:"TOKEN_GC_INTERVAL" envDefault:"1h"`
+	RepoGCInterval  time.Duration `env:"REPO_GC_INTERVAL" envDefault:"5h"`
+	WebhookWorkers  int           `env:"WEBHOOK_WORKERS" envDefault:"3"`
 }
 
 type LFSConfig struct {

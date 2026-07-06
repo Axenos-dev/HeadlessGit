@@ -242,6 +242,28 @@ func (s *Service) PutObject(ctx context.Context, repo domain.Repository, oid str
 	return err
 }
 
+// StoreObject registers and uploads a server-generated LFS object: used when
+// api commits clean lfs-tracked files. Already verified objects are skipped
+// without reading r, so callers must not rely on the reader being drained.
+func (s *Service) StoreObject(ctx context.Context, repo domain.Repository, uploaderID int64, oid string, size int64, r io.Reader) error {
+	if err := validateOID(oid); err != nil {
+		return err
+	}
+
+	// content addressing: an already stored and confirmed object is a no-op
+	if row, err := s.registry.GetLFSObject(ctx, repo.ID, oid); err == nil && row.Verified {
+		return nil
+	}
+
+	// record the pending object; a conflicting existing row is fine
+	if _, err := s.registry.CreateLFSObject(ctx, uploaderID, repo.ID, oid, size); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+
+	// PutObject streams to storage, verifies hash and size, and flips verified
+	return s.PutObject(ctx, repo, oid, size, r)
+}
+
 // {repo_id}/ab/cd/<oid>
 func objectKey(repoID int64, oid string) string {
 	return fmt.Sprintf("%d/%s/%s/%s", repoID, oid[0:2], oid[2:4], oid)

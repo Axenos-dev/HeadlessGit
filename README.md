@@ -11,8 +11,9 @@ Basically, this is a Git layer of infrastructure you'd put _underneath_ a projec
 - Basic Git over **SSH** and **HTTP** for clone / fetch / push.
 - **Git LFS** for large files, with object storage on local disk or any S3-compatible bucket (AWS S3, Cloudflare R2, MinIO).
 - A small **control API**, RESTful api to manage repositories, users, SSH keys, tokens, and permissions.
+- A **repo content API** — list trees, read files, download zip/tar.gz archives, and create commits over REST, so your backend never needs a local clone.
 - Simple **permission model** (`read` / `write` / `admin`) enforced before every Git operation.
-- **Push webhooks** — signed deliveries on every successful push.
+- **Push webhooks** — signed deliveries on every ref change, pushed or committed via the API.
 - Bare-repository storage on a filesystem, with SQLite for metadata.
 
 ## Example
@@ -78,6 +79,9 @@ All configuration is via environment variables.
 | `REPO_ROOT`         | `data/repos`            | Where bare repositories are stored.                                                       |
 | `SSH_HOST_KEY_PATH` | `data/ssh/host_ed25519` | SSH host key file (generated on first boot if absent).                                    |
 | `ADMIN_TOKEN`       | _(empty)_               | Raw token for the seeded admin account. Only its hash is stored. Empty = no admin seeded. |
+| `TOKEN_GC_INTERVAL` | `1h`                    | How often expired tokens are deleted. `0` disables the loop.                              |
+| `REPO_GC_INTERVAL`  | `5h`                    | How often `git gc` sweeps the repositories (repack + prune). `0` disables the loop.       |
+| `WEBHOOK_WORKERS`   | `3`                     | Goroutines delivering webhook events.                                                     |
 
 See [`.env.example`](.env.example).
 
@@ -138,13 +142,108 @@ Every request requires `Authorization: Bearer <ADMIN_TOKEN>`. Responses are enve
 | `POST`   | `/repositories/{id}/webhooks`             | `{url}`                       | Register a push webhook; the signing secret is returned **once**. |
 | `DELETE` | `/repositories/{id}/webhooks/{hookId}`    | —                             | Delete a webhook.                                                 |
 
+**Repository contents & commits**
+
+| Method | Path                                           | Body        | Description                                                            |
+| ------ | ---------------------------------------------- | ----------- | ---------------------------------------------------------------------- |
+| `GET`  | `/repositories/{id}/contents?ref=&path=`       | —           | List one directory level of the tree at a ref.                         |
+| `GET`  | `/repositories/{id}/blob?ref=&path=&lfs=`      | —           | Stream one file's raw content.                                         |
+| `GET`  | `/repositories/{id}/archive?ref=&format=&lfs=` | —           | Stream a `zip` (default) or `tar.gz` archive of the tree.              |
+| `POST` | `/repositories/{id}/blobs`                     | _raw bytes_ | Upload content into the repo's object database; returns `{sha, size}`. |
+| `POST` | `/repositories/{id}/commits`                   | JSON        | Create a commit on a branch from uploaded blobs.                       |
+
+### Reading a repository
+
+`ref` accepts anything git can resolve to a commit — a branch, tag, sha, or expression like `main~2` — and defaults to `HEAD`. Every response is pinned to the exact commit it was answered from, so consumers can page through a repository without seeing a torn view mid-push.
+
+`GET /contents` returns the entries of one directory level:
+
+```json
+{
+  "data": {
+    "ref": "main",
+    "sha": "9fb037999f264ba9a7fc6274d15fa3ae2ab98312",
+    "path": "src",
+    "entries": [
+      {
+        "name": "main.go",
+        "path": "src/main.go",
+        "type": "file",
+        "mode": "100644",
+        "size": 1234,
+        "sha": "..."
+      },
+      {
+        "name": "vendor",
+        "path": "src/vendor",
+        "type": "dir",
+        "mode": "040000",
+        "sha": "..."
+      }
+    ]
+  }
+}
+```
+
+`type` is `file` | `dir` | `symlink` | `submodule`. Listings over 10k entries set `"truncated": true`.
+
+`GET /blob` streams the file bytes with `Content-Length`, a strong `ETag` (the blob sha — content-addressed, so `If-None-Match` caching works perfectly), and `X-HeadlessGit-Commit` carrying the resolved commit. With `lfs=true`, an LFS pointer file is replaced by the real object; a missing object is a `404` rather than silently serving the pointer.
+
+`GET /archive` streams the whole tree as an artifact, named `<repo>-<shortsha>.zip` with a matching top-level folder. With `lfs=true`, pointer files are swapped for the real objects **in-flight** — the archive is re-encoded entry by entry, nothing is buffered or written to disk:
+
+![archive](images/archive.png)
+
+A pointer whose object is missing stays a pointer.
+
+### Writing without a clone
+
+Commits follow two-step model: upload content first, then commit metadata referencing it.
+
+![commit](images/commit.png)
+
+```sh
+# 1. upload each new/changed file's bytes (raw body, streamed)
+curl -H "Authorization: Bearer $TOKEN" \
+  --data-binary @config.yaml \
+  http://localhost:4001/repositories/7/blobs
+# -> {"data": {"sha": "44b4fc6d...", "size": 812}}
+
+# 2. create the commit (atomic, any number of operations)
+curl -H "Authorization: Bearer $TOKEN" -X POST \
+  http://localhost:4001/repositories/7/commits -d '{
+    "branch": "main",
+    "message": "update config",
+    "author": { "name": "deploy-bot", "email": "bot@example.com" },
+    "expectedHeadSha": "9fb03799...",
+    "operations": [
+      { "op": "put", "path": "config.yaml", "blobSha": "44b4fc6d..." },
+      { "op": "delete", "path": "config.old.yaml" }
+    ]
+  }'
+# -> 201 {"data": {"branch": "main", "commitSha": "...", "before": "9fb03799..."}}
+```
+
+`expectedHeadSha` controls concurrency:
+
+| Value            | Meaning                                                                                  |
+| ---------------- | ---------------------------------------------------------------------------------------- |
+| _(omitted)_      | Last write wins.                                                                         |
+| a commit sha     | Compare-and-swap: `409 head_mismatch` if the branch moved.                               |
+| the all-zero sha | The branch must not exist yet — creates it (or the first commit on an empty repository). |
+
+Content is deduplicated by sha, so retrying an upload is free and a lost `409` race can be retried without re-uploading anything. Blobs that never get committed are garbage-collected after a grace period (see `REPO_GC_INTERVAL`).
+
+**LFS is automatic**, the same way it is for a git client: if the repo's `.gitattributes` marks a path as `filter=lfs` (including attributes added in the very same commit), the server stores the content as an LFS object and commits a pointer instead. Content that already _is_ a valid pointer passes through untouched, so pre-uploading big files via the LFS API (presigned, straight to the bucket) and committing the pointer yourself remains the efficient path for large objects.
+
+API commits dispatch the same signed [webhooks](#webhooks) as a `git push` — consumers can't tell them apart.
+
 ### Health
 
 The control port also serves an unauthenticated `GET /healthz` readiness probe. It returns `200 {"status":"ok"}` when the database is reachable and `503 {"status":"unavailable"}` otherwise, and backs the container `HEALTHCHECK`.
 
 ## Webhooks
 
-Register a webhook on a repository and `headlessgit` will `POST` to it after every successful push.
+Register a webhook on a repository and `headlessgit` will `POST` to it after every ref change — a `git push` or a commit created through the [content API](#writing-without-a-clone) produce identical events.
 
 One delivery is sent **per changed ref** (a branch/tag create, update, or delete — not per file or commit). The JSON body:
 

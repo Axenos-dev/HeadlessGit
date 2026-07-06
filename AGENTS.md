@@ -11,6 +11,10 @@ It provides:
 - Git over SSH and HTTP (clone / fetch / push).
 - Git LFS (object transfer over HTTP; disk or S3 storage).
 - A control API to manage repositories, users, SSH keys, tokens, permissions, and webhooks.
+- Repo APIs on the control plane: contents listing, blob read/upload, streamed
+  zip/tar.gz archives (optional LFS smudging), and commit creation on bare repos
+  (blobs + commits, CAS ref updates, `.gitattributes`-driven LFS cleaning) — so
+  products never need local clones.
 - A `read` / `write` / `admin` permission model enforced before every Git operation.
 - Push webhooks, signed and delivered off the push path.
 
@@ -52,7 +56,8 @@ Package map:
 | `internal/domain`             | Core types (repository, account, role, token, ssh key, lfs).                                                      |
 | `internal/services/*`         | Business logic per area (repositories, users, auth, permissions, lfs); each has a service + a registry over `db`. |
 | `internal/storage`            | LFS object storage behind an interface (`disk`, `s3`).                                                            |
-| `internal/gitbackend`         | Git pack protocol behind a small interface (`Local` execs system `git`; future `RPC` to storage nodes).           |
+| `internal/archive`            | Pure mechanism: streaming tar re-encode to zip/tar.gz with an injected LFS smudge callback.                       |
+| `internal/gitbackend`         | Git subprocesses behind a small interface: pack protocol, read ops (ls-tree, blobs, archive), commit creation.    |
 | `internal/server`             | Composition root: wires control + git servers, runs and shuts down listeners.                                     |
 | `internal/server/control`     | Control API (REST); sub-handlers in `repositories/`, `users/`, `permissions/`.                                    |
 | `internal/server/git/gitssh`  | Git-over-SSH transport (custom in-process SSH server).                                                            |
@@ -113,6 +118,12 @@ Prefer simple Go: small interfaces at module boundaries, context-aware I/O, expl
 errors with context, table-driven tests, standard library first. Avoid large global
 state, framework-heavy abstractions, and dependencies added for small tasks.
 
+**File layout.** Do not multiply files or packages. A service is `service.go` +
+`errors.go` + `registry.go` — new service methods go into `service.go`, not new
+files. One test file per package where practical (`service_test.go`,
+`handlers_test.go`). Small parsing/vocabulary helpers (formats, pointers, modes)
+belong in `domain` next to the types they produce, not in new packages.
+
 **Dependencies & interfaces.** The package that _invokes_ a dependency defines a
 minimal consumer interface for it (e.g. `gitssh`'s `Authenticator`/`TokenMinter`,
 the handler packages' own interfaces). Composition/router layers (`server`, `git`,
@@ -125,7 +136,9 @@ concretes once.
 **HTTP.** One `net/http` + `chi` stack (no `fasthttp`/Fiber: the smart-HTTP path
 streams bodies to/from the `git-upload-pack`/`git-receive-pack` subprocesses). The
 Git/LFS routes must stay streaming-safe — no body-size limits or body-buffering
-middleware. Health (`/healthz`) is unauthenticated and sits outside the audit chain.
+middleware; the same applies to the control API's archive route, which streams
+`git archive` output. Health (`/healthz`) is unauthenticated and sits outside the
+audit chain.
 
 **Logging.** `zap` structured logging. Never log secrets (tokens, webhook secrets,
 SSH key material, full auth headers). Each transport request emits one audit line:
@@ -143,10 +156,11 @@ storage clients. Do not roll your own SSH or Git protocol implementation.
 
 ## Webhooks
 
-- Emitted only **after** a successful push, off the push path: receive-pack runs,
-  `gitbackend` diffs the repo's refs before/after, and the transport hands the
-  changes to the webhooks service. Delivery is an in-process bounded queue with
-  worker goroutines and retries — no external job system.
+- Emitted only **after** a ref actually moved, off the push path: receive-pack
+  runs and `gitbackend` diffs the repo's refs before/after (transports dispatch),
+  or an api commit lands its CAS ref update (repositories service dispatches).
+  Both produce identical push events. Delivery is an in-process bounded queue
+  with worker goroutines and retries — no external job system.
 - One delivery per changed ref. Payload is self-describing: `event`, `ref`,
   `before`/`after`, `created`/`deleted`, a `repository` object (`id`, `name`,
   `full_name`), a `pusher` object (`id`, `username`), and `timestamp`. Creates/
