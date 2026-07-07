@@ -118,7 +118,10 @@ func TestGitHTTPEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	headBefore := gitOut(t, work, "rev-parse", "origin/main")
+	// the branch name depends on the environment's init.defaultBranch
+	// (main locally, master on bare CI runners) — never assume it
+	branch := strings.TrimSpace(gitOut(t, work, "symbolic-ref", "--short", "HEAD"))
+	headBefore := gitOut(t, work, "rev-parse", "origin/"+branch)
 
 	if err := os.MkdirAll(filepath.Join(work, "runtime"), 0o755); err != nil {
 		t.Fatal(err)
@@ -131,7 +134,7 @@ func TestGitHTTPEndToEnd(t *testing.T) {
 		t.Fatal("push touching a blocked path should have been rejected")
 	}
 	mustGit(t, work, "fetch", "origin")
-	if headAfter := gitOut(t, work, "rev-parse", "origin/main"); headAfter != headBefore {
+	if headAfter := gitOut(t, work, "rev-parse", "origin/"+branch); headAfter != headBefore {
 		t.Fatalf("branch moved despite rejection: %s -> %s", headBefore, headAfter)
 	}
 
