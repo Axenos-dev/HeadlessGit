@@ -62,3 +62,29 @@ func TestPathBlocked(t *testing.T) {
 		}
 	}
 }
+
+func TestPathPoliciesEnvRoundTrip(t *testing.T) {
+	in := []PathPolicy{
+		{Pattern: "runtime", Reason: "deploy state"},
+		{Pattern: "config.lock"},
+	}
+
+	encoded, err := EncodePathPolicies(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := DecodePathPolicies(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 2 || out[0].Pattern != "runtime" || out[0].Reason != "deploy state" || out[1].Pattern != "config.lock" {
+		t.Errorf("round trip = %+v", out)
+	}
+
+	if got, err := DecodePathPolicies(""); err != nil || got != nil {
+		t.Errorf("empty decode = (%v, %v)", got, err)
+	}
+	if _, err := DecodePathPolicies("not json"); err == nil {
+		t.Error("garbage must not decode")
+	}
+}

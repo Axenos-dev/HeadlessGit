@@ -11,6 +11,21 @@ const maxTreeEntries = 10_000
 // hard cap on operations per commit
 const maxCommitOps = 1000
 
+type Service int
+
+const (
+	UploadPack  Service = iota // fetch / clone
+	ReceivePack                // push
+)
+
+// returns the command name of the service
+func (s Service) Name() string {
+	if s == ReceivePack {
+		return "git-receive-pack"
+	}
+	return "git-upload-pack"
+}
+
 type RefChange struct {
 	Ref    string
 	OldSHA string

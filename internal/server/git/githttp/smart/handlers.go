@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 
 type RepositoryResolver interface {
 	GetRepositoryByPath(ctx context.Context, namespace, name string) (domain.Repository, error)
+	ListPathPolicies(ctx context.Context, repositoryID int64) ([]domain.PathPolicy, error)
 }
 
 type Authorizer interface {
@@ -28,7 +30,7 @@ type Authorizer interface {
 type GitBackend interface {
 	AdvertiseRefs(ctx context.Context, storagePath string, svc gitbackend.Service, stdout io.Writer) error
 	UploadPack(ctx context.Context, storagePath string, stateless bool, stdin io.Reader, stdout, stderr io.Writer) error
-	ReceivePack(ctx context.Context, storagePath string, stateless bool, stdin io.Reader, stdout, stderr io.Writer) ([]gitbackend.RefChange, error)
+	ReceivePack(ctx context.Context, storagePath string, stateless bool, hookEnv []string, stdin io.Reader, stdout, stderr io.Writer) ([]gitbackend.RefChange, error)
 }
 
 type Dispatcher interface {
@@ -155,8 +157,15 @@ func (h *Handlers) pack(svc gitbackend.Service) http.HandlerFunc {
 		var stderr strings.Builder
 		switch svc {
 		case gitbackend.ReceivePack:
+			hookEnv, envErr := hookEnv(r.Context(), h.resolver, repo)
+			if envErr != nil {
+				h.logger.Error("failed to build hook env", zap.Error(envErr))
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+
 			var changes []gitbackend.RefChange
-			changes, err = h.backend.ReceivePack(r.Context(), repo.StoragePath, true, body, w, &stderr)
+			changes, err = h.backend.ReceivePack(r.Context(), repo.StoragePath, true, hookEnv, body, w, &stderr)
 			if err == nil {
 				namespace := chi.URLParam(r, "namespace")
 				h.dispatchPush(r.Context(), repo, namespace, middleware.AccountFromContext(r.Context()), changes)
@@ -172,6 +181,19 @@ func (h *Handlers) pack(svc gitbackend.Service) http.HandlerFunc {
 			)
 		}
 	}
+}
+
+// loads the repo's path policies, together with server binary path
+func hookEnv(ctx context.Context, resolver RepositoryResolver, repo domain.Repository) ([]string, error) {
+	policies, err := resolver.ListPathPolicies(ctx, repo.ID)
+	if err != nil {
+		return nil, err
+	}
+	bin, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	return domain.HookEnv(bin, policies)
 }
 
 func (h *Handlers) dispatchPush(ctx context.Context, repo domain.Repository, namespace string, account *domain.Account, changes []gitbackend.RefChange) {
