@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/Axenos-dev/HeadlessGit/internal/domain"
 	"time"
 )
 
@@ -705,6 +707,120 @@ func TestGC(t *testing.T) {
 	if err := l.ReadBlob(ctx, repo, orphan, io.Discard); err == nil {
 		t.Error("expired orphan survived gc")
 	}
+}
+
+func TestPreReceive(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	root := t.TempDir()
+	l, err := NewLocal(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	const repo = "1/test.git"
+	repoDir := filepath.Join(root, repo)
+
+	if err := l.InitBare(ctx, repo); err != nil {
+		t.Fatal(err)
+	}
+
+	author := Identity{Name: "t", Email: "t@t"}
+	policies := []domain.PathPolicy{{Pattern: "runtime", Reason: "deploy-managed state"}}
+
+	blob := func(content string) string {
+		t.Helper()
+		sha, _, err := l.WriteBlob(ctx, repo, strings.NewReader(content))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sha
+	}
+
+	// stage builds commits on a scratch branch and then deletes the ref:
+	// the commits stay in the odb but become unreachable, exactly the state
+	// a pre-receive hook sees while a push is quarantined
+	stage := func(base string, ops []CommitOp) string {
+		t.Helper()
+		expected := zeroSHA
+		if base != "" {
+			expected = ""
+			gitRun(t, repoDir, "update-ref", "refs/heads/scratch", base)
+		}
+		change, err := l.ApplyCommit(ctx, repo, CommitSpec{Branch: "scratch", ExpectedOld: expected, Author: author, Message: "staged"}, ops, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		gitRun(t, repoDir, "update-ref", "-d", "refs/heads/scratch")
+		return change.NewSHA
+	}
+
+	line := func(newSHA string) io.Reader {
+		return strings.NewReader(zeroSHA + " " + newSHA + " refs/heads/main\n")
+	}
+
+	t.Run("blocked path is rejected with the reason", func(t *testing.T) {
+		sha := stage("", []CommitOp{
+			{Path: "README.md", BlobSHA: blob("ok\n")},
+			{Path: "runtime/state.json", BlobSHA: blob("{}\n")},
+		})
+		err := PreReceive(ctx, repoDir, line(sha), policies)
+		if err == nil || !strings.Contains(err.Error(), "deploy-managed state") {
+			t.Errorf("want rejection with reason, got %v", err)
+		}
+	})
+
+	t.Run("clean push is allowed", func(t *testing.T) {
+		sha := stage("", []CommitOp{{Path: "src/main.go", BlobSHA: blob("package main\n")}})
+		if err := PreReceive(ctx, repoDir, line(sha), policies); err != nil {
+			t.Errorf("clean push rejected: %v", err)
+		}
+	})
+
+	t.Run("violation in an intermediate commit is caught", func(t *testing.T) {
+		// commit 1 adds the blocked path, commit 2 removes it again: the net
+		// diff is clean but the content would live in history forever
+		first := stage("", []CommitOp{{Path: "runtime/state.json", BlobSHA: blob("leak\n")}})
+		second := stage(first, []CommitOp{{Path: "runtime/state.json", Delete: true}, {Path: "ok.txt", BlobSHA: blob("x\n")}})
+		if err := PreReceive(ctx, repoDir, line(second), policies); err == nil {
+			t.Error("intermediate violation slipped through")
+		}
+	})
+
+	t.Run("deleting a blocked file is allowed", func(t *testing.T) {
+		// the blocked path already exists on a real branch (added before the
+		// policy); a push that only deletes it must pass
+		base, err := l.ApplyCommit(ctx, repo, CommitSpec{Branch: "cleanup", ExpectedOld: zeroSHA, Author: author, Message: "pre-policy"},
+			[]CommitOp{{Path: "runtime/state.json", BlobSHA: blob("old\n")}}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sha := stage(base.NewSHA, []CommitOp{{Path: "runtime/state.json", Delete: true}})
+		if err := PreReceive(ctx, repoDir, line(sha), policies); err != nil {
+			t.Errorf("cleanup push rejected: %v", err)
+		}
+	})
+
+	t.Run("ref deletion is allowed", func(t *testing.T) {
+		in := strings.NewReader(strings.Repeat("a", 40) + " " + zeroSHA + " refs/heads/gone\n")
+		if err := PreReceive(ctx, repoDir, in, policies); err != nil {
+			t.Errorf("ref deletion rejected: %v", err)
+		}
+	})
+
+	t.Run("no policies short-circuits", func(t *testing.T) {
+		if err := PreReceive(ctx, repoDir, strings.NewReader("garbage that is never read"), nil); err != nil {
+			t.Errorf("no-policy push rejected: %v", err)
+		}
+	})
+
+	t.Run("malformed input fails closed", func(t *testing.T) {
+		if err := PreReceive(ctx, repoDir, strings.NewReader("what\n"), policies); err == nil {
+			t.Error("malformed input must reject")
+		}
+	})
 }
 
 func TestDiffRefs(t *testing.T) {

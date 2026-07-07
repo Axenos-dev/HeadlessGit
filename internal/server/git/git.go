@@ -38,6 +38,11 @@ func NewServer(logger *zap.Logger, hostKeyPath string, svc Services) *Server {
 		lfsEndpoints = svc.LFS
 	}
 
+	var sshDispatcher gitssh.Dispatcher
+	if svc.Webhooks != nil {
+		sshDispatcher = svc.Webhooks
+	}
+
 	return &Server{
 		logger: logger,
 		http: githttp.NewServer(httpLogger, githttp.Services{
@@ -55,7 +60,7 @@ func NewServer(logger *zap.Logger, hostKeyPath string, svc Services) *Server {
 			Minter:         svc.Authentication,
 			Authorization:  svc.Authorization,
 			LFS:            lfsEndpoints,
-			Dispatcher:     svc.Webhooks,
+			Dispatcher:     sshDispatcher,
 		}),
 	}
 }

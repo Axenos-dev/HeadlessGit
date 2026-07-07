@@ -16,6 +16,8 @@ It provides:
   (blobs + commits, CAS ref updates, `.gitattributes`-driven LFS cleaning) — so
   products never need local clones.
 - A `read` / `write` / `admin` permission model enforced before every Git operation.
+- Per-repo path policies (block a path subtree from being added/modified; deletes
+  allowed), enforced identically on api commits and on pushes via a pre-receive hook.
 - Push webhooks, signed and delivered off the push path.
 
 Out of scope unless explicitly requested: issues, pull requests, wikis, CI/actions,
@@ -111,6 +113,18 @@ Never:
 - Let LFS upload/download bypass repo permissions.
 - Give Git subprocesses broad filesystem access.
 - Hand an SSH client an interactive shell or pty.
+
+### Write policy (path policies)
+
+Write policy has exactly two enforcement points that must never drift: the
+repositories service checks api commit operations, and the pre-receive hook
+checks pushes — both through the single matcher in `domain`. The hook is the
+server binary itself in hook mode (`headlessgit hook pre-receive`): one shim at
+`<REPO_ROOT>/.hooks/pre-receive` execs `$HEADLESSGIT_BIN`, `core.hooksPath` is
+injected per-push via `GIT_CONFIG_*` env (repos hold no hooks on disk), and the
+transports pass policies via `HEADLESSGIT_POLICIES` env. Hook enforcement fails
+closed: any error rejects the push. New policy kinds extend the `kind` column
+and both enforcement points, never a hook script.
 
 ## Conventions
 

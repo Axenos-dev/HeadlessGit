@@ -88,7 +88,11 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) registerRoutes(r chi.Router) {
-	smart.NewHandlers(s.logger, s.backend, s.repos, s.perms, s.dispatcher).RegisterRoutes(r)
+	var dispatcher smart.Dispatcher
+	if s.dispatcher != nil {
+		dispatcher = s.dispatcher
+	}
+	smart.NewHandlers(s.logger, s.backend, s.repos, s.perms, dispatcher).RegisterRoutes(r)
 
 	// register LFS handlers if lfs service is provided
 	if s.lfs != nil {

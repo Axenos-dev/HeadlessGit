@@ -31,7 +31,7 @@ const lfsTokenTTL = 15 * time.Minute
 
 type GitBackend interface {
 	UploadPack(ctx context.Context, storagePath string, stateless bool, stdin io.Reader, stdout, stderr io.Writer) error
-	ReceivePack(ctx context.Context, storagePath string, stateless bool, stdin io.Reader, stdout, stderr io.Writer) ([]gitbackend.RefChange, error)
+	ReceivePack(ctx context.Context, storagePath string, stateless bool, hookEnv []string, stdin io.Reader, stdout, stderr io.Writer) ([]gitbackend.RefChange, error)
 }
 
 type Dispatcher interface {
@@ -40,6 +40,7 @@ type Dispatcher interface {
 
 type RepositoryResolver interface {
 	GetRepositoryByPath(ctx context.Context, namespace, name string) (domain.Repository, error)
+	ListPathPolicies(ctx context.Context, repositoryID int64) ([]domain.PathPolicy, error)
 }
 
 type Authenticator interface {
@@ -279,8 +280,16 @@ func (s *Server) runGit(ctx context.Context, account domain.Account, ch ssh.Chan
 	case "git-upload-pack":
 		err = s.backend.UploadPack(ctx, resolved.StoragePath, false, ch, ch, ch.Stderr())
 	case "git-receive-pack":
+		hookEnv, envErr := s.hookEnv(ctx, resolved)
+		if envErr != nil {
+			s.logger.Error("failed to build hook env", zap.Error(envErr))
+			fmt.Fprintln(ch.Stderr(), "internal error")
+			sendExit(ch, 1)
+			return
+		}
+
 		var changes []gitbackend.RefChange
-		changes, err = s.backend.ReceivePack(ctx, resolved.StoragePath, false, ch, ch, ch.Stderr())
+		changes, err = s.backend.ReceivePack(ctx, resolved.StoragePath, false, hookEnv, ch, ch, ch.Stderr())
 		if err == nil {
 			s.dispatchPush(ctx, resolved, namespace, account, changes)
 		}
@@ -293,6 +302,19 @@ func (s *Server) runGit(ctx context.Context, account domain.Account, ch ssh.Chan
 
 	e.Result = "ok"
 	sendExit(ch, 0)
+}
+
+// loads the repo's path policies together with server binary path
+func (s *Server) hookEnv(ctx context.Context, repo domain.Repository) ([]string, error) {
+	policies, err := s.resolver.ListPathPolicies(ctx, repo.ID)
+	if err != nil {
+		return nil, err
+	}
+	bin, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	return domain.HookEnv(bin, policies)
 }
 
 func (s *Server) dispatchPush(ctx context.Context, repo domain.Repository, namespace string, account domain.Account, changes []gitbackend.RefChange) {

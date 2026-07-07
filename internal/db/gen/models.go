@@ -18,6 +18,15 @@ type LfsObject struct {
 	CreatedAtUnixMs int64
 }
 
+type PathPolicy struct {
+	ID              int64
+	RepositoryID    int64
+	Pattern         string
+	Kind            string
+	Reason          sql.NullString
+	CreatedAtUnixMs int64
+}
+
 type Permission struct {
 	ID              int64
 	UserID          int64

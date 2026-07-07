@@ -184,3 +184,33 @@ func newCommit(res domain.CommitResult) Commit {
 		Before:    res.Before,
 	}
 }
+
+type AddPathPolicyRequest struct {
+	Pattern string `json:"pattern"`
+	Reason  string `json:"reason,omitempty"`
+}
+
+func (r AddPathPolicyRequest) Validate() error {
+	if r.Pattern == "" {
+		return errors.New("pattern is required")
+	}
+	return nil
+}
+
+type PathPolicy struct {
+	ID        int64     `json:"id"`
+	Pattern   string    `json:"pattern"`
+	Kind      string    `json:"kind"`
+	Reason    string    `json:"reason,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+func newPathPolicy(p domain.PathPolicy) PathPolicy {
+	return PathPolicy{
+		ID:        p.ID,
+		Pattern:   p.Pattern,
+		Kind:      string(p.Kind),
+		Reason:    p.Reason,
+		CreatedAt: p.CreatedAt,
+	}
+}

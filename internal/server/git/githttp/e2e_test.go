@@ -20,6 +20,16 @@ import (
 	"go.uber.org/zap"
 )
 
+// The pre-receive shim execs os.Executable() — which, during tests, is this
+// test binary rather than the server. Impersonate the server's hook mode so
+// pushes exercised here run the real policy check instead of the test suite.
+func TestMain(m *testing.M) {
+	if len(os.Args) > 1 && os.Args[1] == "hook" {
+		os.Exit(gitbackend.HookMain(os.Args[2:]))
+	}
+	os.Exit(m.Run())
+}
+
 // TestGitHTTPEndToEnd drives the real git binary against the full HTTP stack:
 // DB resolution -> token auth -> authorization -> git pack backend.
 func TestGitHTTPEndToEnd(t *testing.T) {
@@ -97,6 +107,43 @@ func TestGitHTTPEndToEnd(t *testing.T) {
 	if got := readFile(t, filepath.Join(verify, "f.txt")); got != "hello" {
 		t.Fatalf("round-tripped content = %q, want %q", got, "hello")
 	}
+
+	// 4. path policy: a push touching a blocked path must be rejected by the
+	// pre-receive hook, and the branch must not move
+	repo, err := repoSvc.GetRepositoryByPath(ctx, "acme", "api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repoSvc.AddPathPolicy(ctx, repo.ID, "runtime", "deploy-managed state"); err != nil {
+		t.Fatal(err)
+	}
+
+	// the branch name depends on the environment's init.defaultBranch
+	// (main locally, master on bare CI runners) — never assume it
+	branch := strings.TrimSpace(gitOut(t, work, "symbolic-ref", "--short", "HEAD"))
+	headBefore := gitOut(t, work, "rev-parse", "origin/"+branch)
+
+	if err := os.MkdirAll(filepath.Join(work, "runtime"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(work, "runtime", "state.json"), "{}")
+	mustGit(t, work, "-c", "user.email=t@t", "-c", "user.name=t", "add", ".")
+	mustGit(t, work, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "blocked")
+
+	if err := runGit(t, work, "push", "origin", "HEAD"); err == nil {
+		t.Fatal("push touching a blocked path should have been rejected")
+	}
+	mustGit(t, work, "fetch", "origin")
+	if headAfter := gitOut(t, work, "rev-parse", "origin/"+branch); headAfter != headBefore {
+		t.Fatalf("branch moved despite rejection: %s -> %s", headBefore, headAfter)
+	}
+
+	// 5. an unrelated push must still pass with the policy in place
+	mustGit(t, work, "reset", "--hard", "HEAD~1")
+	writeFile(t, filepath.Join(work, "ok.txt"), "fine")
+	mustGit(t, work, "-c", "user.email=t@t", "-c", "user.name=t", "add", "ok.txt")
+	mustGit(t, work, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "clean")
+	mustGit(t, work, "push", "origin", "HEAD")
 }
 
 func runGit(t *testing.T, dir string, args ...string) error {

@@ -18,30 +18,22 @@ import (
 // Local implementation of git backend
 var _ Backend = (*Local)(nil)
 
-type Service int
-
-const (
-	UploadPack  Service = iota // fetch / clone
-	ReceivePack                // push
-)
+// every push in every repo runs this one file, which execs the server binary in hook mode
+const preReceiveShim = `#!/bin/sh
+# written by headlessgit on startup; do not edit
+exec "$HEADLESSGIT_BIN" hook pre-receive
+`
 
 // repacking a large repo can take a while
 const gcTimeout = 30 * time.Minute
 
-// returns the command name of the service
-func (s Service) Name() string {
-	if s == ReceivePack {
-		return "git-receive-pack"
-	}
-	return "git-upload-pack"
-}
-
 // local implementation of Git backend
 // it runs the git pack protocol against bare repos on the local filesystem
 type Local struct {
-	root    string
-	gitPath string
-	timeout time.Duration
+	root     string
+	gitPath  string
+	hooksDir string
+	timeout  time.Duration
 
 	mu    sync.Mutex
 	locks map[string]*sync.Mutex
@@ -58,11 +50,20 @@ func NewLocal(root string) (*Local, error) {
 		return nil, fmt.Errorf("git binary not found: %w", err)
 	}
 
+	hooksDir := filepath.Join(absRoot, ".hooks")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create hooks dir: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(hooksDir, "pre-receive"), []byte(preReceiveShim), 0o755); err != nil {
+		return nil, fmt.Errorf("write pre-receive shim: %w", err)
+	}
+
 	return &Local{
-		root:    absRoot,
-		gitPath: gitPath,
-		timeout: 30 * time.Second,
-		locks:   make(map[string]*sync.Mutex),
+		root:     absRoot,
+		gitPath:  gitPath,
+		hooksDir: hooksDir,
+		timeout:  30 * time.Second,
+		locks:    make(map[string]*sync.Mutex),
 	}, nil
 }
 
@@ -116,10 +117,10 @@ func (l *Local) AdvertiseRefs(ctx context.Context, storagePath string, svc Servi
 }
 
 func (l *Local) UploadPack(ctx context.Context, storagePath string, stateless bool, stdin io.Reader, stdout, stderr io.Writer) error {
-	return l.pack(ctx, storagePath, UploadPack, stateless, stdin, stdout, stderr)
+	return l.pack(ctx, storagePath, UploadPack, stateless, nil, stdin, stdout, stderr)
 }
 
-func (l *Local) ReceivePack(ctx context.Context, storagePath string, stateless bool, stdin io.Reader, stdout, stderr io.Writer) ([]RefChange, error) {
+func (l *Local) ReceivePack(ctx context.Context, storagePath string, stateless bool, hookEnv []string, stdin io.Reader, stdout, stderr io.Writer) ([]RefChange, error) {
 	// important to lock concurrent pushes
 	// as we compare refs before/after for one operation
 	unlock := l.lockRepo(storagePath)
@@ -129,7 +130,13 @@ func (l *Local) ReceivePack(ctx context.Context, storagePath string, stateless b
 	before, beforeErr := l.listRefs(ctx, storagePath)
 	// and IGNORE error, as we dont need to block main receive-pack operation
 
-	if err := l.pack(ctx, storagePath, ReceivePack, stateless, stdin, stdout, stderr); err != nil {
+	env := append(hookEnv,
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=core.hooksPath",
+		"GIT_CONFIG_VALUE_0="+l.hooksDir,
+	)
+
+	if err := l.pack(ctx, storagePath, ReceivePack, stateless, env, stdin, stdout, stderr); err != nil {
 		return nil, err
 	}
 
@@ -147,7 +154,7 @@ func (l *Local) ReceivePack(ctx context.Context, storagePath string, stateless b
 	return DiffRefs(before, after), nil
 }
 
-func (l *Local) pack(ctx context.Context, storagePath string, svc Service, stateless bool, stdin io.Reader, stdout, stderr io.Writer) error {
+func (l *Local) pack(ctx context.Context, storagePath string, svc Service, stateless bool, env []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	dir, err := l.resolve(storagePath)
 	if err != nil {
 		return err
@@ -164,6 +171,9 @@ func (l *Local) pack(ctx context.Context, storagePath string, svc Service, state
 	args = append(args, dir)
 
 	cmd := exec.CommandContext(ctx, svc.Name(), args...)
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	// directly pass client's bytes to process stdin
 	cmd.Stdin = stdin
 	cmd.Stdout = stdout

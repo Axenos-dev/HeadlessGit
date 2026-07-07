@@ -24,4 +24,9 @@ var (
 	ErrHeadMismatch     = errors.New("branch head mismatch")
 	ErrUnknownBlob      = errors.New("blob not found in repository")
 	ErrNothingToCommit  = errors.New("nothing to commit")
+
+	// path policies
+	ErrInvalidPathPattern = errors.New("invalid path pattern")
+	ErrPathPolicyExists   = errors.New("path policy already exists")
+	ErrPathBlocked        = errors.New("path blocked by policy")
 )

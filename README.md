@@ -13,6 +13,7 @@ Basically, this is a Git layer of infrastructure you'd put _underneath_ a projec
 - A small **control API**, RESTful api to manage repositories, users, SSH keys, tokens, and permissions.
 - A **repo content API** — list trees, read files, download zip/tar.gz archives, and create commits over REST, so your backend never needs a local clone.
 - Simple **permission model** (`read` / `write` / `admin`) enforced before every Git operation.
+- **Path policies** — block chosen paths from ever being committed, enforced identically on API commits and `git push` (via a pre-receive hook).
 - **Push webhooks** — signed deliveries on every ref change, pushed or committed via the API.
 - Bare-repository storage on a filesystem, with SQLite for metadata.
 
@@ -130,17 +131,20 @@ Every request requires `Authorization: Bearer <ADMIN_TOKEN>`. Responses are enve
 
 **Repositories & permissions**
 
-| Method   | Path                                      | Body                          | Description                                                       |
-| -------- | ----------------------------------------- | ----------------------------- | ----------------------------------------------------------------- |
-| `POST`   | `/repositories`                           | `{ownerId, name, visibility}` | Create a repository (`visibility`: `public` \| `private`).        |
-| `GET`    | `/repositories/{id}`                      | —                             | Get repository metadata.                                          |
-| `PUT`    | `/repositories/{id}/visibility`           | `{visibility}`                | Change visibility (`public` \| `private`).                        |
-| `DELETE` | `/repositories/{id}`                      | —                             | Delete a repository (row + bare repo).                            |
-| `GET`    | `/repositories/{id}/permissions`          | —                             | List collaborators.                                               |
-| `PUT`    | `/repositories/{id}/permissions`          | `{userId, role}`              | Grant/update a collaborator role (`read` \| `write` \| `admin`).  |
-| `DELETE` | `/repositories/{id}/permissions/{userId}` | —                             | Revoke a collaborator.                                            |
-| `POST`   | `/repositories/{id}/webhooks`             | `{url}`                       | Register a push webhook; the signing secret is returned **once**. |
-| `DELETE` | `/repositories/{id}/webhooks/{hookId}`    | —                             | Delete a webhook.                                                 |
+| Method   | Path                                          | Body                          | Description                                                       |
+| -------- | --------------------------------------------- | ----------------------------- | ----------------------------------------------------------------- |
+| `POST`   | `/repositories`                               | `{ownerId, name, visibility}` | Create a repository (`visibility`: `public` \| `private`).        |
+| `GET`    | `/repositories/{id}`                          | —                             | Get repository metadata.                                          |
+| `PUT`    | `/repositories/{id}/visibility`               | `{visibility}`                | Change visibility (`public` \| `private`).                        |
+| `DELETE` | `/repositories/{id}`                          | —                             | Delete a repository (row + bare repo).                            |
+| `GET`    | `/repositories/{id}/permissions`              | —                             | List collaborators.                                               |
+| `PUT`    | `/repositories/{id}/permissions`              | `{userId, role}`              | Grant/update a collaborator role (`read` \| `write` \| `admin`).  |
+| `DELETE` | `/repositories/{id}/permissions/{userId}`     | —                             | Revoke a collaborator.                                            |
+| `POST`   | `/repositories/{id}/webhooks`                 | `{url}`                       | Register a push webhook; the signing secret is returned **once**. |
+| `DELETE` | `/repositories/{id}/webhooks/{hookId}`        | —                             | Delete a webhook.                                                 |
+| `GET`    | `/repositories/{id}/path-policies`            | —                             | List the repository's path policies.                              |
+| `POST`   | `/repositories/{id}/path-policies`            | `{pattern, reason?}`          | Block a path; see [Path policies](#path-policies).                |
+| `DELETE` | `/repositories/{id}/path-policies/{policyId}` | —                             | Remove a policy.                                                  |
 
 **Repository contents & commits**
 
@@ -240,6 +244,28 @@ API commits dispatch the same signed [webhooks](#webhooks) as a `git push` — c
 ### Health
 
 The control port also serves an unauthenticated `GET /healthz` readiness probe. It returns `200 {"status":"ok"}` when the database is reachable and `503 {"status":"unavailable"}` otherwise, and backs the container `HEALTHCHECK`.
+
+## Path policies
+
+A path policy blocks a path, and everything under it from being **added or modified** in a repository.
+
+```sh
+curl -H "Authorization: Bearer $TOKEN" -X POST \
+  http://localhost:4001/repositories/7/path-policies \
+  -d '{"pattern": "runtime/", "reason": "....."}'
+```
+
+Semantics:
+
+- A pattern matches the exact path and its whole subtree: `runtime` blocks `runtime` and `runtime/state.json`, but not `runtime.md` or `src/runtime/x` — patterns anchor at the repo root and match whole path segments.
+- **Deletes are always allowed**, so blocked content already in history can be cleaned up.
+- Policies apply to **new commits only**.
+- Enforcement is identical on both write paths: `POST /commits` returns `422 path_blocked`, and a `git push` is rejected by a pre-receive hook **before any ref moves** — every commit in the push is checked, so a blocked path added and removed within the same push is still refused. The client sees the `reason` verbatim:
+
+```txt
+remote: push rejected: "runtime/state.json" is blocked by policy (.....)
+ ! [remote rejected] main -> main (pre-receive hook declined)
+```
 
 ## Webhooks
 

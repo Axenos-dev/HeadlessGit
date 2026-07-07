@@ -38,6 +38,25 @@ type fakeManager struct {
 	commitErr    error
 	commitReq    domain.CommitRequest
 	commitCalled bool
+
+	policy        domain.PathPolicy
+	policyList    []domain.PathPolicy
+	policyErr     error
+	policyPattern string
+	policyReason  string
+}
+
+func (f *fakeManager) ListPathPolicies(ctx context.Context, repositoryID int64) ([]domain.PathPolicy, error) {
+	return f.policyList, f.policyErr
+}
+
+func (f *fakeManager) AddPathPolicy(ctx context.Context, repositoryID int64, pattern, reason string) (domain.PathPolicy, error) {
+	f.policyPattern, f.policyReason = pattern, reason
+	return f.policy, f.policyErr
+}
+
+func (f *fakeManager) RemovePathPolicy(ctx context.Context, repositoryID, policyID int64) error {
+	return f.policyErr
 }
 
 func (f *fakeManager) Commit(ctx context.Context, repositoryID int64, req domain.CommitRequest) (domain.CommitResult, error) {
@@ -474,6 +493,7 @@ func TestCreateCommitErrors(t *testing.T) {
 		{"head mismatch", reposervice.ErrHeadMismatch, http.StatusConflict, "head_mismatch"},
 		{"unknown blob", reposervice.ErrUnknownBlob, http.StatusUnprocessableEntity, "unknown_blob"},
 		{"nothing to commit", reposervice.ErrNothingToCommit, http.StatusUnprocessableEntity, "nothing_to_commit"},
+		{"path blocked", reposervice.ErrPathBlocked, http.StatusUnprocessableEntity, "path_blocked"},
 		{"delete target is a dir", reposervice.ErrNotAFile, http.StatusBadRequest, "invalid_request"},
 		{"invalid branch", reposervice.ErrInvalidBranch, http.StatusBadRequest, "invalid_request"},
 		{"invalid ops", reposervice.ErrInvalidCommitOps, http.StatusBadRequest, "invalid_request"},
@@ -502,4 +522,102 @@ func TestCreateCommitErrors(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPathPolicies(t *testing.T) {
+	policy := domain.PathPolicy{ID: 3, RepositoryID: 7, Pattern: "runtime", Kind: domain.PathPolicyBlock, Reason: "deploy state"}
+
+	t.Run("add", func(t *testing.T) {
+		fake := &fakeManager{policy: policy}
+		rec := httptest.NewRecorder()
+		newTestRouter(fake).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/repositories/7/path-policies",
+			strings.NewReader(`{"pattern": "/runtime/", "reason": "deploy state"}`)))
+
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+		}
+		var body struct {
+			Data PathPolicy `json:"data"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body.Data.Pattern != "runtime" || body.Data.Kind != "block" || body.Data.Reason != "deploy state" {
+			t.Errorf("body = %+v", body.Data)
+		}
+		if fake.policyPattern != "/runtime/" || fake.policyReason != "deploy state" {
+			t.Errorf("service got (%q, %q)", fake.policyPattern, fake.policyReason)
+		}
+	})
+
+	t.Run("list", func(t *testing.T) {
+		fake := &fakeManager{policyList: []domain.PathPolicy{policy}}
+		rec := httptest.NewRecorder()
+		newTestRouter(fake).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/repositories/7/path-policies", nil))
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+		}
+		var body struct {
+			Data []PathPolicy `json:"data"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if len(body.Data) != 1 || body.Data[0].Pattern != "runtime" {
+			t.Errorf("body = %+v", body.Data)
+		}
+	})
+
+	t.Run("delete", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		newTestRouter(&fakeManager{}).ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/repositories/7/path-policies/3", nil))
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("errors", func(t *testing.T) {
+		cases := []struct {
+			name       string
+			method     string
+			target     string
+			body       string
+			policyErr  error
+			wantStatus int
+			wantCode   string
+		}{
+			{"missing pattern", http.MethodPost, "/repositories/7/path-policies", `{}`, nil, http.StatusBadRequest, "invalid_request"},
+			{"invalid pattern", http.MethodPost, "/repositories/7/path-policies", `{"pattern":"a/../b"}`, reposervice.ErrInvalidPathPattern, http.StatusBadRequest, "invalid_request"},
+			{"duplicate", http.MethodPost, "/repositories/7/path-policies", `{"pattern":"runtime"}`, reposervice.ErrPathPolicyExists, http.StatusConflict, "path_policy_exists"},
+			{"repo not found", http.MethodGet, "/repositories/7/path-policies", "", reposervice.ErrRepositoryNotFound, http.StatusNotFound, "repository_not_found"},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				fake := &fakeManager{policyErr: tc.policyErr}
+				rec := httptest.NewRecorder()
+				var reqBody io.Reader
+				if tc.body != "" {
+					reqBody = strings.NewReader(tc.body)
+				}
+				newTestRouter(fake).ServeHTTP(rec, httptest.NewRequest(tc.method, tc.target, reqBody))
+
+				if rec.Code != tc.wantStatus {
+					t.Fatalf("status = %d, want %d: %s", rec.Code, tc.wantStatus, rec.Body.String())
+				}
+				var body struct {
+					Error struct {
+						Code string `json:"code"`
+					} `json:"error"`
+				}
+				if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+					t.Fatal(err)
+				}
+				if body.Error.Code != tc.wantCode {
+					t.Errorf("code = %q, want %q", body.Error.Code, tc.wantCode)
+				}
+			})
+		}
+	})
 }

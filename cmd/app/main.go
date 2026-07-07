@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"os/signal"
 	"syscall"
 
@@ -23,6 +24,11 @@ import (
 )
 
 func main() {
+	// the server binary can also handle the hook mode (e.g. pre-reveive)
+	if len(os.Args) > 1 && os.Args[1] == "hook" {
+		os.Exit(runHook(os.Args[2:]))
+	}
+
 	config, err := config.Load()
 	if err != nil {
 		log.Fatal(err)
@@ -137,4 +143,8 @@ func newLFSStorage(cfg config.LFSConfig) (storage.Storage, error) {
 	default:
 		return nil, fmt.Errorf("unknown lfs storage type %q", cfg.StorageType)
 	}
+}
+
+func runHook(args []string) int {
+	return gitbackend.HookMain(args)
 }
