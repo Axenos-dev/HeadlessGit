@@ -2,6 +2,7 @@ package repositories
 
 import (
 	"context"
+	"database/sql"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/db"
 	"github.com/Axenos-dev/HeadlessGit/internal/db/gen"
@@ -53,5 +54,29 @@ func (r *RepositoryRegistry) GetRepositoryByPath(ctx context.Context, namespace,
 	return r.db.GetRepositoryByPath(ctx, gen.GetRepositoryByPathParams{
 		Namespace: namespace,
 		Name:      name,
+	})
+}
+
+func (r *RepositoryRegistry) CreateRepositoryPathPolicy(ctx context.Context, repositoryID int64, kind, pattern string, reason *string) (gen.PathPolicy, error) {
+	var reasonNS sql.NullString
+	if reason != nil {
+		reasonNS = sql.NullString{String: *reason, Valid: true}
+	}
+	return r.db.CreatePathPolicy(ctx, gen.CreatePathPolicyParams{
+		RepositoryID: repositoryID,
+		Kind:         kind,
+		Pattern:      pattern,
+		Reason:       reasonNS,
+	})
+}
+
+func (r *RepositoryRegistry) ListRepositoryPathPolicies(ctx context.Context, repositoryID int64) ([]gen.PathPolicy, error) {
+	return r.db.ListRepositoryPathPolicies(ctx, repositoryID)
+}
+
+func (r *RepositoryRegistry) DeleteRepositoryPathPolicy(ctx context.Context, repositoryID, pathPolicyID int64) error {
+	return r.db.DeletePathPolicy(ctx, gen.DeletePathPolicyParams{
+		ID:           pathPolicyID,
+		RepositoryID: repositoryID,
 	})
 }

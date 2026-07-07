@@ -25,10 +25,33 @@ type fakeRegistry struct {
 	Registry
 	repo gen.Repository
 	err  error
+
+	policies        []gen.PathPolicy
+	policiesErr     error
+	createPolicyErr error
 }
 
 func (f fakeRegistry) GetRepository(ctx context.Context, repositoryID int64) (gen.Repository, error) {
 	return f.repo, f.err
+}
+
+func (f fakeRegistry) ListRepositoryPathPolicies(ctx context.Context, repositoryID int64) ([]gen.PathPolicy, error) {
+	return f.policies, f.policiesErr
+}
+
+func (f fakeRegistry) CreateRepositoryPathPolicy(ctx context.Context, repositoryID int64, kind, pattern string, reason *string) (gen.PathPolicy, error) {
+	if f.createPolicyErr != nil {
+		return gen.PathPolicy{}, f.createPolicyErr
+	}
+	p := gen.PathPolicy{ID: 1, RepositoryID: repositoryID, Kind: kind, Pattern: pattern}
+	if reason != nil {
+		p.Reason = sql.NullString{String: *reason, Valid: true}
+	}
+	return p, nil
+}
+
+func (f fakeRegistry) DeleteRepositoryPathPolicy(ctx context.Context, repositoryID, pathPolicyID int64) error {
+	return nil
 }
 
 type fakeStorage struct {
@@ -520,6 +543,110 @@ func TestCommitCleanClosure(t *testing.T) {
 		}
 		if len(stored) != 0 {
 			t.Errorf("pointer passthrough must not store objects, got %v", stored)
+		}
+	})
+}
+
+func TestAddPathPolicy(t *testing.T) {
+	row := gen.Repository{ID: 7, RepositoryName: "myrepo", StoragePath: "7/myrepo.git", Visibility: "private"}
+
+	t.Run("normalizes and stores", func(t *testing.T) {
+		svc := NewService(zap.NewNop(), fakeRegistry{repo: row}, fakeStorage{}, nil, nil)
+		p, err := svc.AddPathPolicy(context.Background(), row.ID, "/runtime/", "deploy state")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.Pattern != "runtime" || p.Kind != domain.PathPolicyBlock || p.Reason != "deploy state" {
+			t.Errorf("policy = %+v", p)
+		}
+	})
+
+	t.Run("invalid pattern", func(t *testing.T) {
+		svc := NewService(zap.NewNop(), fakeRegistry{repo: row}, fakeStorage{}, nil, nil)
+		if _, err := svc.AddPathPolicy(context.Background(), row.ID, "a/../b", ""); !errors.Is(err, ErrInvalidPathPattern) {
+			t.Errorf("want ErrInvalidPathPattern, got %v", err)
+		}
+	})
+
+	t.Run("duplicate", func(t *testing.T) {
+		svc := NewService(zap.NewNop(), fakeRegistry{repo: row, createPolicyErr: sql.ErrNoRows}, fakeStorage{}, nil, nil)
+		if _, err := svc.AddPathPolicy(context.Background(), row.ID, "runtime", ""); !errors.Is(err, ErrPathPolicyExists) {
+			t.Errorf("want ErrPathPolicyExists, got %v", err)
+		}
+	})
+
+	t.Run("repo not found", func(t *testing.T) {
+		svc := NewService(zap.NewNop(), fakeRegistry{err: sql.ErrNoRows}, fakeStorage{}, nil, nil)
+		if _, err := svc.AddPathPolicy(context.Background(), 404, "runtime", ""); !errors.Is(err, ErrRepositoryNotFound) {
+			t.Errorf("want ErrRepositoryNotFound, got %v", err)
+		}
+	})
+}
+
+func TestCommitPathPolicies(t *testing.T) {
+	row := gen.Repository{ID: 7, RepositoryName: "myrepo", StoragePath: "7/myrepo.git", Visibility: "private"}
+	policies := []gen.PathPolicy{
+		{ID: 1, RepositoryID: 7, Pattern: "runtime", Kind: "block", Reason: sql.NullString{String: "deploy-managed state", Valid: true}},
+		{ID: 2, RepositoryID: 7, Pattern: "config.lock", Kind: "block"},
+	}
+	base := domain.CommitRequest{
+		Branch:  "main",
+		Message: "x",
+		Author:  domain.CommitIdentity{Name: "t", Email: "t@t"},
+	}
+	change := gitbackend.RefChange{Ref: "refs/heads/main", OldSHA: strings.Repeat("a", 40), NewSHA: testSHA}
+
+	cases := []struct {
+		name    string
+		ops     []domain.CommitFileOp
+		blocked bool
+	}{
+		{"put inside blocked dir", []domain.CommitFileOp{{Path: "runtime/state.json", BlobSHA: blobSHA}}, true},
+		{"put blocked file", []domain.CommitFileOp{{Path: "config.lock", BlobSHA: blobSHA}}, true},
+		{"dot-segment evasion", []domain.CommitFileOp{{Path: "./runtime/state.json", BlobSHA: blobSHA}}, true},
+		{"delete of blocked path allowed", []domain.CommitFileOp{{Path: "runtime/state.json", Delete: true}}, false},
+		{"unrelated put", []domain.CommitFileOp{{Path: "src/main.go", BlobSHA: blobSHA}}, false},
+		{"sibling prefix not blocked", []domain.CommitFileOp{{Path: "runtimes/x", BlobSHA: blobSHA}}, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			applied := false
+			st := fakeStorage{applyChange: change, applyFn: func(_ gitbackend.CommitSpec, _ []gitbackend.CommitOp, _ gitbackend.CleanFunc) error {
+				applied = true
+				return nil
+			}}
+			svc := NewService(zap.NewNop(), fakeRegistry{repo: row, policies: policies}, st, nil, nil)
+
+			req := base
+			req.Operations = tc.ops
+			_, err := svc.Commit(context.Background(), row.ID, req)
+
+			if tc.blocked {
+				if !errors.Is(err, ErrPathBlocked) {
+					t.Fatalf("want ErrPathBlocked, got %v", err)
+				}
+				if applied {
+					t.Error("blocked commit must never reach the backend")
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !applied {
+					t.Error("allowed commit did not reach the backend")
+				}
+			}
+		})
+	}
+
+	t.Run("reason is echoed", func(t *testing.T) {
+		svc := NewService(zap.NewNop(), fakeRegistry{repo: row, policies: policies}, fakeStorage{}, nil, nil)
+		req := base
+		req.Operations = []domain.CommitFileOp{{Path: "runtime/x", BlobSHA: blobSHA}}
+		_, err := svc.Commit(context.Background(), row.ID, req)
+		if err == nil || !strings.Contains(err.Error(), "deploy-managed state") {
+			t.Errorf("reason missing from error: %v", err)
 		}
 	})
 }

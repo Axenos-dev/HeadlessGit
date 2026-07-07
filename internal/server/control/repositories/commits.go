@@ -58,6 +58,8 @@ func (h *handlers) createCommit(w http.ResponseWriter, r *http.Request) error {
 		return response.NewError(http.StatusUnprocessableEntity, response.CodeUnknownBlob, "referenced blob not found, upload it first")
 	case errors.Is(err, reposervice.ErrNothingToCommit):
 		return response.NewError(http.StatusUnprocessableEntity, response.CodeNothingToCommit, "operations produce no change")
+	case errors.Is(err, reposervice.ErrPathBlocked):
+		return response.NewError(http.StatusUnprocessableEntity, response.CodePathBlocked, err.Error())
 	case errors.Is(err, reposervice.ErrNotAFile):
 		return response.NewError(http.StatusBadRequest, response.CodeInvalidRequest, "delete target is not a file")
 	case errors.Is(err, reposervice.ErrInvalidBranch):

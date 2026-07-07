@@ -15,7 +15,9 @@ insert into path_policies (
   repository_id, pattern, kind, reason
 ) values (
   ?, ?, ?, ?
-) returning id, repository_id, pattern, kind, reason, created_at_unix_ms
+)
+on conflict (repository_id, pattern, kind) do nothing
+returning id, repository_id, pattern, kind, reason, created_at_unix_ms
 `
 
 type CreatePathPolicyParams struct {

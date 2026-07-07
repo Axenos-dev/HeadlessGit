@@ -28,6 +28,9 @@ type Registry interface {
 	UpdateRepositoryVisibility(ctx context.Context, repositoryID int64, visibility string) (gen.Repository, error)
 	ListUserRepositories(ctx context.Context, ownerID int64) ([]gen.Repository, error)
 	ListRepositories(ctx context.Context) ([]gen.Repository, error)
+	CreateRepositoryPathPolicy(ctx context.Context, repositoryID int64, kind, pattern string, reason *string) (gen.PathPolicy, error)
+	ListRepositoryPathPolicies(ctx context.Context, repositoryID int64) ([]gen.PathPolicy, error)
+	DeleteRepositoryPathPolicy(ctx context.Context, repositoryID, pathPolicyID int64) error
 }
 
 type RepositoryStorage interface {
@@ -394,9 +397,63 @@ func (s *Service) WriteBlob(ctx context.Context, repositoryID int64, in io.Reade
 	return s.storage.WriteBlob(ctx, repo.StoragePath, in)
 }
 
+func (s *Service) ListPathPolicies(ctx context.Context, repositoryID int64) ([]domain.PathPolicy, error) {
+	if _, err := s.Get(ctx, repositoryID); err != nil {
+		return nil, err
+	}
+
+	rows, err := s.registry.ListRepositoryPathPolicies(ctx, repositoryID)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]domain.PathPolicy, len(rows))
+	for i, row := range rows {
+		out[i] = policyToDomain(row)
+	}
+	return out, nil
+}
+
+func (s *Service) AddPathPolicy(ctx context.Context, repositoryID int64, pattern, reason string) (domain.PathPolicy, error) {
+	normalized, ok := domain.NormalizePathPattern(pattern)
+	if !ok {
+		return domain.PathPolicy{}, fmt.Errorf("%w: %q", ErrInvalidPathPattern, pattern)
+	}
+
+	if _, err := s.Get(ctx, repositoryID); err != nil {
+		return domain.PathPolicy{}, err
+	}
+
+	var reasonPtr *string
+	if reason != "" {
+		reasonPtr = &reason
+	}
+
+	row, err := s.registry.CreateRepositoryPathPolicy(ctx, repositoryID, string(domain.PathPolicyBlock), normalized, reasonPtr)
+	// the insert is "on conflict do nothing returning *" -> on dublicate "no rows"
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.PathPolicy{}, fmt.Errorf("%w: %q", ErrPathPolicyExists, normalized)
+	}
+	if err != nil {
+		return domain.PathPolicy{}, err
+	}
+	return policyToDomain(row), nil
+}
+
+func (s *Service) RemovePathPolicy(ctx context.Context, repositoryID, policyID int64) error {
+	if _, err := s.Get(ctx, repositoryID); err != nil {
+		return err
+	}
+	return s.registry.DeleteRepositoryPathPolicy(ctx, repositoryID, policyID)
+}
+
 func (s *Service) Commit(ctx context.Context, repositoryID int64, req domain.CommitRequest) (domain.CommitResult, error) {
 	repo, err := s.Get(ctx, repositoryID)
 	if err != nil {
+		return domain.CommitResult{}, err
+	}
+
+	if err := s.checkPathPolicies(ctx, repositoryID, req.Operations); err != nil {
 		return domain.CommitResult{}, err
 	}
 
@@ -530,6 +587,41 @@ func (s *Service) dispatchPush(ctx context.Context, repo domain.Repository, req 
 	}
 }
 
+func (s *Service) checkPathPolicies(ctx context.Context, repositoryID int64, ops []domain.CommitFileOp) error {
+	rows, err := s.registry.ListRepositoryPathPolicies(ctx, repositoryID)
+	if err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+
+	patterns := make([]string, 0, len(rows))
+	reasons := make(map[string]string, len(rows))
+	for _, row := range rows {
+		patterns = append(patterns, row.Pattern)
+		if row.Reason.Valid { // if its normal non null string
+			reasons[row.Pattern] = row.Reason.String
+		}
+	}
+
+	for _, op := range ops {
+		if op.Delete { // never block for deletions
+			continue
+		}
+
+		cleaned := path.Clean("/" + op.Path)[1:]
+		if pattern, blocked := domain.PathBlocked(patterns, cleaned); blocked {
+			// return nice error with reason, if present
+			if reason := reasons[pattern]; reason != "" {
+				return fmt.Errorf("%w: %q (%s)", ErrPathBlocked, cleaned, reason)
+			}
+			return fmt.Errorf("%w: %q matches %q", ErrPathBlocked, cleaned, pattern)
+		}
+	}
+	return nil
+}
+
 func toDomain(r gen.Repository) domain.Repository {
 	repo := domain.Repository{
 		ID:             r.ID,
@@ -544,6 +636,20 @@ func toDomain(r gen.Repository) domain.Repository {
 		repo.UpdatedAt = &t
 	}
 	return repo
+}
+
+func policyToDomain(row gen.PathPolicy) domain.PathPolicy {
+	p := domain.PathPolicy{
+		ID:           row.ID,
+		RepositoryID: row.RepositoryID,
+		Pattern:      row.Pattern,
+		Kind:         domain.PathPolicyKind(row.Kind),
+		CreatedAt:    time.UnixMilli(row.CreatedAtUnixMs).UTC(),
+	}
+	if row.Reason.Valid {
+		p.Reason = row.Reason.String
+	}
+	return p
 }
 
 func validRepositoryName(name string) bool {

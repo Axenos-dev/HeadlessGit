@@ -3,7 +3,9 @@ insert into path_policies (
   repository_id, pattern, kind, reason
 ) values (
   ?, ?, ?, ?
-) returning *;
+)
+on conflict (repository_id, pattern, kind) do nothing
+returning *;
 
 -- name: DeletePathPolicy :exec
 delete from path_policies

@@ -17,4 +17,7 @@ const (
 	CodeHeadMismatch    = "head_mismatch"
 	CodeUnknownBlob     = "unknown_blob"
 	CodeNothingToCommit = "nothing_to_commit"
+
+	CodePathBlocked      = "path_blocked"
+	CodePathPolicyExists = "path_policy_exists"
 )
