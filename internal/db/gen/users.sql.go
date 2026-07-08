@@ -14,7 +14,8 @@ insert into users (
   username, kind
 ) values (
   ?, ?
-) returning id, username, kind, is_admin, created_at_unix_ms, updated_at_unix_ms
+) on conflict(username) do nothing
+returning id, username, kind, is_admin, created_at_unix_ms, updated_at_unix_ms
 `
 
 type CreateUserParams struct {

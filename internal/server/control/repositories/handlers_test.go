@@ -44,6 +44,13 @@ type fakeManager struct {
 	policyErr     error
 	policyPattern string
 	policyReason  string
+
+	createdRepo domain.Repository
+	createErr   error
+}
+
+func (f *fakeManager) Create(ctx context.Context, ownerID int64, info domain.RepositoryInfo) (domain.Repository, error) {
+	return f.createdRepo, f.createErr
 }
 
 func (f *fakeManager) ListPathPolicies(ctx context.Context, repositoryID int64) ([]domain.PathPolicy, error) {
@@ -519,6 +526,52 @@ func TestCreateCommitErrors(t *testing.T) {
 			}
 			if body.Error.Code != tc.wantCode {
 				t.Errorf("code = %q, want %q", body.Error.Code, tc.wantCode)
+			}
+		})
+	}
+}
+
+func TestCreateRepository(t *testing.T) {
+	cases := []struct {
+		name       string
+		body       string
+		createErr  error
+		wantStatus int
+		wantCode   string
+	}{
+		{"created", `{"ownerId":3,"name":"demo","visibility":"private"}`, nil, http.StatusCreated, ""},
+		{"duplicate", `{"ownerId":3,"name":"demo","visibility":"private"}`, reposervice.ErrRepositoryExists, http.StatusConflict, "repository_exists"},
+		{"invalid name", `{"ownerId":3,"name":"..","visibility":"private"}`, reposervice.ErrInvalidRepositoryName, http.StatusBadRequest, "invalid_request"},
+		{"internal", `{"ownerId":3,"name":"demo","visibility":"private"}`, io.ErrUnexpectedEOF, http.StatusInternalServerError, "internal_error"},
+		{"invalid body", `not json`, nil, http.StatusBadRequest, "invalid_request"},
+		{"missing owner", `{"name":"demo","visibility":"private"}`, nil, http.StatusBadRequest, "invalid_request"},
+		{"bad visibility", `{"ownerId":3,"name":"demo","visibility":"hidden"}`, nil, http.StatusBadRequest, "invalid_request"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeManager{
+				createdRepo: domain.Repository{ID: 7, OwnerID: 3, RepositoryName: "demo", Visibility: domain.RepoVisibilityPrivate},
+				createErr:   tc.createErr,
+			}
+			rec := httptest.NewRecorder()
+			newTestRouter(fake).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/repositories", strings.NewReader(tc.body)))
+
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			if tc.wantCode != "" {
+				var body struct {
+					Error struct {
+						Code string `json:"code"`
+					} `json:"error"`
+				}
+				if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+					t.Fatal(err)
+				}
+				if body.Error.Code != tc.wantCode {
+					t.Errorf("code = %q, want %q", body.Error.Code, tc.wantCode)
+				}
 			}
 		})
 	}

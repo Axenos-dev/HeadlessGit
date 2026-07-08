@@ -3,7 +3,8 @@ insert into webhooks (
   repository_id, secret, url
 ) values (
   ?, ?, ?
-) returning *;
+) on conflict(repository_id, url) do nothing
+returning *;
 
 -- name: ListWebhooksForRepository :many
 select * from webhooks

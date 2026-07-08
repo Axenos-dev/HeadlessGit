@@ -27,6 +27,8 @@ func (h *handlers) createRepository(w http.ResponseWriter, r *http.Request) erro
 	switch {
 	case errors.Is(err, reposervice.ErrInvalidRepositoryName):
 		return response.NewError(http.StatusBadRequest, response.CodeInvalidRequest, "invalid repository name")
+	case errors.Is(err, reposervice.ErrRepositoryExists):
+		return response.NewError(http.StatusConflict, response.CodeRepositoryExists, "repository already exists")
 	case err != nil:
 		h.logger.Error("failed to create repository", zap.Error(err))
 		return response.NewError(http.StatusInternalServerError, response.CodeInternalError, "failed to create repository")

@@ -14,7 +14,8 @@ insert into webhooks (
   repository_id, secret, url
 ) values (
   ?, ?, ?
-) returning id, repository_id, secret, url, created_at_unix_ms, updated_at_unix_ms
+) on conflict(repository_id, url) do nothing
+returning id, repository_id, secret, url, created_at_unix_ms, updated_at_unix_ms
 `
 
 type CreateWebhookParams struct {

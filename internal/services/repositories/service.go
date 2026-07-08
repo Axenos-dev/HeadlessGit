@@ -125,6 +125,10 @@ func (s *Service) Create(ctx context.Context, ownerID int64, info domain.Reposit
 
 	// insert row first, check if we pass the main constrains
 	repo, err := s.registry.CreateRepository(ctx, ownerID, info.RepositoryName, storagePath, string(info.Visibility))
+	// the insert is "on conflict do nothing returning *" -> on duplicate "no rows"
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Repository{}, fmt.Errorf("%w: %q", ErrRepositoryExists, info.RepositoryName)
+	}
 	if err != nil {
 		s.logger.Error("failed to create repository", zap.Error(err))
 		return domain.Repository{}, err

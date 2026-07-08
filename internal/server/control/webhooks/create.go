@@ -2,10 +2,12 @@ package webhooks
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/server/response"
+	webhookservice "github.com/Axenos-dev/HeadlessGit/internal/services/webhooks"
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 )
@@ -25,7 +27,10 @@ func (h *handlers) createWebhook(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	webhook, err := h.webhooks.RegisterWebhook(r.Context(), repoID, req.URL)
-	if err != nil {
+	switch {
+	case errors.Is(err, webhookservice.ErrWebhookExists):
+		return response.NewError(http.StatusConflict, response.CodeWebhookExists, "webhook already exists")
+	case err != nil:
 		h.logger.Error("failed to register webhook", zap.Error(err))
 		return response.NewError(http.StatusInternalServerError, response.CodeInternalError, "failed to register webhook")
 	}

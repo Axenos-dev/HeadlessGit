@@ -118,7 +118,7 @@ Every request requires `Authorization: Bearer <ADMIN_TOKEN>`. Responses are enve
 
 | Method   | Path                           | Body                 | Description                                                  |
 | -------- | ------------------------------ | -------------------- | ------------------------------------------------------------ |
-| `POST`   | `/users`                       | `{username, kind}`   | Create a user/service account (`kind`: `user` \| `service`). |
+| `POST`   | `/users`                       | `{username, kind}`   | Create a user/service account (`kind`: `user` \| `service`); `409 user_exists` if the username is taken. |
 | `GET`    | `/users/{id}`                  | —                    | Get an account.                                              |
 | `GET`    | `/users/{id}/repositories`     | —                    | List repositories owned by the account.                      |
 | `POST`   | `/users/{id}/ssh-keys`         | `{title, publicKey}` | Register an SSH public key.                                  |
@@ -133,14 +133,14 @@ Every request requires `Authorization: Bearer <ADMIN_TOKEN>`. Responses are enve
 
 | Method   | Path                                          | Body                          | Description                                                       |
 | -------- | --------------------------------------------- | ----------------------------- | ----------------------------------------------------------------- |
-| `POST`   | `/repositories`                               | `{ownerId, name, visibility}` | Create a repository (`visibility`: `public` \| `private`).        |
+| `POST`   | `/repositories`                               | `{ownerId, name, visibility}` | Create a repository (`visibility`: `public` \| `private`); `409 repository_exists` if the owner already has one with that name. |
 | `GET`    | `/repositories/{id}`                          | —                             | Get repository metadata.                                          |
 | `PUT`    | `/repositories/{id}/visibility`               | `{visibility}`                | Change visibility (`public` \| `private`).                        |
 | `DELETE` | `/repositories/{id}`                          | —                             | Delete a repository (row + bare repo).                            |
 | `GET`    | `/repositories/{id}/permissions`              | —                             | List collaborators.                                               |
 | `PUT`    | `/repositories/{id}/permissions`              | `{userId, role}`              | Grant/update a collaborator role (`read` \| `write` \| `admin`).  |
 | `DELETE` | `/repositories/{id}/permissions/{userId}`     | —                             | Revoke a collaborator.                                            |
-| `POST`   | `/repositories/{id}/webhooks`                 | `{url}`                       | Register a push webhook; the signing secret is returned **once**. |
+| `POST`   | `/repositories/{id}/webhooks`                 | `{url}`                       | Register a push webhook; the signing secret is returned **once**. `409 webhook_exists` if the URL is already registered on the repo. |
 | `DELETE` | `/repositories/{id}/webhooks/{hookId}`        | —                             | Delete a webhook.                                                 |
 | `GET`    | `/repositories/{id}/path-policies`            | —                             | List the repository's path policies.                              |
 | `POST`   | `/repositories/{id}/path-policies`            | `{pattern, reason?}`          | Block a path; see [Path policies](#path-policies).                |
@@ -269,7 +269,7 @@ remote: push rejected: "runtime/state.json" is blocked by policy (.....)
 
 ## Webhooks
 
-Register a webhook on a repository and `headlessgit` will `POST` to it after every ref change — a `git push` or a commit created through the [content API](#writing-without-a-clone) produce identical events.
+Register a webhook on a repository and `headlessgit` will `POST` to it after every ref change — a `git push` or a commit created through the [content API](#writing-without-a-clone) produce identical events. A repository can have multiple webhooks, but each URL only once (`409 webhook_exists` on duplicates); to rotate a secret, delete the webhook and re-register it.
 
 One delivery is sent **per changed ref** (a branch/tag create, update, or delete — not per file or commit). The JSON body:
 
