@@ -135,6 +135,31 @@ func TestPermissionUpsert(t *testing.T) {
 	}
 }
 
+func TestWebhookUniquePerRepoURL(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	owner, _ := d.CreateUser(ctx, gen.CreateUserParams{Username: "o", Kind: "user"})
+	repo, _ := d.CreateRepository(ctx, gen.CreateRepositoryParams{
+		OwnerID: owner.ID, RepositoryName: "r", StoragePath: "o/r.git", Visibility: "private",
+	})
+
+	if _, err := d.CreateWebhook(ctx, gen.CreateWebhookParams{RepositoryID: repo.ID, Secret: "s1", Url: "https://example.com/hook"}); err != nil {
+		t.Fatalf("create webhook: %v", err)
+	}
+	// duplicate (repo, url): "on conflict do nothing returning *" -> no rows
+	if _, err := d.CreateWebhook(ctx, gen.CreateWebhookParams{RepositoryID: repo.ID, Secret: "s2", Url: "https://example.com/hook"}); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("duplicate webhook: expected ErrNoRows, got %v", err)
+	}
+
+	// the same url on a different repo is a separate registration
+	repo2, _ := d.CreateRepository(ctx, gen.CreateRepositoryParams{
+		OwnerID: owner.ID, RepositoryName: "r2", StoragePath: "o/r2.git", Visibility: "private",
+	})
+	if _, err := d.CreateWebhook(ctx, gen.CreateWebhookParams{RepositoryID: repo2.ID, Secret: "s3", Url: "https://example.com/hook"}); err != nil {
+		t.Fatalf("same url, other repo: %v", err)
+	}
+}
+
 func TestEnsureAdminUserIdempotent(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()

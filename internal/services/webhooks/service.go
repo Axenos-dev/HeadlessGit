@@ -6,9 +6,11 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -49,6 +51,10 @@ func (s *Service) RegisterWebhook(ctx context.Context, repoID int64, url string)
 	}
 
 	webhook, err := s.registry.CreateWebhook(ctx, repoID, secret, url)
+	// the insert is "on conflict do nothing returning *" -> on duplicate "no rows"
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Webhook{}, fmt.Errorf("%w: %q", ErrWebhookExists, url)
+	}
 	if err != nil {
 		return domain.Webhook{}, err
 	}

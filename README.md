@@ -140,7 +140,7 @@ Every request requires `Authorization: Bearer <ADMIN_TOKEN>`. Responses are enve
 | `GET`    | `/repositories/{id}/permissions`              | —                             | List collaborators.                                               |
 | `PUT`    | `/repositories/{id}/permissions`              | `{userId, role}`              | Grant/update a collaborator role (`read` \| `write` \| `admin`).  |
 | `DELETE` | `/repositories/{id}/permissions/{userId}`     | —                             | Revoke a collaborator.                                            |
-| `POST`   | `/repositories/{id}/webhooks`                 | `{url}`                       | Register a push webhook; the signing secret is returned **once**. |
+| `POST`   | `/repositories/{id}/webhooks`                 | `{url}`                       | Register a push webhook; the signing secret is returned **once**. `409 webhook_exists` if the URL is already registered on the repo. |
 | `DELETE` | `/repositories/{id}/webhooks/{hookId}`        | —                             | Delete a webhook.                                                 |
 | `GET`    | `/repositories/{id}/path-policies`            | —                             | List the repository's path policies.                              |
 | `POST`   | `/repositories/{id}/path-policies`            | `{pattern, reason?}`          | Block a path; see [Path policies](#path-policies).                |
@@ -269,7 +269,7 @@ remote: push rejected: "runtime/state.json" is blocked by policy (.....)
 
 ## Webhooks
 
-Register a webhook on a repository and `headlessgit` will `POST` to it after every ref change — a `git push` or a commit created through the [content API](#writing-without-a-clone) produce identical events.
+Register a webhook on a repository and `headlessgit` will `POST` to it after every ref change — a `git push` or a commit created through the [content API](#writing-without-a-clone) produce identical events. A repository can have multiple webhooks, but each URL only once (`409 webhook_exists` on duplicates); to rotate a secret, delete the webhook and re-register it.
 
 One delivery is sent **per changed ref** (a branch/tag create, update, or delete — not per file or commit). The JSON body:
 

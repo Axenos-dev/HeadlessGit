@@ -22,4 +22,5 @@ const (
 	CodePathPolicyExists = "path_policy_exists"
 	CodeUserExists       = "user_exists"
 	CodeRepositoryExists = "repository_exists"
+	CodeWebhookExists    = "webhook_exists"
 )
