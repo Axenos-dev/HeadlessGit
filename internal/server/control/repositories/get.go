@@ -28,3 +28,21 @@ func (h *handlers) getRepository(w http.ResponseWriter, r *http.Request) error {
 
 	return response.Data(w, http.StatusOK, newRepository(repo))
 }
+
+func (h *handlers) getRepositoryByPath(w http.ResponseWriter, r *http.Request) error {
+	namespace, name := chi.URLParam(r, "namespace"), chi.URLParam(r, "name")
+	if namespace == "" || name == "" {
+		return response.NewError(http.StatusBadRequest, response.CodeInvalidRequest, "namespace and name are required")
+	}
+
+	repo, err := h.service.GetRepositoryByPath(r.Context(), namespace, name)
+	switch {
+	case errors.Is(err, reposervice.ErrRepositoryNotFound):
+		return response.NewError(http.StatusNotFound, response.CodeRepositoryNotFound, "repository not found")
+	case err != nil:
+		h.logger.Error("failed to get repository by path", zap.Error(err))
+		return response.NewError(http.StatusInternalServerError, response.CodeInternalError, "failed to get repository")
+	}
+
+	return response.Data(w, http.StatusOK, newRepository(repo))
+}

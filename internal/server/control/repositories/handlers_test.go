@@ -47,10 +47,17 @@ type fakeManager struct {
 
 	createdRepo domain.Repository
 	createErr   error
+
+	repoByPath    domain.Repository
+	repoByPathErr error
 }
 
 func (f *fakeManager) Create(ctx context.Context, ownerID int64, info domain.RepositoryInfo) (domain.Repository, error) {
 	return f.createdRepo, f.createErr
+}
+
+func (f *fakeManager) GetRepositoryByPath(ctx context.Context, namespace, name string) (domain.Repository, error) {
+	return f.repoByPath, f.repoByPathErr
 }
 
 func (f *fakeManager) ListPathPolicies(ctx context.Context, repositoryID int64) ([]domain.PathPolicy, error) {
@@ -572,6 +579,59 @@ func TestCreateRepository(t *testing.T) {
 				if body.Error.Code != tc.wantCode {
 					t.Errorf("code = %q, want %q", body.Error.Code, tc.wantCode)
 				}
+			}
+		})
+	}
+}
+
+func TestGetRepositoryByPath(t *testing.T) {
+	cases := []struct {
+		name       string
+		target     string
+		svcErr     error
+		wantStatus int
+		wantCode   string
+	}{
+		{"found", "/repositories/by-path/acme/api", nil, http.StatusOK, ""},
+		{"numeric namespace and name", "/repositories/by-path/123/456", nil, http.StatusOK, ""},
+		{"not found", "/repositories/by-path/acme/nope", reposervice.ErrRepositoryNotFound, http.StatusNotFound, "repository_not_found"},
+		{"internal", "/repositories/by-path/acme/api", io.ErrUnexpectedEOF, http.StatusInternalServerError, "internal_error"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeManager{
+				repoByPath:    domain.Repository{ID: 7, OwnerID: 3, RepositoryName: "api", Visibility: domain.RepoVisibilityPrivate},
+				repoByPathErr: tc.svcErr,
+			}
+			rec := httptest.NewRecorder()
+			newTestRouter(fake).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tc.target, nil))
+
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			if tc.wantCode == "" {
+				var body struct {
+					Data Repository `json:"data"`
+				}
+				if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+					t.Fatal(err)
+				}
+				if body.Data.ID != 7 || body.Data.Name != "api" {
+					t.Errorf("body = %+v", body.Data)
+				}
+				return
+			}
+			var body struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Error.Code != tc.wantCode {
+				t.Errorf("code = %q, want %q", body.Error.Code, tc.wantCode)
 			}
 		})
 	}

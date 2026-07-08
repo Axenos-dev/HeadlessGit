@@ -13,6 +13,7 @@ import (
 type RepositoryManager interface {
 	Create(ctx context.Context, ownerID int64, info domain.RepositoryInfo) (domain.Repository, error)
 	Get(ctx context.Context, repositoryID int64) (domain.Repository, error)
+	GetRepositoryByPath(ctx context.Context, namespace, name string) (domain.Repository, error)
 	Delete(ctx context.Context, repositoryID int64) error
 	SetVisibility(ctx context.Context, repositoryID int64, visibility domain.RepoVisibility) (domain.Repository, error)
 	ListByOwner(ctx context.Context, ownerID int64) ([]domain.Repository, error)
@@ -43,6 +44,7 @@ func NewHandlers(logger *zap.Logger, service RepositoryManager) *handlers {
 func (h *handlers) RegisterRoutes(parent chi.Router) {
 	parent.Route("/repositories", func(r chi.Router) {
 		r.Post("/", response.Handler(h.logger, h.createRepository))
+		r.Get("/by-path/{namespace}/{name}", response.Handler(h.logger, h.getRepositoryByPath))
 		r.Post("/{repositoryID}/blobs", response.Handler(h.logger, h.uploadBlob))
 		r.Post("/{repositoryID}/commits", response.Handler(h.logger, h.createCommit))
 		r.Get("/{repositoryID}", response.Handler(h.logger, h.getRepository))
