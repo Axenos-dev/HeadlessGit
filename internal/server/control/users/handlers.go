@@ -13,6 +13,7 @@ import (
 type UserManager interface {
 	Create(ctx context.Context, info domain.UserInfo) (domain.Account, error)
 	Get(ctx context.Context, userID int64) (domain.Account, error)
+	GetByUsername(ctx context.Context, username string) (domain.Account, error)
 }
 
 type CredentialManager interface {
@@ -43,6 +44,7 @@ func NewHandlers(logger *zap.Logger, users UserManager, creds CredentialManager)
 func (h *handlers) RegisterRoutes(parent chi.Router) {
 	parent.Route("/users", func(r chi.Router) {
 		r.Post("/", response.Handler(h.logger, h.createUser))
+		r.Get("/by-username/{username}", response.Handler(h.logger, h.getUserByUsername))
 		r.Get("/{userID}", response.Handler(h.logger, h.getUser))
 
 		r.Get("/{userID}/ssh-keys", response.Handler(h.logger, h.listSSHKeys))

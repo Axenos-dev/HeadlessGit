@@ -12,6 +12,7 @@ import (
 
 type Registry interface {
 	GetUser(ctx context.Context, userID int64) (gen.User, error)
+	GetUserByUsername(ctx context.Context, username string) (gen.User, error)
 	CreateUser(ctx context.Context, username, kind string) (gen.User, error)
 }
 
@@ -39,6 +40,17 @@ func (s *Service) Create(ctx context.Context, info domain.UserInfo) (domain.Acco
 
 func (s *Service) Get(ctx context.Context, userID int64) (domain.Account, error) {
 	user, err := s.registry.GetUser(ctx, userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Account{}, ErrUserNotFound
+	}
+	if err != nil {
+		return domain.Account{}, err
+	}
+	return toAccount(user), nil
+}
+
+func (s *Service) GetByUsername(ctx context.Context, username string) (domain.Account, error) {
+	user, err := s.registry.GetUserByUsername(ctx, username)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.Account{}, ErrUserNotFound
 	}

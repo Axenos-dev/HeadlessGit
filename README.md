@@ -120,6 +120,7 @@ Every request requires `Authorization: Bearer <ADMIN_TOKEN>`. Responses are enve
 | -------- | ------------------------------ | -------------------- | ------------------------------------------------------------ |
 | `POST`   | `/users`                       | `{username, kind}`   | Create a user/service account (`kind`: `user` \| `service`); `409 user_exists` if the username is taken. |
 | `GET`    | `/users/{id}`                  | —                    | Get an account.                                              |
+| `GET`    | `/users/by-username/{username}` | —                   | Look up an account by username (name -> id resolution).      |
 | `GET`    | `/users/{id}/repositories`     | —                    | List repositories owned by the account.                      |
 | `POST`   | `/users/{id}/ssh-keys`         | `{title, publicKey}` | Register an SSH public key.                                  |
 | `GET`    | `/users/{id}/ssh-keys`         | —                    | List the account's SSH keys.                                 |

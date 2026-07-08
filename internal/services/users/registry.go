@@ -21,6 +21,10 @@ func (r *UserRegistry) GetUser(ctx context.Context, userID int64) (gen.User, err
 	return r.db.GetUser(ctx, userID)
 }
 
+func (r *UserRegistry) GetUserByUsername(ctx context.Context, username string) (gen.User, error) {
+	return r.db.GetUserByUsername(ctx, username)
+}
+
 func (r *UserRegistry) CreateUser(ctx context.Context, username, kind string) (gen.User, error) {
 	return r.db.CreateUser(ctx, gen.CreateUserParams{
 		Username: username,
