@@ -38,3 +38,17 @@ func newWebhookResponse(w domain.Webhook) WebhookResponse {
 		CreatedAt: w.CreatedAt,
 	}
 }
+
+type WebhookListItem struct {
+	ID        int64     `json:"id"`
+	URL       string    `json:"url"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+func newWebhookListItems(webhooks []domain.Webhook) []WebhookListItem {
+	out := make([]WebhookListItem, len(webhooks))
+	for i, w := range webhooks {
+		out[i] = WebhookListItem{ID: w.ID, URL: w.URL, CreatedAt: w.CreatedAt}
+	}
+	return out
+}

@@ -66,6 +66,18 @@ func (s *Service) DeleteWebhook(ctx context.Context, webhookID, repositoryID int
 	return s.registry.DeleteWebhook(ctx, webhookID, repositoryID)
 }
 
+func (s *Service) ListWebhooks(ctx context.Context, repositoryID int64) ([]domain.Webhook, error) {
+	rows, err := s.registry.ListWebhooksForRepository(ctx, repositoryID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domain.Webhook, len(rows))
+	for i, row := range rows {
+		out[i] = toDomain(row)
+	}
+	return out, nil
+}
+
 func (s *Service) DispatchEvent(ctx context.Context, event domain.RepositoryEvent) error {
 	select {
 	case s.eventsCh <- event:

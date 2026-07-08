@@ -143,6 +143,7 @@ Every request requires `Authorization: Bearer <ADMIN_TOKEN>`. Responses are enve
 | `PUT`    | `/repositories/{id}/permissions`              | `{userId, role}`              | Grant/update a collaborator role (`read` \| `write` \| `admin`).  |
 | `DELETE` | `/repositories/{id}/permissions/{userId}`     | —                             | Revoke a collaborator.                                            |
 | `POST`   | `/repositories/{id}/webhooks`                 | `{url}`                       | Register a push webhook; the signing secret is returned **once**. `409 webhook_exists` if the URL is already registered on the repo. |
+| `GET`    | `/repositories/{id}/webhooks`                 | —                             | List the repository's webhooks (never the secret).               |
 | `DELETE` | `/repositories/{id}/webhooks/{hookId}`        | —                             | Delete a webhook.                                                 |
 | `GET`    | `/repositories/{id}/path-policies`            | —                             | List the repository's path policies.                              |
 | `POST`   | `/repositories/{id}/path-policies`            | `{pattern, reason?}`          | Block a path; see [Path policies](#path-policies).                |
