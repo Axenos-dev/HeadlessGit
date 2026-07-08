@@ -21,4 +21,5 @@ const (
 	CodePathBlocked      = "path_blocked"
 	CodePathPolicyExists = "path_policy_exists"
 	CodeUserExists       = "user_exists"
+	CodeRepositoryExists = "repository_exists"
 )

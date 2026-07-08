@@ -26,6 +26,8 @@ type fakeRegistry struct {
 	repo gen.Repository
 	err  error
 
+	createRepoErr error
+
 	policies        []gen.PathPolicy
 	policiesErr     error
 	createPolicyErr error
@@ -33,6 +35,13 @@ type fakeRegistry struct {
 
 func (f fakeRegistry) GetRepository(ctx context.Context, repositoryID int64) (gen.Repository, error) {
 	return f.repo, f.err
+}
+
+func (f fakeRegistry) CreateRepository(ctx context.Context, ownerID int64, name, storagePath, visibility string) (gen.Repository, error) {
+	if f.createRepoErr != nil {
+		return gen.Repository{}, f.createRepoErr
+	}
+	return f.repo, nil
 }
 
 func (f fakeRegistry) ListRepositoryPathPolicies(ctx context.Context, repositoryID int64) ([]gen.PathPolicy, error) {
@@ -69,6 +78,10 @@ type fakeStorage struct {
 	applyErr     error
 	// optional hook to inspect (and exercise) what ApplyCommit received
 	applyFn func(spec gitbackend.CommitSpec, ops []gitbackend.CommitOp, clean gitbackend.CleanFunc) error
+}
+
+func (f fakeStorage) InitBare(ctx context.Context, storagePath string) error {
+	return nil
 }
 
 func (f fakeStorage) ResolveCommit(ctx context.Context, storagePath, rev string) (string, error) {
@@ -148,6 +161,37 @@ type fakeDispatcher struct {
 func (f fakeDispatcher) DispatchEvent(ctx context.Context, event domain.RepositoryEvent) error {
 	*f.events = append(*f.events, event)
 	return nil
+}
+
+func TestCreateRepository(t *testing.T) {
+	row := gen.Repository{ID: 7, OwnerID: 3, RepositoryName: "myrepo", StoragePath: "3/myrepo.git", Visibility: "private"}
+	info := domain.RepositoryInfo{RepositoryName: "myrepo", Visibility: domain.RepoVisibilityPrivate}
+
+	t.Run("ok", func(t *testing.T) {
+		svc := NewService(zap.NewNop(), fakeRegistry{repo: row}, fakeStorage{}, nil, nil)
+		repo, err := svc.Create(context.Background(), 3, info)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if repo.ID != 7 || repo.RepositoryName != "myrepo" {
+			t.Errorf("unexpected repo: %+v", repo)
+		}
+	})
+
+	t.Run("duplicate", func(t *testing.T) {
+		// the insert is "on conflict do nothing returning *" -> on duplicate "no rows"
+		svc := NewService(zap.NewNop(), fakeRegistry{createRepoErr: sql.ErrNoRows}, fakeStorage{}, nil, nil)
+		if _, err := svc.Create(context.Background(), 3, info); !errors.Is(err, ErrRepositoryExists) {
+			t.Errorf("want ErrRepositoryExists, got %v", err)
+		}
+	})
+
+	t.Run("invalid name", func(t *testing.T) {
+		svc := NewService(zap.NewNop(), fakeRegistry{repo: row}, fakeStorage{}, nil, nil)
+		if _, err := svc.Create(context.Background(), 3, domain.RepositoryInfo{RepositoryName: "../evil", Visibility: domain.RepoVisibilityPrivate}); !errors.Is(err, ErrInvalidRepositoryName) {
+			t.Errorf("want ErrInvalidRepositoryName, got %v", err)
+		}
+	})
 }
 
 func TestPrepareArchive(t *testing.T) {

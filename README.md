@@ -133,7 +133,7 @@ Every request requires `Authorization: Bearer <ADMIN_TOKEN>`. Responses are enve
 
 | Method   | Path                                          | Body                          | Description                                                       |
 | -------- | --------------------------------------------- | ----------------------------- | ----------------------------------------------------------------- |
-| `POST`   | `/repositories`                               | `{ownerId, name, visibility}` | Create a repository (`visibility`: `public` \| `private`).        |
+| `POST`   | `/repositories`                               | `{ownerId, name, visibility}` | Create a repository (`visibility`: `public` \| `private`); `409 repository_exists` if the owner already has one with that name. |
 | `GET`    | `/repositories/{id}`                          | —                             | Get repository metadata.                                          |
 | `PUT`    | `/repositories/{id}/visibility`               | `{visibility}`                | Change visibility (`public` \| `private`).                        |
 | `DELETE` | `/repositories/{id}`                          | —                             | Delete a repository (row + bare repo).                            |

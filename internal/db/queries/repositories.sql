@@ -14,7 +14,8 @@ insert into repositories (
   owner_id, repository_name, storage_path, visibility
 ) values (
   ?, ?, ?, ?
-) returning *;
+) on conflict(owner_id, repository_name) do nothing
+returning *;
 
 -- name: UpdateRepositoryVisibility :one
 update repositories

@@ -4,6 +4,7 @@ import "errors"
 
 var (
 	ErrRepositoryNotFound    = errors.New("repository not found")
+	ErrRepositoryExists      = errors.New("repository already exists")
 	ErrInvalidRepositoryName = errors.New("invalid repository name")
 	ErrInvalidVisibility     = errors.New("invalid visibility")
 
