@@ -19,6 +19,10 @@ func (f fakeRegistry) GetUser(ctx context.Context, userID int64) (gen.User, erro
 	return f.user, f.err
 }
 
+func (f fakeRegistry) GetUserByUsername(ctx context.Context, username string) (gen.User, error) {
+	return f.user, f.err
+}
+
 func (f fakeRegistry) CreateUser(ctx context.Context, username, kind string) (gen.User, error) {
 	return f.user, f.err
 }
@@ -48,6 +52,26 @@ func TestCreate(t *testing.T) {
 		svc := NewService(fakeRegistry{err: boom})
 		if _, err := svc.Create(context.Background(), domain.UserInfo{Username: "alice", Kind: domain.UserKindUser}); !errors.Is(err, boom) {
 			t.Errorf("want boom, got %v", err)
+		}
+	})
+}
+
+func TestGetByUsername(t *testing.T) {
+	t.Run("ok", func(t *testing.T) {
+		svc := NewService(fakeRegistry{user: gen.User{ID: 7, Username: "alice", Kind: "user"}})
+		account, err := svc.GetByUsername(context.Background(), "alice")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if account.UserID != 7 || account.Username != "alice" {
+			t.Errorf("unexpected account: %+v", account)
+		}
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		svc := NewService(fakeRegistry{err: sql.ErrNoRows})
+		if _, err := svc.GetByUsername(context.Background(), "ghost"); !errors.Is(err, ErrUserNotFound) {
+			t.Errorf("want ErrUserNotFound, got %v", err)
 		}
 	})
 }

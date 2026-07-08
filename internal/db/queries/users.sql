@@ -2,6 +2,10 @@
 select * from users
 where id=? limit 1;
 
+-- name: GetUserByUsername :one
+select * from users
+where username=? limit 1;
+
 -- name: CreateUser :one
 insert into users (
   username, kind

@@ -20,6 +20,13 @@ func (f fakeRegistry) CreateWebhook(ctx context.Context, repoID int64, secret, u
 	return f.webhook, f.err
 }
 
+func (f fakeRegistry) ListWebhooksForRepository(ctx context.Context, repoID int64) ([]gen.Webhook, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return []gen.Webhook{f.webhook}, nil
+}
+
 func TestRegisterWebhook(t *testing.T) {
 	t.Run("ok", func(t *testing.T) {
 		svc := NewService(zap.NewNop(), fakeRegistry{webhook: gen.Webhook{ID: 3, RepositoryID: 7, Url: "https://example.com/hook", Secret: "s"}})
@@ -47,4 +54,15 @@ func TestRegisterWebhook(t *testing.T) {
 			t.Errorf("want boom, got %v", err)
 		}
 	})
+}
+
+func TestListWebhooks(t *testing.T) {
+	svc := NewService(zap.NewNop(), fakeRegistry{webhook: gen.Webhook{ID: 3, RepositoryID: 7, Url: "https://example.com/hook", Secret: "s"}})
+	webhooks, err := svc.ListWebhooks(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(webhooks) != 1 || webhooks[0].ID != 3 || webhooks[0].URL != "https://example.com/hook" {
+		t.Errorf("unexpected webhooks: %+v", webhooks)
+	}
 }

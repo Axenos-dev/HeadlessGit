@@ -120,6 +120,7 @@ Every request requires `Authorization: Bearer <ADMIN_TOKEN>`. Responses are enve
 | -------- | ------------------------------ | -------------------- | ------------------------------------------------------------ |
 | `POST`   | `/users`                       | `{username, kind}`   | Create a user/service account (`kind`: `user` \| `service`); `409 user_exists` if the username is taken. |
 | `GET`    | `/users/{id}`                  | —                    | Get an account.                                              |
+| `GET`    | `/users/by-username/{username}` | —                   | Look up an account by username (name -> id resolution).      |
 | `GET`    | `/users/{id}/repositories`     | —                    | List repositories owned by the account.                      |
 | `POST`   | `/users/{id}/ssh-keys`         | `{title, publicKey}` | Register an SSH public key.                                  |
 | `GET`    | `/users/{id}/ssh-keys`         | —                    | List the account's SSH keys.                                 |
@@ -135,12 +136,14 @@ Every request requires `Authorization: Bearer <ADMIN_TOKEN>`. Responses are enve
 | -------- | --------------------------------------------- | ----------------------------- | ----------------------------------------------------------------- |
 | `POST`   | `/repositories`                               | `{ownerId, name, visibility}` | Create a repository (`visibility`: `public` \| `private`); `409 repository_exists` if the owner already has one with that name. |
 | `GET`    | `/repositories/{id}`                          | —                             | Get repository metadata.                                          |
+| `GET`    | `/repositories/by-path/{namespace}/{name}`    | —                             | Look up a repository by owner username + name (name -> id resolution). |
 | `PUT`    | `/repositories/{id}/visibility`               | `{visibility}`                | Change visibility (`public` \| `private`).                        |
 | `DELETE` | `/repositories/{id}`                          | —                             | Delete a repository (row + bare repo).                            |
 | `GET`    | `/repositories/{id}/permissions`              | —                             | List collaborators.                                               |
 | `PUT`    | `/repositories/{id}/permissions`              | `{userId, role}`              | Grant/update a collaborator role (`read` \| `write` \| `admin`).  |
 | `DELETE` | `/repositories/{id}/permissions/{userId}`     | —                             | Revoke a collaborator.                                            |
 | `POST`   | `/repositories/{id}/webhooks`                 | `{url}`                       | Register a push webhook; the signing secret is returned **once**. `409 webhook_exists` if the URL is already registered on the repo. |
+| `GET`    | `/repositories/{id}/webhooks`                 | —                             | List the repository's webhooks (never the secret).               |
 | `DELETE` | `/repositories/{id}/webhooks/{hookId}`        | —                             | Delete a webhook.                                                 |
 | `GET`    | `/repositories/{id}/path-policies`            | —                             | List the repository's path policies.                              |
 | `POST`   | `/repositories/{id}/path-policies`            | `{pattern, reason?}`          | Block a path; see [Path policies](#path-policies).                |
