@@ -7,7 +7,8 @@ insert into users (
   username, kind
 ) values (
   ?, ?
-) returning *;
+) on conflict(username) do nothing
+returning *;
 
 -- name: EnsureAdminUser :one
 insert into users (

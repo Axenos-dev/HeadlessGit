@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/db/gen"
 	"github.com/Axenos-dev/HeadlessGit/internal/domain"
@@ -26,6 +27,10 @@ func NewService(registry Registry) *Service {
 
 func (s *Service) Create(ctx context.Context, info domain.UserInfo) (domain.Account, error) {
 	user, err := s.registry.CreateUser(ctx, info.Username, string(info.Kind))
+	// the insert is "on conflict do nothing returning *" -> on duplicate "no rows"
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Account{}, fmt.Errorf("%w: %q", ErrUserExists, info.Username)
+	}
 	if err != nil {
 		return domain.Account{}, err
 	}
