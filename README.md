@@ -155,7 +155,7 @@ Every request requires `Authorization: Bearer <ADMIN_TOKEN>`. Responses are enve
 | ------ | ---------------------------------------------- | ----------- | ---------------------------------------------------------------------- |
 | `GET`  | `/repositories/{id}/contents?ref=&path=`       | —           | List one directory level of the tree at a ref.                         |
 | `GET`  | `/repositories/{id}/blob?ref=&path=&lfs=`      | —           | Stream one file's raw content.                                         |
-| `GET`  | `/repositories/{id}/archive?ref=&format=&lfs=` | —           | Stream a `zip` (default) or `tar.gz` archive of the tree.              |
+| `GET`  | `/repositories/{id}/archive?ref=&format=&lfs=&prefix=` | —           | Stream a `zip` (default) or `tar.gz` archive of the tree.              |
 | `POST` | `/repositories/{id}/blobs`                     | _raw bytes_ | Upload content into the repo's object database; returns `{sha, size}`. |
 | `POST` | `/repositories/{id}/commits`                   | JSON        | Create a commit on a branch from uploaded blobs.                       |
 
@@ -196,7 +196,9 @@ Every request requires `Authorization: Bearer <ADMIN_TOKEN>`. Responses are enve
 
 `GET /blob` streams the file bytes with `Content-Length`, a strong `ETag` (the blob sha — content-addressed, so `If-None-Match` caching works perfectly), and `X-HeadlessGit-Commit` carrying the resolved commit. With `lfs=true`, an LFS pointer file is replaced by the real object; a missing object is a `404` rather than silently serving the pointer.
 
-`GET /archive` streams the whole tree as an artifact, named `<repo>-<shortsha>.zip` with a matching top-level folder. With `lfs=true`, pointer files are swapped for the real objects **in-flight** — the archive is re-encoded entry by entry, nothing is buffered or written to disk:
+`GET /archive` streams the whole tree as an artifact, named `<repo>-<shortsha>.zip`. By default its entries are under the matching `<repo>-<shortsha>/` directory. Set `prefix=release/source` to choose another directory, or explicitly set `prefix=` to place entries at the archive root. Prefixes are relative directory paths and a trailing `/` is optional.
+
+With `lfs=true`, pointer files are swapped for the real objects **in-flight** — the archive is re-encoded entry by entry, nothing is buffered or written to disk:
 
 ![archive](images/archive.png)
 

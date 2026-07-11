@@ -18,7 +18,7 @@ type RepositoryManager interface {
 	SetVisibility(ctx context.Context, repositoryID int64, visibility domain.RepoVisibility) (domain.Repository, error)
 	ListByOwner(ctx context.Context, ownerID int64) ([]domain.Repository, error)
 	Contents(ctx context.Context, repositoryID int64, ref, treePath string) (domain.RepositoryContents, error)
-	PrepareArchive(ctx context.Context, repositoryID int64, ref, format string, includeLFS bool) (domain.ArchiveRequest, error)
+	PrepareArchive(ctx context.Context, repositoryID int64, ref, format string, includeLFS bool, prefix *string) (domain.ArchiveRequest, error)
 	StreamArchive(ctx context.Context, req domain.ArchiveRequest, out io.Writer) error
 	PrepareBlob(ctx context.Context, repositoryID int64, ref, treePath string, includeLFS bool) (domain.BlobRequest, error)
 	StreamBlob(ctx context.Context, req domain.BlobRequest, out io.Writer) error

@@ -196,6 +196,10 @@ func TestCreateRepository(t *testing.T) {
 
 func TestPrepareArchive(t *testing.T) {
 	row := gen.Repository{ID: 7, RepositoryName: "myrepo", StoragePath: "7/myrepo.git", Visibility: "private"}
+	customPrefix := "release/source"
+	trailingPrefix := "release/source/"
+	emptyPrefix := ""
+	invalidPrefix := "../release"
 
 	cases := []struct {
 		name       string
@@ -204,26 +208,32 @@ func TestPrepareArchive(t *testing.T) {
 		lfs        LFSObjects
 		format     string
 		includeLFS bool
+		prefix     *string
+		wantPrefix string
 		wantErr    error
 	}{
-		{"unsupported format", fakeRegistry{repo: row}, fakeStorage{sha: testSHA}, nil, "rar", false, ErrUnsupportedFormat},
-		{"lfs disabled", fakeRegistry{repo: row}, fakeStorage{sha: testSHA}, nil, "zip", true, ErrLFSNotEnabled},
-		{"lfs enabled ok", fakeRegistry{repo: row}, fakeStorage{sha: testSHA}, fakeLFS{}, "zip", true, nil},
-		{"repo not found", fakeRegistry{err: sql.ErrNoRows}, fakeStorage{sha: testSHA}, nil, "zip", false, ErrRepositoryNotFound},
-		{"invalid ref", fakeRegistry{repo: row}, fakeStorage{resolveErr: gitbackend.ErrInvalidRev}, nil, "zip", false, ErrInvalidRef},
-		{"ref not found", fakeRegistry{repo: row}, fakeStorage{resolveErr: gitbackend.ErrRevNotFound}, nil, "zip", false, ErrRefNotFound},
-		{"ok", fakeRegistry{repo: row}, fakeStorage{sha: testSHA}, nil, "zip", false, nil},
+		{"unsupported format", fakeRegistry{repo: row}, fakeStorage{sha: testSHA}, nil, "rar", false, nil, "", ErrUnsupportedFormat},
+		{"invalid prefix", fakeRegistry{repo: row}, fakeStorage{sha: testSHA}, nil, "zip", false, &invalidPrefix, "", ErrInvalidArchivePrefix},
+		{"lfs disabled", fakeRegistry{repo: row}, fakeStorage{sha: testSHA}, nil, "zip", true, nil, "", ErrLFSNotEnabled},
+		{"lfs enabled ok", fakeRegistry{repo: row}, fakeStorage{sha: testSHA}, fakeLFS{}, "zip", true, nil, "myrepo-aaaabbbbcccc/", nil},
+		{"repo not found", fakeRegistry{err: sql.ErrNoRows}, fakeStorage{sha: testSHA}, nil, "zip", false, nil, "", ErrRepositoryNotFound},
+		{"invalid ref", fakeRegistry{repo: row}, fakeStorage{resolveErr: gitbackend.ErrInvalidRev}, nil, "zip", false, nil, "", ErrInvalidRef},
+		{"ref not found", fakeRegistry{repo: row}, fakeStorage{resolveErr: gitbackend.ErrRevNotFound}, nil, "zip", false, nil, "", ErrRefNotFound},
+		{"default prefix", fakeRegistry{repo: row}, fakeStorage{sha: testSHA}, nil, "zip", false, nil, "myrepo-aaaabbbbcccc/", nil},
+		{"custom prefix", fakeRegistry{repo: row}, fakeStorage{sha: testSHA}, nil, "zip", false, &customPrefix, "release/source/", nil},
+		{"normalized prefix", fakeRegistry{repo: row}, fakeStorage{sha: testSHA}, nil, "zip", false, &trailingPrefix, "release/source/", nil},
+		{"empty prefix", fakeRegistry{repo: row}, fakeStorage{sha: testSHA}, nil, "zip", false, &emptyPrefix, "", nil},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			svc := NewService(zap.NewNop(), tc.registry, tc.storage, tc.lfs, nil)
-			req, err := svc.PrepareArchive(context.Background(), row.ID, "main", tc.format, tc.includeLFS)
+			req, err := svc.PrepareArchive(context.Background(), row.ID, "main", tc.format, tc.includeLFS, tc.prefix)
 			if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("PrepareArchive error = %v, want %v", err, tc.wantErr)
 			}
 			if tc.wantErr == nil {
-				if req.CommitSHA != testSHA || req.Repository.ID != row.ID || req.Format != domain.ArchiveFormatZip {
+				if req.CommitSHA != testSHA || req.Repository.ID != row.ID || req.Format != domain.ArchiveFormatZip || req.Prefix != tc.wantPrefix {
 					t.Errorf("PrepareArchive = %+v", req)
 				}
 				if want := "myrepo-aaaabbbbcccc.zip"; req.Filename() != want {
@@ -269,6 +279,7 @@ func TestStreamArchiveSmudgesLFS(t *testing.T) {
 		CommitSHA:  testSHA,
 		Format:     domain.ArchiveFormatZip,
 		IncludeLFS: true,
+		Prefix:     "myrepo-aaaabbbbcccc/",
 	}
 
 	var out bytes.Buffer

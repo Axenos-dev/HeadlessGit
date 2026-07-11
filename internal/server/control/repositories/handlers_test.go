@@ -25,6 +25,8 @@ type fakeManager struct {
 	RepositoryManager
 	prepareReq domain.ArchiveRequest
 	prepareErr error
+	prefix     string
+	prefixSet  bool
 	streamBody string
 	streamErr  error
 
@@ -79,7 +81,11 @@ func (f *fakeManager) Commit(ctx context.Context, repositoryID int64, req domain
 	return f.commitResult, f.commitErr
 }
 
-func (f fakeManager) PrepareArchive(ctx context.Context, repositoryID int64, ref, format string, includeLFS bool) (domain.ArchiveRequest, error) {
+func (f *fakeManager) PrepareArchive(ctx context.Context, repositoryID int64, ref, format string, includeLFS bool, prefix *string) (domain.ArchiveRequest, error) {
+	if prefix != nil {
+		f.prefix = *prefix
+		f.prefixSet = true
+	}
 	return f.prepareReq, f.prepareErr
 }
 
@@ -136,6 +142,7 @@ func testArchiveRequest() domain.ArchiveRequest {
 		Repository: domain.Repository{ID: 7, RepositoryName: "myrepo"},
 		CommitSHA:  testSHA,
 		Format:     domain.ArchiveFormatZip,
+		Prefix:     "myrepo-aaaabbbbcccc/",
 	}
 }
 
@@ -154,7 +161,7 @@ func TestGetArchive(t *testing.T) {
 	if got := rec.Header().Get("Content-Disposition"); got != `attachment; filename="myrepo-aaaabbbbcccc.zip"` {
 		t.Errorf("Content-Disposition = %q", got)
 	}
-	if got := rec.Header().Get("ETag"); got != `W/"`+testSHA+`-zip"` {
+	if got := rec.Header().Get("ETag"); got != archiveETag(testArchiveRequest()) {
 		t.Errorf("ETag = %q", got)
 	}
 	if got := rec.Header().Get("X-HeadlessGit-Commit"); got != testSHA {
@@ -175,7 +182,7 @@ func TestGetArchiveNotModified(t *testing.T) {
 	router := newTestRouter(&fakeManager{prepareReq: testArchiveRequest(), streamBody: "hello"})
 
 	req := httptest.NewRequest(http.MethodGet, "/repositories/7/archive?ref=main", nil)
-	req.Header.Set("If-None-Match", `W/"`+testSHA+`-zip"`)
+	req.Header.Set("If-None-Match", archiveETag(testArchiveRequest()))
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -184,6 +191,42 @@ func TestGetArchiveNotModified(t *testing.T) {
 	}
 	if rec.Body.Len() != 0 {
 		t.Errorf("304 must have no body, got %d bytes", rec.Body.Len())
+	}
+}
+
+func TestGetArchivePrefixParameter(t *testing.T) {
+	cases := []struct {
+		name    string
+		target  string
+		want    string
+		wantSet bool
+	}{
+		{"omitted", "/repositories/7/archive", "", false},
+		{"custom", "/repositories/7/archive?prefix=release%2Fsource", "release/source", true},
+		{"empty", "/repositories/7/archive?prefix=", "", true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &fakeManager{prepareReq: testArchiveRequest(), streamBody: "hello"}
+			rec := httptest.NewRecorder()
+			newTestRouter(svc).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tc.target, nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+			}
+			if svc.prefixSet != tc.wantSet || svc.prefix != tc.want {
+				t.Errorf("prefix = %q, set %v; want %q, set %v", svc.prefix, svc.prefixSet, tc.want, tc.wantSet)
+			}
+		})
+	}
+}
+
+func TestArchiveETagVariesByPrefix(t *testing.T) {
+	a := testArchiveRequest()
+	b := testArchiveRequest()
+	b.Prefix = "release/"
+	if archiveETag(a) == archiveETag(b) {
+		t.Fatal("archive ETags must vary by prefix")
 	}
 }
 
@@ -198,10 +241,12 @@ func TestGetArchiveErrors(t *testing.T) {
 	}{
 		{"bad id", "/repositories/abc/archive", nil, nil, http.StatusBadRequest, "invalid_request"},
 		{"bad lfs param", "/repositories/7/archive?lfs=maybe", nil, nil, http.StatusBadRequest, "invalid_request"},
+		{"duplicate prefix", "/repositories/7/archive?prefix=a&prefix=b", nil, nil, http.StatusBadRequest, "invalid_request"},
 		{"repo not found", "/repositories/7/archive", reposervice.ErrRepositoryNotFound, nil, http.StatusNotFound, "repository_not_found"},
 		{"ref not found", "/repositories/7/archive?ref=nope", reposervice.ErrRefNotFound, nil, http.StatusNotFound, "ref_not_found"},
 		{"invalid ref", "/repositories/7/archive?ref=--x", reposervice.ErrInvalidRef, nil, http.StatusBadRequest, "invalid_request"},
 		{"bad format", "/repositories/7/archive?format=rar", reposervice.ErrUnsupportedFormat, nil, http.StatusBadRequest, "invalid_request"},
+		{"bad prefix", "/repositories/7/archive?prefix=..", reposervice.ErrInvalidArchivePrefix, nil, http.StatusBadRequest, "invalid_request"},
 		{"lfs disabled", "/repositories/7/archive?lfs=true", reposervice.ErrLFSNotEnabled, nil, http.StatusBadRequest, "invalid_request"},
 		{"stream fails before first byte", "/repositories/7/archive", nil, io.ErrUnexpectedEOF, http.StatusInternalServerError, "internal_error"},
 	}

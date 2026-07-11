@@ -247,11 +247,20 @@ func (s *Service) GetRepositoryByPath(ctx context.Context, namespace, name strin
 	return toDomain(repo), nil
 }
 
-func (s *Service) PrepareArchive(ctx context.Context, repositoryID int64, ref, format string, includeLFS bool) (domain.ArchiveRequest, error) {
+func (s *Service) PrepareArchive(ctx context.Context, repositoryID int64, ref, format string, includeLFS bool, prefix *string) (domain.ArchiveRequest, error) {
 	f, ok := domain.ParseArchiveFormat(format)
 	if !ok {
 		return domain.ArchiveRequest{}, ErrUnsupportedFormat
 	}
+
+	normalizedPrefix := ""
+	if prefix != nil {
+		normalizedPrefix, ok = domain.NormalizeArchivePrefix(*prefix)
+		if !ok {
+			return domain.ArchiveRequest{}, ErrInvalidArchivePrefix
+		}
+	}
+
 	if includeLFS && s.lfs == nil {
 		return domain.ArchiveRequest{}, ErrLFSNotEnabled
 	}
@@ -271,11 +280,16 @@ func (s *Service) PrepareArchive(ctx context.Context, repositoryID int64, ref, f
 		return domain.ArchiveRequest{}, err
 	}
 
+	if prefix == nil {
+		normalizedPrefix = fmt.Sprintf("%s-%s/", repo.RepositoryName, domain.ShortSHA(sha))
+	}
+
 	return domain.ArchiveRequest{
 		Repository: repo,
 		CommitSHA:  sha,
 		Format:     f,
 		IncludeLFS: includeLFS,
+		Prefix:     normalizedPrefix,
 	}, nil
 }
 
@@ -315,8 +329,7 @@ func (s *Service) StreamArchive(ctx context.Context, req domain.ArchiveRequest, 
 		}
 	}
 
-	prefix := fmt.Sprintf("%s-%s/", req.Repository.RepositoryName, domain.ShortSHA(req.CommitSHA))
-	return archive.Transform(pr, prefix, smudge, enc)
+	return archive.Transform(pr, req.Prefix, smudge, enc)
 }
 
 func (s *Service) PrepareBlob(ctx context.Context, repositoryID int64, ref, treePath string, includeLFS bool) (domain.BlobRequest, error) {

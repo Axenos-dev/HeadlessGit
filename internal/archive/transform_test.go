@@ -139,6 +139,21 @@ func TestTransformWithoutSmudge(t *testing.T) {
 	}
 }
 
+func TestTransformWithoutPrefix(t *testing.T) {
+	var out bytes.Buffer
+	if err := Transform(bytes.NewReader(buildTestTar(t, "not a pointer")), "", nil, NewZipEncoder(&out)); err != nil {
+		t.Fatal(err)
+	}
+
+	got := readZip(t, out.Bytes())
+	if got["README.md"] != "hello\n" {
+		t.Errorf("README.md = %q", got["README.md"])
+	}
+	if _, ok := got["src/"]; !ok {
+		t.Errorf("missing root-level directory entry")
+	}
+}
+
 func TestTransformTarGz(t *testing.T) {
 	oid := strings.Repeat("ab", 32)
 	content := "REAL LFS CONTENT"
