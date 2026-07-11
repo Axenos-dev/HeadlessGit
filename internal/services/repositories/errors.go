@@ -13,8 +13,9 @@ var (
 	ErrInvalidRef   = errors.New("invalid ref")
 	ErrInvalidPath  = errors.New("invalid path")
 
-	ErrUnsupportedFormat = errors.New("unsupported archive format")
-	ErrLFSNotEnabled     = errors.New("lfs is not enabled")
+	ErrUnsupportedFormat    = errors.New("unsupported archive format")
+	ErrInvalidArchivePrefix = errors.New("invalid archive prefix")
+	ErrLFSNotEnabled        = errors.New("lfs is not enabled")
 
 	ErrNotAFile          = errors.New("path is not a file")
 	ErrLFSObjectNotFound = errors.New("lfs object not found")

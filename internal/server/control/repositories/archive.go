@@ -1,6 +1,7 @@
 package repositories
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -29,7 +30,15 @@ func (h *handlers) getArchive(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 
-	req, err := h.service.PrepareArchive(r.Context(), id, q.Get("ref"), q.Get("format"), includeLFS)
+	var prefix *string
+	if values, ok := q["prefix"]; ok {
+		if len(values) != 1 {
+			return response.NewError(http.StatusBadRequest, response.CodeInvalidRequest, "prefix must be specified once")
+		}
+		prefix = &values[0]
+	}
+
+	req, err := h.service.PrepareArchive(r.Context(), id, q.Get("ref"), q.Get("format"), includeLFS, prefix)
 	switch {
 	case errors.Is(err, reposervice.ErrRepositoryNotFound):
 		return response.NewError(http.StatusNotFound, response.CodeRepositoryNotFound, "repository not found")
@@ -39,6 +48,8 @@ func (h *handlers) getArchive(w http.ResponseWriter, r *http.Request) error {
 		return response.NewError(http.StatusBadRequest, response.CodeInvalidRequest, "invalid ref")
 	case errors.Is(err, reposervice.ErrUnsupportedFormat):
 		return response.NewError(http.StatusBadRequest, response.CodeInvalidRequest, "unsupported archive format")
+	case errors.Is(err, reposervice.ErrInvalidArchivePrefix):
+		return response.NewError(http.StatusBadRequest, response.CodeInvalidRequest, "invalid archive prefix")
 	case errors.Is(err, reposervice.ErrLFSNotEnabled):
 		return response.NewError(http.StatusBadRequest, response.CodeInvalidRequest, "lfs is not enabled")
 	case err != nil:
@@ -91,6 +102,8 @@ func archiveETag(req domain.ArchiveRequest) string {
 	if req.IncludeLFS {
 		variant += "-lfs"
 	}
+	prefixHash := sha256.Sum256([]byte(req.Prefix))
+	variant += fmt.Sprintf("-p%x", prefixHash)
 	return fmt.Sprintf(`W/"%s-%s"`, req.CommitSHA, variant)
 }
 
