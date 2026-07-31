@@ -49,6 +49,15 @@ type CommitSummary struct {
 	CommittedAt time.Time
 }
 
+type CommitDetails struct {
+	SHA         string
+	Parents     []string
+	Message     string
+	Author      Identity
+	AuthoredAt  time.Time
+	CommittedAt time.Time
+}
+
 type TreeEntry struct {
 	Mode       string // "100644", "100755", "040000", "120000", "160000"
 	Type       string // "blob" | "tree" | "commit"

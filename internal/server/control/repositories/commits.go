@@ -13,6 +13,28 @@ import (
 	"go.uber.org/zap"
 )
 
+func (h *handlers) getCommit(w http.ResponseWriter, r *http.Request) error {
+	id, err := strconv.ParseInt(chi.URLParam(r, "repositoryID"), 10, 64)
+	if err != nil {
+		return response.NewError(http.StatusBadRequest, response.CodeInvalidRequest, "invalid repository id")
+	}
+
+	commit, err := h.service.GetCommit(r.Context(), id, chi.URLParam(r, "sha"))
+	switch {
+	case errors.Is(err, reposervice.ErrRepositoryNotFound):
+		return response.NewError(http.StatusNotFound, response.CodeRepositoryNotFound, "repository not found")
+	case errors.Is(err, reposervice.ErrCommitNotFound):
+		return response.NewError(http.StatusNotFound, response.CodeCommitNotFound, "commit not found")
+	case errors.Is(err, reposervice.ErrInvalidCommitSHA):
+		return response.NewError(http.StatusBadRequest, response.CodeInvalidRequest, "invalid commit sha")
+	case err != nil:
+		h.logger.Error("failed to get commit", zap.Error(err))
+		return response.NewError(http.StatusInternalServerError, response.CodeInternalError, "failed to get commit")
+	}
+
+	return response.Data(w, http.StatusOK, newCommitDetails(commit))
+}
+
 func (h *handlers) createCommit(w http.ResponseWriter, r *http.Request) error {
 	id, err := strconv.ParseInt(chi.URLParam(r, "repositoryID"), 10, 64)
 	if err != nil {

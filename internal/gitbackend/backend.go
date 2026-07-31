@@ -14,6 +14,7 @@ type Backend interface {
 	ReceivePack(ctx context.Context, storagePath string, stateless bool, hookEnv []string, stdin io.Reader, stdout, stderr io.Writer) ([]RefChange, error)
 	ListTree(ctx context.Context, storagePath, rev, treePath string, opts ListTreeOptions) (TreeListing, error)
 	Diff(ctx context.Context, storagePath, base, head string) (DiffResult, error)
+	GetCommit(ctx context.Context, storagePath, sha string) (CommitDetails, error)
 	ResolveCommit(ctx context.Context, storagePath, rev string) (string, error)
 	ArchiveTar(ctx context.Context, storagePath, rev string, out io.Writer) (string, error)
 	StatBlob(ctx context.Context, storagePath, rev, treePath string) (BlobInfo, error)

@@ -38,6 +38,7 @@ type RepositoryStorage interface {
 	Remove(ctx context.Context, storagePath string) error
 	ListTree(ctx context.Context, storagePath, rev, treePath string, opts gitbackend.ListTreeOptions) (gitbackend.TreeListing, error)
 	Diff(ctx context.Context, storagePath, base, head string) (gitbackend.DiffResult, error)
+	GetCommit(ctx context.Context, storagePath, sha string) (gitbackend.CommitDetails, error)
 	ResolveCommit(ctx context.Context, storagePath, rev string) (string, error)
 	ArchiveTar(ctx context.Context, storagePath, rev string, out io.Writer) (string, error)
 	StatBlob(ctx context.Context, storagePath, rev, treePath string) (gitbackend.BlobInfo, error)
@@ -258,6 +259,27 @@ func (s *Service) Diff(ctx context.Context, repositoryID int64, base, head strin
 		return domain.RepositoryDiff{}, err
 	}
 	return toDiff(diff), nil
+}
+
+func (s *Service) GetCommit(ctx context.Context, repositoryID int64, sha string) (domain.CommitDetails, error) {
+	repo, err := s.registry.GetRepository(ctx, repositoryID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.CommitDetails{}, ErrRepositoryNotFound
+	}
+	if err != nil {
+		return domain.CommitDetails{}, err
+	}
+
+	commit, err := s.storage.GetCommit(ctx, repo.StoragePath, sha)
+	switch {
+	case errors.Is(err, gitbackend.ErrInvalidRev):
+		return domain.CommitDetails{}, ErrInvalidCommitSHA
+	case errors.Is(err, gitbackend.ErrRevNotFound):
+		return domain.CommitDetails{}, ErrCommitNotFound
+	case err != nil:
+		return domain.CommitDetails{}, err
+	}
+	return toCommitDetails(commit), nil
 }
 
 func (s *Service) GetRepositoryByPath(ctx context.Context, namespace, name string) (domain.Repository, error) {
@@ -725,6 +747,20 @@ func toContents(ref, treePath string, listing gitbackend.TreeListing) domain.Rep
 		Path:      treePath,
 		Entries:   entries,
 		Truncated: listing.Truncated,
+	}
+}
+
+func toCommitDetails(commit gitbackend.CommitDetails) domain.CommitDetails {
+	return domain.CommitDetails{
+		SHA:     commit.SHA,
+		Parents: commit.Parents,
+		Message: commit.Message,
+		Author: domain.CommitIdentity{
+			Name:  commit.Author.Name,
+			Email: commit.Author.Email,
+		},
+		AuthoredAt:  commit.AuthoredAt,
+		CommittedAt: commit.CommittedAt,
 	}
 }
 

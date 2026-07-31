@@ -1,8 +1,19 @@
 package domain
 
+import "time"
+
 type CommitIdentity struct {
 	Name  string
 	Email string
+}
+
+type CommitDetails struct {
+	SHA         string
+	Parents     []string
+	Message     string
+	Author      CommitIdentity
+	AuthoredAt  time.Time
+	CommittedAt time.Time
 }
 
 type CommitFileOp struct {

@@ -19,6 +19,7 @@ type RepositoryManager interface {
 	ListByOwner(ctx context.Context, ownerID int64) ([]domain.Repository, error)
 	Contents(ctx context.Context, repositoryID int64, ref, treePath string, opts domain.ContentsOptions) (domain.RepositoryContents, error)
 	Diff(ctx context.Context, repositoryID int64, base, head string) (domain.RepositoryDiff, error)
+	GetCommit(ctx context.Context, repositoryID int64, sha string) (domain.CommitDetails, error)
 	PrepareArchive(ctx context.Context, repositoryID int64, ref, format string, includeLFS bool, prefix *string) (domain.ArchiveRequest, error)
 	StreamArchive(ctx context.Context, req domain.ArchiveRequest, out io.Writer) error
 	PrepareBlob(ctx context.Context, repositoryID int64, ref, treePath string, includeLFS bool) (domain.BlobRequest, error)
@@ -48,6 +49,7 @@ func (h *handlers) RegisterRoutes(parent chi.Router) {
 		r.Get("/by-path/{namespace}/{name}", response.Handler(h.logger, h.getRepositoryByPath))
 		r.Post("/{repositoryID}/blobs", response.Handler(h.logger, h.uploadBlob))
 		r.Post("/{repositoryID}/commits", response.Handler(h.logger, h.createCommit))
+		r.Get("/{repositoryID}/commits/{sha}", response.Handler(h.logger, h.getCommit))
 		r.Get("/{repositoryID}", response.Handler(h.logger, h.getRepository))
 		r.Get("/{repositoryID}/contents", response.Handler(h.logger, h.getContents))
 		r.Get("/{repositoryID}/diff", response.Handler(h.logger, h.getDiff))

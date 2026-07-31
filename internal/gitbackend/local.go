@@ -411,6 +411,37 @@ func (l *Local) ResolveCommit(ctx context.Context, storagePath, rev string) (str
 	return commitSHA, nil
 }
 
+func (l *Local) GetCommit(ctx context.Context, storagePath, sha string) (CommitDetails, error) {
+	dir, err := l.resolve(storagePath)
+	if err != nil {
+		return CommitDetails{}, err
+	}
+	if !isHexSHA(sha) {
+		return CommitDetails{}, fmt.Errorf("%w: %q", ErrInvalidRev, sha)
+	}
+
+	commitSHA, err := l.revParse(ctx, dir, sha+"^{commit}")
+	if err != nil {
+		return CommitDetails{}, fmt.Errorf("%w: %s", ErrRevNotFound, sha)
+	}
+
+	out, err := l.runGitBytes(ctx, dir, nil, nil,
+		"log", "--no-walk", "-z", "--format=%H%x00%P%x00%an%x00%ae%x00%aI%x00%cI%x00%B", "--end-of-options", commitSHA,
+	)
+	if err != nil {
+		return CommitDetails{}, fmt.Errorf("read commit details: %w", err)
+	}
+
+	details, err := parseCommitDetails(out)
+	if err != nil {
+		return CommitDetails{}, err
+	}
+	if details.SHA != commitSHA {
+		return CommitDetails{}, fmt.Errorf("commit metadata mismatch: got %s, want %s", details.SHA, commitSHA)
+	}
+	return details, nil
+}
+
 func (l *Local) WriteBlob(ctx context.Context, storagePath string, r io.Reader) (string, int64, error) {
 	dir, err := l.resolve(storagePath)
 	if err != nil {
@@ -902,6 +933,51 @@ func parseCommitSummaries(out []byte) (map[string]CommitSummary, error) {
 	}
 
 	return commits, nil
+}
+
+func parseCommitDetails(out []byte) (CommitDetails, error) {
+	fields := bytes.Split(out, []byte{0})
+	if len(fields) > 0 && len(fields[len(fields)-1]) == 0 {
+		fields = fields[:len(fields)-1]
+	}
+	if len(fields) != 7 {
+		return CommitDetails{}, fmt.Errorf("malformed git log output: got %d fields", len(fields))
+	}
+
+	sha := string(fields[0])
+	if !isHexSHA(sha) {
+		return CommitDetails{}, fmt.Errorf("malformed commit sha %q", sha)
+	}
+
+	parents := make([]string, 0)
+	for parent := range strings.FieldsSeq(string(fields[1])) {
+		if !isHexSHA(parent) {
+			return CommitDetails{}, fmt.Errorf("malformed parent sha %q", parent)
+		}
+		parents = append(parents, parent)
+	}
+
+	authoredAt, err := time.Parse(time.RFC3339, string(fields[4]))
+	if err != nil {
+		return CommitDetails{}, fmt.Errorf("malformed author time %q: %w", fields[4], err)
+	}
+
+	committedAt, err := time.Parse(time.RFC3339, string(fields[5]))
+	if err != nil {
+		return CommitDetails{}, fmt.Errorf("malformed commit time %q: %w", fields[5], err)
+	}
+
+	return CommitDetails{
+		SHA:     sha,
+		Parents: parents,
+		Message: strings.TrimSuffix(string(fields[6]), "\n"),
+		Author: Identity{
+			Name:  string(fields[2]),
+			Email: string(fields[3]),
+		},
+		AuthoredAt:  authoredAt.UTC(),
+		CommittedAt: committedAt.UTC(),
+	}, nil
 }
 
 // normalizeRev validates an untrusted revision expression; empty means HEAD
