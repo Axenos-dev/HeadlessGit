@@ -13,9 +13,9 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/domain"
-	"time"
 )
 
 // runs a git command in dir with a deterministic identity, failing the test on error
@@ -40,6 +40,11 @@ func gitOut(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %v: %v", args, err)
 	}
 	return strings.TrimSpace(string(out))
+}
+
+func gitSupportsLastModified() bool {
+	out, err := exec.Command("git", "help", "-a").Output()
+	return err == nil && strings.Contains(string(out), "last-modified")
 }
 
 func TestResolveContainment(t *testing.T) {
@@ -177,6 +182,171 @@ func TestParseLsTreeTruncates(t *testing.T) {
 	}
 }
 
+func TestParseLastModified(t *testing.T) {
+	firstSHA := strings.Repeat("a", 40)
+	secondSHA := strings.Repeat("b", 40)
+	out := []byte(firstSHA + "\tREADME.md\x00" +
+		secondSHA + "\tsrc/with\ttab\nand newline\x00")
+
+	got, err := parseLastModified(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["README.md"] != firstSHA {
+		t.Errorf("README.md sha = %q", got["README.md"])
+	}
+	if got["src/with\ttab\nand newline"] != secondSHA {
+		t.Errorf("special path sha = %q", got["src/with\ttab\nand newline"])
+	}
+
+	if _, err := parseLastModified([]byte("bad record\x00")); err == nil {
+		t.Error("malformed output accepted")
+	}
+}
+
+func TestParseCommitSummaries(t *testing.T) {
+	sha := strings.Repeat("a", 40)
+	out := []byte(sha + "\x00Change difficulty\x002026-07-30T11:42:00-07:00\x00")
+
+	got, err := parseCommitSummaries(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit := got[sha]
+	if commit.SHA != sha || commit.Message != "Change difficulty" {
+		t.Errorf("commit = %+v", commit)
+	}
+	if want := "2026-07-30T18:42:00Z"; commit.CommittedAt.Format(time.RFC3339) != want {
+		t.Errorf("committedAt = %s, want %s", commit.CommittedAt.Format(time.RFC3339), want)
+	}
+
+	if _, err := parseCommitSummaries([]byte(sha + "\x00missing time\x00")); err == nil {
+		t.Error("malformed output accepted")
+	}
+}
+
+func TestParseDiffOutput(t *testing.T) {
+	oldSHA := strings.Repeat("a", 40)
+	newSHA := strings.Repeat("b", 40)
+	raw := []byte(
+		":000000 100644 " + zeroSHA + " " + newSHA + " A\x00added.txt\x00" +
+			":100644 000000 " + oldSHA + " " + zeroSHA + " D\x00deleted.txt\x00" +
+			":100644 100644 " + oldSHA + " " + newSHA + " R100\x00old name.txt\x00new name.txt\x00" +
+			":100644 100755 " + oldSHA + " " + newSHA + " M\x00script.sh\x00" +
+			":100644 120000 " + oldSHA + " " + newSHA + " T\x00link\x00",
+	)
+
+	files, truncated, err := parseRawDiff(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if truncated || len(files) != 5 {
+		t.Fatalf("files = %d, truncated = %v", len(files), truncated)
+	}
+	if files[0].Status != DiffAdded || files[0].OldPath != "" || files[0].NewPath != "added.txt" || files[0].OldBlobSHA != "" {
+		t.Errorf("added file = %+v", files[0])
+	}
+	if files[1].Status != DiffDeleted || files[1].OldPath != "deleted.txt" || files[1].NewPath != "" || files[1].NewMode != "" {
+		t.Errorf("deleted file = %+v", files[1])
+	}
+	if files[2].Status != DiffRenamed || files[2].OldPath != "old name.txt" || files[2].NewPath != "new name.txt" {
+		t.Errorf("renamed file = %+v", files[2])
+	}
+	if files[4].Status != DiffTypeChanged {
+		t.Errorf("type-changed file = %+v", files[4])
+	}
+
+	numstat := []byte(
+		"1\t0\tadded.txt\x00" +
+			"0\t1\tdeleted.txt\x00" +
+			"0\t0\t\x00old name.txt\x00new name.txt\x00" +
+			"2\t1\tscript.sh\x00" +
+			"-\t-\tlink\x00",
+	)
+	stats, err := parseNumstat(numstat, len(files))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := stats[diffFileKey(files[2])]; got.additions != 0 || got.deletions != 0 || got.binary {
+		t.Errorf("rename stats = %+v", got)
+	}
+	if got := stats[diffFileKey(files[3])]; got.additions != 2 || got.deletions != 1 {
+		t.Errorf("script stats = %+v", got)
+	}
+	if got := stats[diffFileKey(files[4])]; !got.binary {
+		t.Errorf("link stats = %+v, want binary", got)
+	}
+}
+
+func TestParseRawDiffTruncates(t *testing.T) {
+	sha := strings.Repeat("a", 40)
+	var out strings.Builder
+	for i := 0; i < maxDiffEntries+1; i++ {
+		fmt.Fprintf(
+			&out,
+			":100644 100644 %s %s M\x00file-%d\x00",
+			sha,
+			sha,
+			i,
+		)
+	}
+
+	files, truncated, err := parseRawDiff([]byte(out.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !truncated || len(files) != maxDiffEntries {
+		t.Errorf("files = %d, truncated = %v", len(files), truncated)
+	}
+}
+
+func TestDiffPatchCollector(t *testing.T) {
+	files := []DiffFile{
+		{Status: DiffModified, OldPath: "ok.txt", NewPath: "ok.txt"},
+		{Status: DiffModified, OldPath: "binary.dat", NewPath: "binary.dat", Binary: true},
+		{Status: DiffModified, OldPath: "large.txt", NewPath: "large.txt"},
+		{Status: DiffModified, OldPath: "encoding.txt", NewPath: "encoding.txt"},
+	}
+	collector := newDiffPatchCollector(files)
+
+	collector.startSection()
+	collector.add([]byte("diff --git a/ok.txt b/ok.txt\n@@ -1 +1 @@\n-old\n+new\n"))
+	collector.startSection()
+	collector.add([]byte("diff --git a/binary.dat b/binary.dat\nBinary files differ\n"))
+	collector.startSection()
+	collector.add(bytes.Repeat([]byte{'x'}, maxFilePatchBytes+1))
+	collector.startSection()
+	collector.add([]byte("diff --git a/encoding.txt b/encoding.txt\n+\xff\n"))
+	if err := collector.finish(); err != nil {
+		t.Fatal(err)
+	}
+
+	if files[0].Patch == nil || !strings.Contains(*files[0].Patch, "+new") || files[0].PatchOmittedReason != "" {
+		t.Errorf("text patch = %+v", files[0])
+	}
+	if files[1].Patch != nil || files[1].PatchOmittedReason != DiffPatchBinary {
+		t.Errorf("binary patch = %+v", files[1])
+	}
+	if files[2].Patch != nil || files[2].PatchOmittedReason != DiffPatchTooLarge {
+		t.Errorf("large patch = %+v", files[2])
+	}
+	if files[3].Patch != nil || files[3].PatchOmittedReason != DiffPatchUnsupportedEncoding {
+		t.Errorf("unsupported encoding patch = %+v", files[3])
+	}
+
+	totalLimited := []DiffFile{{Status: DiffModified, OldPath: "last.txt", NewPath: "last.txt"}}
+	collector = newDiffPatchCollector(totalLimited)
+	collector.totalBytes = maxDiffPatchBytes
+	collector.startSection()
+	collector.add([]byte("diff --git a/last.txt b/last.txt\n"))
+	if err := collector.finish(); err != nil {
+		t.Fatal(err)
+	}
+	if totalLimited[0].Patch != nil || totalLimited[0].PatchOmittedReason != DiffPatchTooLarge {
+		t.Errorf("total-limited patch = %+v", totalLimited[0])
+	}
+}
+
 // end-to-end against a real git binary, following the repo convention of
 // skipping when git is not on PATH
 func TestListTree(t *testing.T) {
@@ -196,7 +366,7 @@ func TestListTree(t *testing.T) {
 	}
 
 	// empty repo: HEAD is unborn
-	if _, err := l.ListTree(ctx, "1/test.git", "", ""); !errors.Is(err, ErrRevNotFound) {
+	if _, err := l.ListTree(ctx, "1/test.git", "", "", ListTreeOptions{}); !errors.Is(err, ErrRevNotFound) {
 		t.Fatalf("empty repo: want ErrRevNotFound, got %v", err)
 	}
 
@@ -221,7 +391,7 @@ func TestListTree(t *testing.T) {
 	gitRun(t, wt, "push", "origin", "HEAD:refs/heads/main")
 
 	t.Run("root listing", func(t *testing.T) {
-		listing, err := l.ListTree(ctx, "1/test.git", "main", "")
+		listing, err := l.ListTree(ctx, "1/test.git", "main", "", ListTreeOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -243,7 +413,7 @@ func TestListTree(t *testing.T) {
 	})
 
 	t.Run("subdir listing", func(t *testing.T) {
-		listing, err := l.ListTree(ctx, "1/test.git", "main", "src")
+		listing, err := l.ListTree(ctx, "1/test.git", "main", "src", ListTreeOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -271,12 +441,225 @@ func TestListTree(t *testing.T) {
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
-				if _, err := l.ListTree(ctx, "1/test.git", tc.rev, tc.path); !errors.Is(err, tc.want) {
+				if _, err := l.ListTree(ctx, "1/test.git", tc.rev, tc.path, ListTreeOptions{}); !errors.Is(err, tc.want) {
 					t.Errorf("ListTree(%q, %q) = %v, want %v", tc.rev, tc.path, err, tc.want)
 				}
 			})
 		}
 	})
+
+	t.Run("last commit metadata", func(t *testing.T) {
+		if !gitSupportsLastModified() {
+			t.Skip("git last-modified requires Git 2.52+")
+		}
+
+		initialSHA := gitOut(t, wt, "rev-parse", "HEAD")
+		writeFile("README.md", "hello v2\n", 0o644)
+		gitRun(t, wt, "add", "README.md")
+		gitRun(t, wt, "commit", "-m", "update readme")
+		gitRun(t, wt, "push", "origin", "HEAD:refs/heads/main")
+		headSHA := gitOut(t, wt, "rev-parse", "HEAD")
+
+		listing, err := l.ListTree(ctx, "1/test.git", "main", "", ListTreeOptions{IncludeLastCommit: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(listing.Entries) != 2 {
+			t.Fatalf("want 2 entries, got %+v", listing.Entries)
+		}
+		if got := listing.Entries[0].LastCommit; got == nil || got.SHA != headSHA || got.Message != "update readme" || got.CommittedAt.IsZero() {
+			t.Errorf("README.md last commit = %+v", got)
+		}
+		if got := listing.Entries[1].LastCommit; got == nil || got.SHA != initialSHA || got.Message != "init" || got.CommittedAt.IsZero() {
+			t.Errorf("src last commit = %+v", got)
+		}
+
+		subdir, err := l.ListTree(ctx, "1/test.git", "main", "src", ListTreeOptions{IncludeLastCommit: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(subdir.Entries) != 2 {
+			t.Fatalf("want 2 src entries, got %+v", subdir.Entries)
+		}
+		for _, entry := range subdir.Entries {
+			if entry.LastCommit == nil || entry.LastCommit.SHA != initialSHA || entry.LastCommit.Message != "init" {
+				t.Errorf("%s last commit = %+v", entry.Path, entry.LastCommit)
+			}
+		}
+	})
+}
+
+func TestDiff(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	root := t.TempDir()
+	l, err := NewLocal(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	const repo = "1/test.git"
+
+	if err := l.InitBare(ctx, repo); err != nil {
+		t.Fatal(err)
+	}
+	wt := filepath.Join(t.TempDir(), "wt")
+	gitRun(t, ".", "clone", filepath.Join(root, repo), wt)
+	for name, body := range map[string]string{
+		"keep.txt":   "one\n",
+		"rename.txt": "same\n",
+		"delete.txt": "gone\n",
+		"binary.dat": "\x00old",
+	} {
+		if err := os.WriteFile(filepath.Join(wt, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitRun(t, wt, "add", "-A")
+	gitRun(t, wt, "commit", "-m", "base")
+	gitRun(t, wt, "push", "origin", "HEAD:refs/heads/main")
+	baseSHA := gitOut(t, wt, "rev-parse", "HEAD")
+
+	if err := os.WriteFile(filepath.Join(wt, "keep.txt"), []byte("one\ntwo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt, "added.txt"), []byte("new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt, "binary.dat"), []byte("\x00new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, wt, "mv", "rename.txt", "moved.txt")
+	gitRun(t, wt, "rm", "delete.txt")
+	gitRun(t, wt, "add", "-A")
+	gitRun(t, wt, "commit", "-m", "head")
+	gitRun(t, wt, "push", "origin", "HEAD:refs/heads/main")
+	headSHA := gitOut(t, wt, "rev-parse", "HEAD")
+
+	diff, err := l.Diff(ctx, repo, baseSHA, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff.BaseSHA != baseSHA || diff.HeadSHA != headSHA || diff.Truncated {
+		t.Errorf("diff metadata = %+v", diff)
+	}
+	if len(diff.Files) != 5 {
+		t.Fatalf("want 5 files, got %+v", diff.Files)
+	}
+
+	byPath := make(map[string]DiffFile)
+	for _, file := range diff.Files {
+		key := file.NewPath
+		if key == "" {
+			key = file.OldPath
+		}
+		byPath[key] = file
+	}
+	if file := byPath["added.txt"]; file.Status != DiffAdded || file.OldBlobSHA != "" || file.NewBlobSHA == "" || file.Additions != 1 {
+		t.Errorf("added.txt = %+v", file)
+	} else if file.Patch == nil || !strings.Contains(*file.Patch, "diff --git a/added.txt b/added.txt") ||
+		!strings.Contains(*file.Patch, "+new") {
+		t.Errorf("added.txt patch = %v", file.Patch)
+	}
+	if file := byPath["delete.txt"]; file.Status != DiffDeleted || file.NewBlobSHA != "" || file.Deletions != 1 {
+		t.Errorf("delete.txt = %+v", file)
+	} else if file.Patch == nil || !strings.Contains(*file.Patch, "diff --git a/delete.txt b/delete.txt") ||
+		!strings.Contains(*file.Patch, "-gone") {
+		t.Errorf("delete.txt patch = %v", file.Patch)
+	}
+	if file := byPath["moved.txt"]; file.Status != DiffRenamed || file.OldPath != "rename.txt" || file.Additions != 0 || file.Deletions != 0 {
+		t.Errorf("moved.txt = %+v", file)
+	} else if file.Patch == nil || !strings.Contains(*file.Patch, "rename from rename.txt") ||
+		!strings.Contains(*file.Patch, "rename to moved.txt") {
+		t.Errorf("moved.txt patch = %v", file.Patch)
+	}
+	if file := byPath["keep.txt"]; file.Status != DiffModified || file.Additions != 1 || file.Deletions != 0 {
+		t.Errorf("keep.txt = %+v", file)
+	} else if file.Patch == nil || !strings.Contains(*file.Patch, "@@") || !strings.Contains(*file.Patch, "+two") {
+		t.Errorf("keep.txt patch = %v", file.Patch)
+	}
+	if file := byPath["binary.dat"]; file.Status != DiffModified || !file.Binary ||
+		file.Patch != nil || file.PatchOmittedReason != DiffPatchBinary {
+		t.Errorf("binary.dat = %+v", file)
+	}
+
+	same, err := l.Diff(ctx, repo, "main", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(same.Files) != 0 || same.Files == nil {
+		t.Errorf("same-commit diff = %+v", same)
+	}
+
+	created, err := l.Diff(ctx, repo, zeroSHA, headSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.BaseSHA != zeroSHA || created.HeadSHA != headSHA || len(created.Files) != 4 {
+		t.Fatalf("empty-to-head diff = %+v", created)
+	}
+	for _, file := range created.Files {
+		if file.Status != DiffAdded || file.OldPath != "" || file.OldBlobSHA != "" || file.NewPath == "" || file.NewBlobSHA == "" {
+			t.Errorf("empty-to-head file = %+v", file)
+		}
+	}
+	createdByPath := make(map[string]DiffFile)
+	for _, file := range created.Files {
+		createdByPath[file.NewPath] = file
+	}
+	if file := createdByPath["added.txt"]; file.Patch == nil ||
+		!strings.Contains(*file.Patch, "new file mode 100644") ||
+		!strings.Contains(*file.Patch, "+new") {
+		t.Errorf("empty-to-head added.txt patch = %v", file.Patch)
+	}
+
+	deleted, err := l.Diff(ctx, repo, headSHA, zeroSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted.BaseSHA != headSHA || deleted.HeadSHA != zeroSHA || len(deleted.Files) != 4 {
+		t.Fatalf("head-to-empty diff = %+v", deleted)
+	}
+	for _, file := range deleted.Files {
+		if file.Status != DiffDeleted || file.OldPath == "" || file.OldBlobSHA == "" || file.NewPath != "" || file.NewBlobSHA != "" {
+			t.Errorf("head-to-empty file = %+v", file)
+		}
+	}
+	deletedByPath := make(map[string]DiffFile)
+	for _, file := range deleted.Files {
+		deletedByPath[file.OldPath] = file
+	}
+	if file := deletedByPath["added.txt"]; file.Patch == nil ||
+		!strings.Contains(*file.Patch, "deleted file mode 100644") ||
+		!strings.Contains(*file.Patch, "-new") {
+		t.Errorf("head-to-empty added.txt patch = %v", file.Patch)
+	}
+
+	empty, err := l.Diff(ctx, repo, zeroSHA, zeroSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if empty.BaseSHA != zeroSHA || empty.HeadSHA != zeroSHA || len(empty.Files) != 0 || empty.Files == nil {
+		t.Errorf("empty-to-empty diff = %+v", empty)
+	}
+
+	for _, tc := range []struct {
+		name, base, head string
+		want             error
+	}{
+		{"missing base", "nope", "main", ErrRevNotFound},
+		{"missing head", baseSHA, "nope", ErrRevNotFound},
+		{"hostile base", "--help", "main", ErrInvalidRev},
+		{"hostile head", baseSHA, "--help", ErrInvalidRev},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := l.Diff(ctx, repo, tc.base, tc.head); !errors.Is(err, tc.want) {
+				t.Errorf("Diff(%q, %q) = %v, want %v", tc.base, tc.head, err, tc.want)
+			}
+		})
+	}
 }
 
 func TestArchiveTar(t *testing.T) {

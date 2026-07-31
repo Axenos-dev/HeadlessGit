@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/Axenos-dev/HeadlessGit/internal/domain"
 	"github.com/Axenos-dev/HeadlessGit/internal/server/response"
 	reposervice "github.com/Axenos-dev/HeadlessGit/internal/services/repositories"
 	"github.com/go-chi/chi/v5"
@@ -22,7 +23,15 @@ func (h *handlers) getContents(w http.ResponseWriter, r *http.Request) error {
 	// path defaults to the repo root
 	treePath := r.URL.Query().Get("path")
 
-	contents, err := h.service.Contents(r.Context(), id, ref, treePath)
+	opts := domain.ContentsOptions{}
+	if values, ok := r.URL.Query()["include"]; ok {
+		if len(values) != 1 || values[0] != "lastCommit" {
+			return response.NewError(http.StatusBadRequest, response.CodeInvalidRequest, "include must be 'lastCommit'")
+		}
+		opts.IncludeLastCommit = true
+	}
+
+	contents, err := h.service.Contents(r.Context(), id, ref, treePath, opts)
 	switch {
 	case errors.Is(err, reposervice.ErrRepositoryNotFound):
 		return response.NewError(http.StatusNotFound, response.CodeRepositoryNotFound, "repository not found")

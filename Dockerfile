@@ -10,12 +10,13 @@ COPY . .
 ARG TARGETOS TARGETARCH
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /out/headlessgit ./cmd/app
 
-FROM alpine:3.20
+FROM alpine:3.23
 
 # git provides git-upload-pack / git-receive-pack, which the server shells out to
 # for both SSH and smart HTTP. No git-daemon/git-http-backend needed: the HTTP
 # transport frames the smart protocol itself. No openssh: the SSH server is built in.
-RUN apk add --no-cache git ca-certificates
+RUN apk add --no-cache git ca-certificates \
+	&& git help -a | grep -q last-modified
 
 # Bare repos arrive via a bind mount owned by the host UID; allow git to use
 # them regardless of owner.

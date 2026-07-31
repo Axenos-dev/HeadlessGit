@@ -17,7 +17,8 @@ type RepositoryManager interface {
 	Delete(ctx context.Context, repositoryID int64) error
 	SetVisibility(ctx context.Context, repositoryID int64, visibility domain.RepoVisibility) (domain.Repository, error)
 	ListByOwner(ctx context.Context, ownerID int64) ([]domain.Repository, error)
-	Contents(ctx context.Context, repositoryID int64, ref, treePath string) (domain.RepositoryContents, error)
+	Contents(ctx context.Context, repositoryID int64, ref, treePath string, opts domain.ContentsOptions) (domain.RepositoryContents, error)
+	Diff(ctx context.Context, repositoryID int64, base, head string) (domain.RepositoryDiff, error)
 	PrepareArchive(ctx context.Context, repositoryID int64, ref, format string, includeLFS bool, prefix *string) (domain.ArchiveRequest, error)
 	StreamArchive(ctx context.Context, req domain.ArchiveRequest, out io.Writer) error
 	PrepareBlob(ctx context.Context, repositoryID int64, ref, treePath string, includeLFS bool) (domain.BlobRequest, error)
@@ -49,6 +50,7 @@ func (h *handlers) RegisterRoutes(parent chi.Router) {
 		r.Post("/{repositoryID}/commits", response.Handler(h.logger, h.createCommit))
 		r.Get("/{repositoryID}", response.Handler(h.logger, h.getRepository))
 		r.Get("/{repositoryID}/contents", response.Handler(h.logger, h.getContents))
+		r.Get("/{repositoryID}/diff", response.Handler(h.logger, h.getDiff))
 		r.Get("/{repositoryID}/archive", response.Handler(h.logger, h.getArchive))
 		r.Get("/{repositoryID}/blob", response.Handler(h.logger, h.getBlob))
 		r.Get("/{repositoryID}/path-policies", response.Handler(h.logger, h.listPathPolicies))

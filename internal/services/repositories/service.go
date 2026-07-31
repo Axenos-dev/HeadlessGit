@@ -36,7 +36,8 @@ type Registry interface {
 type RepositoryStorage interface {
 	InitBare(ctx context.Context, storagePath string) error
 	Remove(ctx context.Context, storagePath string) error
-	ListTree(ctx context.Context, storagePath, rev, treePath string) (gitbackend.TreeListing, error)
+	ListTree(ctx context.Context, storagePath, rev, treePath string, opts gitbackend.ListTreeOptions) (gitbackend.TreeListing, error)
+	Diff(ctx context.Context, storagePath, base, head string) (gitbackend.DiffResult, error)
 	ResolveCommit(ctx context.Context, storagePath, rev string) (string, error)
 	ArchiveTar(ctx context.Context, storagePath, rev string, out io.Writer) (string, error)
 	StatBlob(ctx context.Context, storagePath, rev, treePath string) (gitbackend.BlobInfo, error)
@@ -207,7 +208,7 @@ func (s *Service) ListByOwner(ctx context.Context, ownerID int64) ([]domain.Repo
 	return out, nil
 }
 
-func (s *Service) Contents(ctx context.Context, repositoryID int64, ref, treePath string) (domain.RepositoryContents, error) {
+func (s *Service) Contents(ctx context.Context, repositoryID int64, ref, treePath string, opts domain.ContentsOptions) (domain.RepositoryContents, error) {
 	repo, err := s.registry.GetRepository(ctx, repositoryID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.RepositoryContents{}, ErrRepositoryNotFound
@@ -216,7 +217,9 @@ func (s *Service) Contents(ctx context.Context, repositoryID int64, ref, treePat
 		return domain.RepositoryContents{}, err
 	}
 
-	listing, err := s.storage.ListTree(ctx, repo.StoragePath, ref, treePath)
+	listing, err := s.storage.ListTree(ctx, repo.StoragePath, ref, treePath, gitbackend.ListTreeOptions{
+		IncludeLastCommit: opts.IncludeLastCommit,
+	})
 	switch {
 	case errors.Is(err, gitbackend.ErrInvalidRev):
 		return domain.RepositoryContents{}, ErrInvalidRef
@@ -234,6 +237,27 @@ func (s *Service) Contents(ctx context.Context, repositoryID int64, ref, treePat
 		ref = "HEAD"
 	}
 	return toContents(ref, treePath, listing), nil
+}
+
+func (s *Service) Diff(ctx context.Context, repositoryID int64, base, head string) (domain.RepositoryDiff, error) {
+	repo, err := s.registry.GetRepository(ctx, repositoryID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.RepositoryDiff{}, ErrRepositoryNotFound
+	}
+	if err != nil {
+		return domain.RepositoryDiff{}, err
+	}
+
+	diff, err := s.storage.Diff(ctx, repo.StoragePath, base, head)
+	switch {
+	case errors.Is(err, gitbackend.ErrInvalidRev):
+		return domain.RepositoryDiff{}, ErrInvalidRef
+	case errors.Is(err, gitbackend.ErrRevNotFound):
+		return domain.RepositoryDiff{}, ErrRefNotFound
+	case err != nil:
+		return domain.RepositoryDiff{}, err
+	}
+	return toDiff(diff), nil
 }
 
 func (s *Service) GetRepositoryByPath(ctx context.Context, namespace, name string) (domain.Repository, error) {
@@ -687,6 +711,13 @@ func toContents(ref, treePath string, listing gitbackend.TreeListing) domain.Rep
 			SHA:  e.SHA,
 			Size: e.Size,
 		}
+		if e.LastCommit != nil {
+			entries[i].LastCommit = &domain.CommitSummary{
+				SHA:         e.LastCommit.SHA,
+				Message:     e.LastCommit.Message,
+				CommittedAt: e.LastCommit.CommittedAt,
+			}
+		}
 	}
 	return domain.RepositoryContents{
 		Ref:       ref,
@@ -694,5 +725,31 @@ func toContents(ref, treePath string, listing gitbackend.TreeListing) domain.Rep
 		Path:      treePath,
 		Entries:   entries,
 		Truncated: listing.Truncated,
+	}
+}
+
+func toDiff(diff gitbackend.DiffResult) domain.RepositoryDiff {
+	files := make([]domain.DiffFile, len(diff.Files))
+	for i, file := range diff.Files {
+		files[i] = domain.DiffFile{
+			Status:             domain.DiffStatus(file.Status),
+			OldPath:            file.OldPath,
+			NewPath:            file.NewPath,
+			OldBlobSHA:         file.OldBlobSHA,
+			NewBlobSHA:         file.NewBlobSHA,
+			OldMode:            file.OldMode,
+			NewMode:            file.NewMode,
+			Additions:          file.Additions,
+			Deletions:          file.Deletions,
+			Binary:             file.Binary,
+			Patch:              file.Patch,
+			PatchOmittedReason: domain.DiffPatchOmittedReason(file.PatchOmittedReason),
+		}
+	}
+	return domain.RepositoryDiff{
+		BaseSHA:   diff.BaseSHA,
+		HeadSHA:   diff.HeadSHA,
+		Files:     files,
+		Truncated: diff.Truncated,
 	}
 }

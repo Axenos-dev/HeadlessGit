@@ -64,12 +64,19 @@ type Contents struct {
 }
 
 type ContentEntry struct {
-	Name string `json:"name"`
-	Path string `json:"path"`
-	Type string `json:"type"` // file | dir | symlink | submodule
-	Mode string `json:"mode"`
-	Size *int64 `json:"size,omitempty"` // blobs only; note: LFS pointers report pointer size
-	SHA  string `json:"sha"`
+	Name       string         `json:"name"`
+	Path       string         `json:"path"`
+	Type       string         `json:"type"` // file | dir | symlink | submodule
+	Mode       string         `json:"mode"`
+	Size       *int64         `json:"size,omitempty"` // blobs only; note: LFS pointers report pointer size
+	SHA        string         `json:"sha"`
+	LastCommit *CommitSummary `json:"lastCommit,omitempty"`
+}
+
+type CommitSummary struct {
+	SHA         string    `json:"sha"`
+	Message     string    `json:"message"`
+	CommittedAt time.Time `json:"committedAt"`
 }
 
 func newContents(c domain.RepositoryContents) Contents {
@@ -94,11 +101,69 @@ func newContentEntry(e domain.TreeEntry) ContentEntry {
 		Mode: e.Mode,
 		SHA:  e.SHA,
 	}
+	if e.LastCommit != nil {
+		entry.LastCommit = &CommitSummary{
+			SHA:         e.LastCommit.SHA,
+			Message:     e.LastCommit.Message,
+			CommittedAt: e.LastCommit.CommittedAt,
+		}
+	}
 	if e.Size >= 0 {
 		size := e.Size
 		entry.Size = &size
 	}
 	return entry
+}
+
+type Diff struct {
+	BaseSHA   string     `json:"baseSha"`
+	HeadSHA   string     `json:"headSha"`
+	Files     []DiffFile `json:"files"`
+	Truncated bool       `json:"truncated"`
+}
+
+type DiffFile struct {
+	Status             domain.DiffStatus             `json:"status"`
+	OldPath            string                        `json:"oldPath,omitempty"`
+	NewPath            string                        `json:"newPath,omitempty"`
+	OldBlobSHA         string                        `json:"oldBlobSha,omitempty"`
+	NewBlobSHA         string                        `json:"newBlobSha,omitempty"`
+	OldMode            string                        `json:"oldMode,omitempty"`
+	NewMode            string                        `json:"newMode,omitempty"`
+	Additions          *int64                        `json:"additions"`
+	Deletions          *int64                        `json:"deletions"`
+	Binary             bool                          `json:"binary"`
+	Patch              *string                       `json:"patch"`
+	PatchOmittedReason domain.DiffPatchOmittedReason `json:"patchOmittedReason,omitempty"`
+}
+
+func newDiff(diff domain.RepositoryDiff) Diff {
+	files := make([]DiffFile, len(diff.Files))
+	for i, file := range diff.Files {
+		files[i] = DiffFile{
+			Status:             file.Status,
+			OldPath:            file.OldPath,
+			NewPath:            file.NewPath,
+			OldBlobSHA:         file.OldBlobSHA,
+			NewBlobSHA:         file.NewBlobSHA,
+			OldMode:            file.OldMode,
+			NewMode:            file.NewMode,
+			Binary:             file.Binary,
+			Patch:              file.Patch,
+			PatchOmittedReason: file.PatchOmittedReason,
+		}
+		if !file.Binary {
+			additions, deletions := file.Additions, file.Deletions
+			files[i].Additions = &additions
+			files[i].Deletions = &deletions
+		}
+	}
+	return Diff{
+		BaseSHA:   diff.BaseSHA,
+		HeadSHA:   diff.HeadSHA,
+		Files:     files,
+		Truncated: diff.Truncated,
+	}
 }
 
 type UpdateVisibilityRequest struct {

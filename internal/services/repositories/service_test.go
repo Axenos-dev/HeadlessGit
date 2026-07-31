@@ -12,6 +12,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/db/gen"
 	"github.com/Axenos-dev/HeadlessGit/internal/domain"
@@ -69,6 +70,13 @@ type fakeStorage struct {
 	resolveErr error
 	tarBytes   []byte
 
+	listing gitbackend.TreeListing
+	listErr error
+	listFn  func(storagePath, rev, treePath string, opts gitbackend.ListTreeOptions)
+
+	diffResult gitbackend.DiffResult
+	diffErr    error
+
 	blobInfo    gitbackend.BlobInfo
 	blobStatErr error
 	blobContent string
@@ -89,6 +97,17 @@ func (f fakeStorage) ResolveCommit(ctx context.Context, storagePath, rev string)
 		return "", f.resolveErr
 	}
 	return f.sha, nil
+}
+
+func (f fakeStorage) ListTree(ctx context.Context, storagePath, rev, treePath string, opts gitbackend.ListTreeOptions) (gitbackend.TreeListing, error) {
+	if f.listFn != nil {
+		f.listFn(storagePath, rev, treePath, opts)
+	}
+	return f.listing, f.listErr
+}
+
+func (f fakeStorage) Diff(ctx context.Context, storagePath, base, head string) (gitbackend.DiffResult, error) {
+	return f.diffResult, f.diffErr
 }
 
 func (f fakeStorage) ArchiveTar(ctx context.Context, storagePath, rev string, out io.Writer) (string, error) {
@@ -192,6 +211,141 @@ func TestCreateRepository(t *testing.T) {
 			t.Errorf("want ErrInvalidRepositoryName, got %v", err)
 		}
 	})
+}
+
+func TestContents(t *testing.T) {
+	row := gen.Repository{ID: 7, RepositoryName: "myrepo", StoragePath: "7/myrepo.git", Visibility: "private"}
+	committedAt := time.Date(2026, 7, 30, 18, 42, 0, 0, time.UTC)
+	lastCommit := gitbackend.CommitSummary{
+		SHA:         testSHA,
+		Message:     "Change difficulty",
+		CommittedAt: committedAt,
+	}
+	listing := gitbackend.TreeListing{
+		CommitSHA: testSHA,
+		Entries: []gitbackend.TreeEntry{{
+			Mode:       "100644",
+			Type:       "blob",
+			SHA:        "1111222233334444555566667777888899990000",
+			Size:       192,
+			Path:       "config/server.properties",
+			LastCommit: &lastCommit,
+		}},
+	}
+
+	var called bool
+	storage := fakeStorage{
+		listing: listing,
+		listFn: func(storagePath, rev, treePath string, opts gitbackend.ListTreeOptions) {
+			called = true
+			if storagePath != row.StoragePath || rev != "main" || treePath != "config" || !opts.IncludeLastCommit {
+				t.Errorf("ListTree(%q, %q, %q, %+v)", storagePath, rev, treePath, opts)
+			}
+		},
+	}
+	svc := NewService(zap.NewNop(), fakeRegistry{repo: row}, storage, nil, nil)
+	got, err := svc.Contents(context.Background(), row.ID, "main", "config", domain.ContentsOptions{IncludeLastCommit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("ListTree was not called")
+	}
+	if got.Ref != "main" || got.CommitSHA != testSHA || got.Path != "config" || len(got.Entries) != 1 {
+		t.Fatalf("Contents = %+v", got)
+	}
+	entry := got.Entries[0]
+	if entry.Name != "server.properties" || entry.Type != domain.TreeEntryFile || entry.Size != 192 {
+		t.Errorf("entry = %+v", entry)
+	}
+	if entry.LastCommit == nil || entry.LastCommit.SHA != testSHA || entry.LastCommit.Message != "Change difficulty" || !entry.LastCommit.CommittedAt.Equal(committedAt) {
+		t.Errorf("last commit = %+v", entry.LastCommit)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		regErr  error
+		listErr error
+		want    error
+	}{
+		{"repository not found", sql.ErrNoRows, nil, ErrRepositoryNotFound},
+		{"invalid ref", nil, gitbackend.ErrInvalidRev, ErrInvalidRef},
+		{"ref not found", nil, gitbackend.ErrRevNotFound, ErrRefNotFound},
+		{"invalid path", nil, gitbackend.ErrInvalidPath, ErrInvalidPath},
+		{"path not found", nil, gitbackend.ErrPathNotFound, ErrPathNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := NewService(
+				zap.NewNop(),
+				fakeRegistry{repo: row, err: tc.regErr},
+				fakeStorage{listErr: tc.listErr},
+				nil,
+				nil,
+			)
+			if _, err := svc.Contents(context.Background(), row.ID, "main", "", domain.ContentsOptions{}); !errors.Is(err, tc.want) {
+				t.Errorf("Contents error = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestDiff(t *testing.T) {
+	row := gen.Repository{ID: 7, RepositoryName: "myrepo", StoragePath: "7/myrepo.git", Visibility: "private"}
+	headSHA := "1111222233334444555566667777888899990000"
+	patch := "diff --git a/old.txt b/new.txt\n"
+	result := gitbackend.DiffResult{
+		BaseSHA: testSHA,
+		HeadSHA: headSHA,
+		Files: []gitbackend.DiffFile{{
+			Status:     gitbackend.DiffRenamed,
+			OldPath:    "old.txt",
+			NewPath:    "new.txt",
+			OldBlobSHA: "2222333344445555666677778888999900001111",
+			NewBlobSHA: "3333444455556666777788889999000011112222",
+			OldMode:    "100644",
+			NewMode:    "100755",
+			Additions:  2,
+			Deletions:  1,
+			Patch:      &patch,
+		}},
+	}
+	svc := NewService(zap.NewNop(), fakeRegistry{repo: row}, fakeStorage{diffResult: result}, nil, nil)
+	got, err := svc.Diff(context.Background(), row.ID, "main~1", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.BaseSHA != testSHA || got.HeadSHA != headSHA || len(got.Files) != 1 {
+		t.Fatalf("Diff = %+v", got)
+	}
+	if file := got.Files[0]; file.Status != domain.DiffRenamed || file.OldPath != "old.txt" || file.NewPath != "new.txt" ||
+		file.OldBlobSHA == "" || file.NewBlobSHA == "" || file.Additions != 2 || file.Deletions != 1 ||
+		file.Patch == nil || *file.Patch != patch {
+		t.Errorf("diff file = %+v", file)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		regErr  error
+		diffErr error
+		want    error
+	}{
+		{"repository not found", sql.ErrNoRows, nil, ErrRepositoryNotFound},
+		{"invalid ref", nil, gitbackend.ErrInvalidRev, ErrInvalidRef},
+		{"ref not found", nil, gitbackend.ErrRevNotFound, ErrRefNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := NewService(
+				zap.NewNop(),
+				fakeRegistry{repo: row, err: tc.regErr},
+				fakeStorage{diffErr: tc.diffErr},
+				nil,
+				nil,
+			)
+			if _, err := svc.Diff(context.Background(), row.ID, "base", "head"); !errors.Is(err, tc.want) {
+				t.Errorf("Diff error = %v, want %v", err, tc.want)
+			}
+		})
+	}
 }
 
 func TestPrepareArchive(t *testing.T) {

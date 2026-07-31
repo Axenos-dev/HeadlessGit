@@ -116,48 +116,49 @@ Every request requires `Authorization: Bearer <ADMIN_TOKEN>`. Responses are enve
 
 **Accounts & credentials**
 
-| Method   | Path                           | Body                 | Description                                                  |
-| -------- | ------------------------------ | -------------------- | ------------------------------------------------------------ |
-| `POST`   | `/users`                       | `{username, kind}`   | Create a user/service account (`kind`: `user` \| `service`); `409 user_exists` if the username is taken. |
-| `GET`    | `/users/{id}`                  | —                    | Get an account.                                              |
-| `GET`    | `/users/by-username/{username}` | —                   | Look up an account by username (name -> id resolution).      |
-| `GET`    | `/users/{id}/repositories`     | —                    | List repositories owned by the account.                      |
-| `POST`   | `/users/{id}/ssh-keys`         | `{title, publicKey}` | Register an SSH public key.                                  |
-| `GET`    | `/users/{id}/ssh-keys`         | —                    | List the account's SSH keys.                                 |
-| `DELETE` | `/users/{id}/ssh-keys/{keyId}` | —                    | Revoke an SSH key.                                           |
-| `POST`   | `/users/{id}/tokens`           | `{title}`            | Mint a token; the raw value is returned **once**.            |
-| `GET`    | `/users/{id}/tokens`           | —                    | List the account's tokens (never the secret).                |
-| `DELETE` | `/users/{id}/tokens/{tokenId}` | —                    | Revoke a single token.                                       |
-| `DELETE` | `/users/{id}/tokens`           | —                    | Revoke **all** of the account's tokens.                      |
+| Method   | Path                            | Body                 | Description                                                                                              |
+| -------- | ------------------------------- | -------------------- | -------------------------------------------------------------------------------------------------------- |
+| `POST`   | `/users`                        | `{username, kind}`   | Create a user/service account (`kind`: `user` \| `service`); `409 user_exists` if the username is taken. |
+| `GET`    | `/users/{id}`                   | —                    | Get an account.                                                                                          |
+| `GET`    | `/users/by-username/{username}` | —                    | Look up an account by username (name -> id resolution).                                                  |
+| `GET`    | `/users/{id}/repositories`      | —                    | List repositories owned by the account.                                                                  |
+| `POST`   | `/users/{id}/ssh-keys`          | `{title, publicKey}` | Register an SSH public key.                                                                              |
+| `GET`    | `/users/{id}/ssh-keys`          | —                    | List the account's SSH keys.                                                                             |
+| `DELETE` | `/users/{id}/ssh-keys/{keyId}`  | —                    | Revoke an SSH key.                                                                                       |
+| `POST`   | `/users/{id}/tokens`            | `{title}`            | Mint a token; the raw value is returned **once**.                                                        |
+| `GET`    | `/users/{id}/tokens`            | —                    | List the account's tokens (never the secret).                                                            |
+| `DELETE` | `/users/{id}/tokens/{tokenId}`  | —                    | Revoke a single token.                                                                                   |
+| `DELETE` | `/users/{id}/tokens`            | —                    | Revoke **all** of the account's tokens.                                                                  |
 
 **Repositories & permissions**
 
-| Method   | Path                                          | Body                          | Description                                                       |
-| -------- | --------------------------------------------- | ----------------------------- | ----------------------------------------------------------------- |
-| `POST`   | `/repositories`                               | `{ownerId, name, visibility}` | Create a repository (`visibility`: `public` \| `private`); `409 repository_exists` if the owner already has one with that name. |
-| `GET`    | `/repositories/{id}`                          | —                             | Get repository metadata.                                          |
-| `GET`    | `/repositories/by-path/{namespace}/{name}`    | —                             | Look up a repository by owner username + name (name -> id resolution). |
-| `PUT`    | `/repositories/{id}/visibility`               | `{visibility}`                | Change visibility (`public` \| `private`).                        |
-| `DELETE` | `/repositories/{id}`                          | —                             | Delete a repository (row + bare repo).                            |
-| `GET`    | `/repositories/{id}/permissions`              | —                             | List collaborators.                                               |
-| `PUT`    | `/repositories/{id}/permissions`              | `{userId, role}`              | Grant/update a collaborator role (`read` \| `write` \| `admin`).  |
-| `DELETE` | `/repositories/{id}/permissions/{userId}`     | —                             | Revoke a collaborator.                                            |
+| Method   | Path                                          | Body                          | Description                                                                                                                          |
+| -------- | --------------------------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `POST`   | `/repositories`                               | `{ownerId, name, visibility}` | Create a repository (`visibility`: `public` \| `private`); `409 repository_exists` if the owner already has one with that name.      |
+| `GET`    | `/repositories/{id}`                          | —                             | Get repository metadata.                                                                                                             |
+| `GET`    | `/repositories/by-path/{namespace}/{name}`    | —                             | Look up a repository by owner username + name (name -> id resolution).                                                               |
+| `PUT`    | `/repositories/{id}/visibility`               | `{visibility}`                | Change visibility (`public` \| `private`).                                                                                           |
+| `DELETE` | `/repositories/{id}`                          | —                             | Delete a repository (row + bare repo).                                                                                               |
+| `GET`    | `/repositories/{id}/permissions`              | —                             | List collaborators.                                                                                                                  |
+| `PUT`    | `/repositories/{id}/permissions`              | `{userId, role}`              | Grant/update a collaborator role (`read` \| `write` \| `admin`).                                                                     |
+| `DELETE` | `/repositories/{id}/permissions/{userId}`     | —                             | Revoke a collaborator.                                                                                                               |
 | `POST`   | `/repositories/{id}/webhooks`                 | `{url}`                       | Register a push webhook; the signing secret is returned **once**. `409 webhook_exists` if the URL is already registered on the repo. |
-| `GET`    | `/repositories/{id}/webhooks`                 | —                             | List the repository's webhooks (never the secret).               |
-| `DELETE` | `/repositories/{id}/webhooks/{hookId}`        | —                             | Delete a webhook.                                                 |
-| `GET`    | `/repositories/{id}/path-policies`            | —                             | List the repository's path policies.                              |
-| `POST`   | `/repositories/{id}/path-policies`            | `{pattern, reason?}`          | Block a path; see [Path policies](#path-policies).                |
-| `DELETE` | `/repositories/{id}/path-policies/{policyId}` | —                             | Remove a policy.                                                  |
+| `GET`    | `/repositories/{id}/webhooks`                 | —                             | List the repository's webhooks (never the secret).                                                                                   |
+| `DELETE` | `/repositories/{id}/webhooks/{hookId}`        | —                             | Delete a webhook.                                                                                                                    |
+| `GET`    | `/repositories/{id}/path-policies`            | —                             | List the repository's path policies.                                                                                                 |
+| `POST`   | `/repositories/{id}/path-policies`            | `{pattern, reason?}`          | Block a path; see [Path policies](#path-policies).                                                                                   |
+| `DELETE` | `/repositories/{id}/path-policies/{policyId}` | —                             | Remove a policy.                                                                                                                     |
 
 **Repository contents & commits**
 
-| Method | Path                                           | Body        | Description                                                            |
-| ------ | ---------------------------------------------- | ----------- | ---------------------------------------------------------------------- |
-| `GET`  | `/repositories/{id}/contents?ref=&path=`       | —           | List one directory level of the tree at a ref.                         |
-| `GET`  | `/repositories/{id}/blob?ref=&path=&lfs=`      | —           | Stream one file's raw content.                                         |
-| `GET`  | `/repositories/{id}/archive?ref=&format=&lfs=&prefix=` | —           | Stream a `zip` (default) or `tar.gz` archive of the tree.              |
-| `POST` | `/repositories/{id}/blobs`                     | _raw bytes_ | Upload content into the repo's object database; returns `{sha, size}`. |
-| `POST` | `/repositories/{id}/commits`                   | JSON        | Create a commit on a branch from uploaded blobs.                       |
+| Method | Path                                                        | Body        | Description                                                            |
+| ------ | ----------------------------------------------------------- | ----------- | ---------------------------------------------------------------------- |
+| `GET`  | `/repositories/{id}/contents?ref=&path=&include=lastCommit` | —           | List one directory level, optionally with each entry's last commit.    |
+| `GET`  | `/repositories/{id}/diff?base=&head=`                       | —           | Compare two refs with per-file metadata and unified patches.           |
+| `GET`  | `/repositories/{id}/blob?ref=&path=&lfs=`                   | —           | Stream one file's raw content.                                         |
+| `GET`  | `/repositories/{id}/archive?ref=&format=&lfs=&prefix=`      | —           | Stream a `zip` (default) or `tar.gz` archive of the tree.              |
+| `POST` | `/repositories/{id}/blobs`                                  | _raw bytes_ | Upload content into the repo's object database; returns `{sha, size}`. |
+| `POST` | `/repositories/{id}/commits`                                | JSON        | Create a commit on a branch from uploaded blobs.                       |
 
 ### Reading a repository
 
@@ -178,7 +179,12 @@ Every request requires `Authorization: Bearer <ADMIN_TOKEN>`. Responses are enve
         "type": "file",
         "mode": "100644",
         "size": 1234,
-        "sha": "..."
+        "sha": "...",
+        "lastCommit": {
+          "sha": "7786adb...",
+          "message": "Change server difficulty",
+          "committedAt": "2026-07-30T18:42:00Z"
+        }
       },
       {
         "name": "vendor",
@@ -192,7 +198,38 @@ Every request requires `Authorization: Bearer <ADMIN_TOKEN>`. Responses are enve
 }
 ```
 
-`type` is `file` | `dir` | `symlink` | `submodule`. Listings over 10k entries set `"truncated": true`.
+`type` is `file` | `dir` | `symlink` | `submodule`. Add `include=lastCommit` to populate the optional `lastCommit` object for every entry.
+
+`GET /diff` requires `base` and `head`, each accepting the same ref syntax as the other read endpoints. The all-zero SHA is also accepted on either side as the empty tree, so a ref creation can be diffed as `base=0000...&head=<commit>` and a ref deletion as `base=<commit>&head=0000...`.
+
+```json
+{
+  "data": {
+    "baseSha": "...",
+    "headSha": "...",
+    "files": [
+      {
+        "status": "renamed",
+        "oldPath": "config/default.properties",
+        "newPath": "config/server.properties",
+        "oldBlobSha": "...",
+        "newBlobSha": "...",
+        "oldMode": "100644",
+        "newMode": "100644",
+        "additions": 2,
+        "deletions": 1,
+        "binary": false,
+        "patch": "diff --git a/config/default.properties b/config/server.properties\n...\n@@ -1,3 +1,4 @@\n ...\n"
+      }
+    ],
+    "truncated": false
+  }
+}
+```
+
+`patch` and `binary` are always present. Binary files return `null` for `patch`, `additions`, and `deletions`, with `"patchOmittedReason": "binary"`. A patch larger than 1 MiB, or one that would take the response over its 10 MiB patch budget, is omitted completely with `"patchOmittedReason": "too_large"`—the API never returns a partially cut patch. Non-UTF-8 patches use `"unsupported_encoding"`. Diffs over 10k files set `"truncated": true` and omit patches as `"too_large"`.
+
+The patch is intended for normal unified-diff renderers. Consumers that need complete old and new file bodies can fetch them through `/blob` using `base + oldPath` and `head + newPath`.
 
 `GET /blob` streams the file bytes with `Content-Length`, a strong `ETag` (the blob sha — content-addressed, so `If-None-Match` caching works perfectly), and `X-HeadlessGit-Commit` carrying the resolved commit. With `lfs=true`, an LFS pointer file is replaced by the real object; a missing object is a `404` rather than silently serving the pointer.
 
@@ -318,6 +355,8 @@ ok := hmac.Equal([]byte(expected), []byte(r.Header.Get("X-HeadlessGit-Signature"
 The secret is generated server-side and shown **once** in the registration response.
 
 ## Development
+
+Git 2.52 or newer is required for `include=lastCommit`. The container image bundles a compatible Git version.
 
 ```sh
 ./dev.sh up     # build and run the stack (docker compose)
