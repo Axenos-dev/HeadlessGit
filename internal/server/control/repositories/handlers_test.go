@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/domain"
 	reposervice "github.com/Axenos-dev/HeadlessGit/internal/services/repositories"
@@ -23,6 +24,17 @@ const testSHA = "aaaabbbbccccddddeeeeffff0000111122223333"
 // and override only what the endpoint under test touches
 type fakeManager struct {
 	RepositoryManager
+	contents     domain.RepositoryContents
+	contentsErr  error
+	contentsRef  string
+	contentsPath string
+	contentsOpts domain.ContentsOptions
+
+	diffResult domain.RepositoryDiff
+	diffErr    error
+	diffBase   string
+	diffHead   string
+
 	prepareReq domain.ArchiveRequest
 	prepareErr error
 	prefix     string
@@ -52,6 +64,19 @@ type fakeManager struct {
 
 	repoByPath    domain.Repository
 	repoByPathErr error
+}
+
+func (f *fakeManager) Contents(ctx context.Context, repositoryID int64, ref, treePath string, opts domain.ContentsOptions) (domain.RepositoryContents, error) {
+	f.contentsRef = ref
+	f.contentsPath = treePath
+	f.contentsOpts = opts
+	return f.contents, f.contentsErr
+}
+
+func (f *fakeManager) Diff(ctx context.Context, repositoryID int64, base, head string) (domain.RepositoryDiff, error) {
+	f.diffBase = base
+	f.diffHead = head
+	return f.diffResult, f.diffErr
 }
 
 func (f *fakeManager) Create(ctx context.Context, ownerID int64, info domain.RepositoryInfo) (domain.Repository, error) {
@@ -143,6 +168,257 @@ func testArchiveRequest() domain.ArchiveRequest {
 		CommitSHA:  testSHA,
 		Format:     domain.ArchiveFormatZip,
 		Prefix:     "myrepo-aaaabbbbcccc/",
+	}
+}
+
+func TestGetContents(t *testing.T) {
+	committedAt := time.Date(2026, 7, 30, 18, 42, 0, 0, time.UTC)
+	svc := &fakeManager{contents: domain.RepositoryContents{
+		Ref:       "main",
+		CommitSHA: testSHA,
+		Path:      "config",
+		Entries: []domain.TreeEntry{{
+			Name: "server.properties",
+			Path: "config/server.properties",
+			Type: domain.TreeEntryFile,
+			Mode: "100644",
+			SHA:  "1111222233334444555566667777888899990000",
+			Size: 192,
+			LastCommit: &domain.CommitSummary{
+				SHA:         testSHA,
+				Message:     "Change difficulty",
+				CommittedAt: committedAt,
+			},
+		}},
+	}}
+
+	rec := httptest.NewRecorder()
+	newTestRouter(svc).ServeHTTP(rec, httptest.NewRequest(
+		http.MethodGet,
+		"/repositories/7/contents?ref=main&path=config&include=lastCommit",
+		nil,
+	))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if svc.contentsRef != "main" || svc.contentsPath != "config" || !svc.contentsOpts.IncludeLastCommit {
+		t.Errorf("Contents args = ref %q, path %q, opts %+v", svc.contentsRef, svc.contentsPath, svc.contentsOpts)
+	}
+
+	var body struct {
+		Data Contents `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Data.SHA != testSHA || len(body.Data.Entries) != 1 {
+		t.Fatalf("contents = %+v", body.Data)
+	}
+	entry := body.Data.Entries[0]
+	if entry.LastCommit == nil || entry.LastCommit.SHA != testSHA || entry.LastCommit.Message != "Change difficulty" || !entry.LastCommit.CommittedAt.Equal(committedAt) {
+		t.Errorf("lastCommit = %+v", entry.LastCommit)
+	}
+}
+
+func TestGetContentsErrors(t *testing.T) {
+	cases := []struct {
+		name       string
+		target     string
+		serviceErr error
+		wantStatus int
+		wantCode   string
+	}{
+		{"bad id", "/repositories/nope/contents", nil, http.StatusBadRequest, "invalid_request"},
+		{"bad include", "/repositories/7/contents?include=commits", nil, http.StatusBadRequest, "invalid_request"},
+		{"duplicate include", "/repositories/7/contents?include=lastCommit&include=lastCommit", nil, http.StatusBadRequest, "invalid_request"},
+		{"repository not found", "/repositories/7/contents", reposervice.ErrRepositoryNotFound, http.StatusNotFound, "repository_not_found"},
+		{"ref not found", "/repositories/7/contents", reposervice.ErrRefNotFound, http.StatusNotFound, "ref_not_found"},
+		{"path not found", "/repositories/7/contents", reposervice.ErrPathNotFound, http.StatusNotFound, "path_not_found"},
+		{"invalid ref", "/repositories/7/contents", reposervice.ErrInvalidRef, http.StatusBadRequest, "invalid_request"},
+		{"invalid path", "/repositories/7/contents", reposervice.ErrInvalidPath, http.StatusBadRequest, "invalid_request"},
+		{"internal", "/repositories/7/contents", io.ErrUnexpectedEOF, http.StatusInternalServerError, "internal_error"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			newTestRouter(&fakeManager{contentsErr: tc.serviceErr}).ServeHTTP(
+				rec,
+				httptest.NewRequest(http.MethodGet, tc.target, nil),
+			)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			var body struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Error.Code != tc.wantCode {
+				t.Errorf("code = %q, want %q", body.Error.Code, tc.wantCode)
+			}
+		})
+	}
+}
+
+func TestGetDiff(t *testing.T) {
+	headSHA := "1111222233334444555566667777888899990000"
+	patch := "diff --git a/old.txt b/new.txt\n"
+	svc := &fakeManager{diffResult: domain.RepositoryDiff{
+		BaseSHA: testSHA,
+		HeadSHA: headSHA,
+		Files: []domain.DiffFile{
+			{
+				Status:     domain.DiffRenamed,
+				OldPath:    "old.txt",
+				NewPath:    "new.txt",
+				OldBlobSHA: "2222333344445555666677778888999900001111",
+				NewBlobSHA: "3333444455556666777788889999000011112222",
+				OldMode:    "100644",
+				NewMode:    "100755",
+				Additions:  2,
+				Deletions:  1,
+				Patch:      &patch,
+			},
+			{
+				Status:             domain.DiffModified,
+				OldPath:            "image.png",
+				NewPath:            "image.png",
+				Binary:             true,
+				PatchOmittedReason: domain.DiffPatchBinary,
+			},
+		},
+	}}
+
+	rec := httptest.NewRecorder()
+	newTestRouter(svc).ServeHTTP(rec, httptest.NewRequest(
+		http.MethodGet,
+		"/repositories/7/diff?base=main~1&head=main",
+		nil,
+	))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if svc.diffBase != "main~1" || svc.diffHead != "main" {
+		t.Errorf("Diff args = %q, %q", svc.diffBase, svc.diffHead)
+	}
+
+	var body struct {
+		Data Diff `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Data.BaseSHA != testSHA || body.Data.HeadSHA != headSHA || len(body.Data.Files) != 2 {
+		t.Fatalf("diff = %+v", body.Data)
+	}
+	if file := body.Data.Files[0]; file.Status != domain.DiffRenamed || file.OldPath != "old.txt" || file.NewPath != "new.txt" ||
+		file.OldBlobSHA == "" || file.NewBlobSHA == "" || file.Additions == nil || *file.Additions != 2 ||
+		file.Patch == nil || *file.Patch != patch {
+		t.Errorf("renamed file = %+v", file)
+	}
+	if file := body.Data.Files[1]; !file.Binary || file.Additions != nil || file.Deletions != nil ||
+		file.Patch != nil || file.PatchOmittedReason != "binary" {
+		t.Errorf("binary file = %+v", file)
+	}
+
+	var required struct {
+		Data struct {
+			Truncated *bool `json:"truncated"`
+			Files     []struct {
+				Binary *bool           `json:"binary"`
+				Patch  json.RawMessage `json:"patch"`
+			} `json:"files"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &required); err != nil {
+		t.Fatal(err)
+	}
+	if required.Data.Truncated == nil || *required.Data.Truncated {
+		t.Errorf("truncated must be present and false: %s", rec.Body.String())
+	}
+	for i, file := range required.Data.Files {
+		if file.Binary == nil {
+			t.Errorf("files[%d].binary is missing: %s", i, rec.Body.String())
+		}
+	}
+	if got := string(required.Data.Files[1].Patch); got != "null" {
+		t.Errorf("binary patch = %s, want null", got)
+	}
+}
+
+func TestGetDiffAcceptsZeroSHA(t *testing.T) {
+	zeroSHA := strings.Repeat("0", 40)
+	for _, tc := range []struct {
+		name string
+		base string
+		head string
+	}{
+		{"empty base", zeroSHA, "main"},
+		{"empty head", "main", zeroSHA},
+		{"both empty", zeroSHA, zeroSHA},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &fakeManager{diffResult: domain.RepositoryDiff{Files: []domain.DiffFile{}}}
+			rec := httptest.NewRecorder()
+			newTestRouter(svc).ServeHTTP(rec, httptest.NewRequest(
+				http.MethodGet,
+				"/repositories/7/diff?base="+tc.base+"&head="+tc.head,
+				nil,
+			))
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+			}
+			if svc.diffBase != tc.base || svc.diffHead != tc.head {
+				t.Errorf("Diff args = %q, %q", svc.diffBase, svc.diffHead)
+			}
+		})
+	}
+}
+
+func TestGetDiffErrors(t *testing.T) {
+	cases := []struct {
+		name       string
+		target     string
+		serviceErr error
+		wantStatus int
+		wantCode   string
+	}{
+		{"bad id", "/repositories/nope/diff?base=a&head=b", nil, http.StatusBadRequest, "invalid_request"},
+		{"missing base", "/repositories/7/diff?head=main", nil, http.StatusBadRequest, "invalid_request"},
+		{"missing head", "/repositories/7/diff?base=main~1", nil, http.StatusBadRequest, "invalid_request"},
+		{"repository not found", "/repositories/7/diff?base=a&head=b", reposervice.ErrRepositoryNotFound, http.StatusNotFound, "repository_not_found"},
+		{"ref not found", "/repositories/7/diff?base=a&head=b", reposervice.ErrRefNotFound, http.StatusNotFound, "ref_not_found"},
+		{"invalid ref", "/repositories/7/diff?base=a&head=b", reposervice.ErrInvalidRef, http.StatusBadRequest, "invalid_request"},
+		{"internal", "/repositories/7/diff?base=a&head=b", io.ErrUnexpectedEOF, http.StatusInternalServerError, "internal_error"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			newTestRouter(&fakeManager{diffErr: tc.serviceErr}).ServeHTTP(
+				rec,
+				httptest.NewRequest(http.MethodGet, tc.target, nil),
+			)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			var body struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Error.Code != tc.wantCode {
+				t.Errorf("code = %q, want %q", body.Error.Code, tc.wantCode)
+			}
+		})
 	}
 }
 

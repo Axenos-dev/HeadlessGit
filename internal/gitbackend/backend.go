@@ -12,7 +12,8 @@ type Backend interface {
 	AdvertiseRefs(ctx context.Context, storagePath string, svc Service, stdout io.Writer) error
 	UploadPack(ctx context.Context, storagePath string, stateless bool, stdin io.Reader, stdout, stderr io.Writer) error
 	ReceivePack(ctx context.Context, storagePath string, stateless bool, hookEnv []string, stdin io.Reader, stdout, stderr io.Writer) ([]RefChange, error)
-	ListTree(ctx context.Context, storagePath, rev, treePath string) (TreeListing, error)
+	ListTree(ctx context.Context, storagePath, rev, treePath string, opts ListTreeOptions) (TreeListing, error)
+	Diff(ctx context.Context, storagePath, base, head string) (DiffResult, error)
 	ResolveCommit(ctx context.Context, storagePath, rev string) (string, error)
 	ArchiveTar(ctx context.Context, storagePath, rev string, out io.Writer) (string, error)
 	StatBlob(ctx context.Context, storagePath, rev, treePath string) (BlobInfo, error)

@@ -205,7 +205,7 @@ func (l *Local) listRefs(ctx context.Context, storagePath string) (map[string]st
 	return refs, nil
 }
 
-func (l *Local) ListTree(ctx context.Context, storagePath, rev, treePath string) (TreeListing, error) {
+func (l *Local) ListTree(ctx context.Context, storagePath, rev, treePath string, opts ListTreeOptions) (TreeListing, error) {
 	dir, err := l.resolve(storagePath)
 	if err != nil {
 		return TreeListing{}, err
@@ -226,17 +226,80 @@ func (l *Local) ListTree(ctx context.Context, storagePath, rev, treePath string)
 		treeish += ":" + treePath
 	}
 
-	out, err := l.runGit(ctx, dir, nil, nil, "ls-tree", "--long", "-z", "--end-of-options", treeish)
+	out, err := l.runGitBytes(ctx, dir, nil, nil, "ls-tree", "--long", "-z", "--end-of-options", treeish)
 	if err != nil {
 		// the rev already resolved, so this is a missing path or a non-directory
 		return TreeListing{}, fmt.Errorf("%w: %q", ErrPathNotFound, treePath)
 	}
 
-	entries, truncated, err := parseLsTree([]byte(out), treePath)
+	entries, truncated, err := parseLsTree(out, treePath)
 	if err != nil {
 		return TreeListing{}, err
 	}
+	if opts.IncludeLastCommit && len(entries) > 0 {
+		if err := l.addLastCommits(ctx, dir, commitSHA, treePath, entries); err != nil {
+			return TreeListing{}, err
+		}
+	}
 	return TreeListing{CommitSHA: commitSHA, Entries: entries, Truncated: truncated}, nil
+}
+
+func (l *Local) addLastCommits(ctx context.Context, dir, commitSHA, treePath string, entries []TreeEntry) error {
+	args := []string{"last-modified", "--show-trees", "-z"}
+	if treePath == "" {
+		args = append(args, "--max-depth=0", commitSHA)
+	} else {
+		args = append(args, "--max-depth=1", commitSHA, "--", ":(top,literal)"+treePath)
+	}
+
+	out, err := l.runGitBytes(ctx, dir, nil, nil, args...)
+	if err != nil {
+		return fmt.Errorf("list last-modified commits: %w", err)
+	}
+
+	byPath, err := parseLastModified(out)
+	if err != nil {
+		return err
+	}
+
+	var in strings.Builder
+	seen := make(map[string]bool)
+	entrySHAs := make([]string, len(entries))
+	for i, entry := range entries {
+		sha, ok := byPath[entry.Path]
+		if !ok {
+			return fmt.Errorf("last-modified output missing path %q", entry.Path)
+		}
+
+		entrySHAs[i] = sha
+		if !seen[sha] {
+			in.WriteString(sha)
+			in.WriteByte('\n')
+			seen[sha] = true
+		}
+	}
+
+	out, err = l.runGitBytes(ctx, dir, nil, strings.NewReader(in.String()),
+		"log", "--no-walk=unsorted", "--stdin", "-z", "--format=%H%x00%s%x00%cI",
+	)
+	if err != nil {
+		return fmt.Errorf("read last-modified commits: %w", err)
+	}
+
+	commits, err := parseCommitSummaries(out)
+	if err != nil {
+		return err
+	}
+
+	for i, sha := range entrySHAs {
+		commit, ok := commits[sha]
+		if !ok {
+			return fmt.Errorf("commit metadata missing for %s", sha)
+		}
+		entries[i].LastCommit = &commit
+	}
+
+	return nil
 }
 
 // streams an uncompressed tar archive of the repo tree,
@@ -718,6 +781,15 @@ func (l *Local) updateIndex(ctx context.Context, dir string, env []string, ops [
 // runGit executes one short-lived git command with the repo as context,
 // applying the standard timeout, and returns its trimmed stdout
 func (l *Local) runGit(ctx context.Context, dir string, env []string, stdin io.Reader, args ...string) (string, error) {
+	out, err := l.runGitBytes(ctx, dir, env, stdin, args...)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// runGitBytes is the raw-output variant for NUL-delimited git protocols
+func (l *Local) runGitBytes(ctx context.Context, dir string, env []string, stdin io.Reader, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, l.timeout)
 	defer cancel()
 
@@ -730,9 +802,9 @@ func (l *Local) runGit(ctx context.Context, dir string, env []string, stdin io.R
 	cmd.Stdout = &out
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("git %s: %w: %s", args[0], err, strings.TrimSpace(stderr.String()))
+		return nil, fmt.Errorf("git %s: %w: %s", args[0], err, strings.TrimSpace(stderr.String()))
 	}
-	return strings.TrimSpace(out.String()), nil
+	return out.Bytes(), nil
 }
 
 // revParse resolves a rev expression to an object id, failing when the object does not exist
@@ -780,6 +852,56 @@ func parseLsTree(out []byte, treePath string) ([]TreeEntry, bool, error) {
 		})
 	}
 	return entries, false, nil
+}
+
+func parseLastModified(out []byte) (map[string]string, error) {
+	commits := make(map[string]string)
+	for record := range bytes.SplitSeq(out, []byte{0}) {
+		if len(record) == 0 {
+			continue
+		}
+
+		sha, filePath, ok := bytes.Cut(record, []byte{'\t'})
+		if !ok || !isHexSHA(string(sha)) || len(filePath) == 0 {
+			return nil, fmt.Errorf("malformed last-modified record: %q", record)
+		}
+
+		commits[string(filePath)] = string(sha)
+	}
+
+	return commits, nil
+}
+
+func parseCommitSummaries(out []byte) (map[string]CommitSummary, error) {
+	fields := bytes.Split(out, []byte{0})
+	if len(fields) > 0 && len(fields[len(fields)-1]) == 0 {
+		fields = fields[:len(fields)-1]
+	}
+
+	if len(fields)%3 != 0 {
+		return nil, fmt.Errorf("malformed git log output: got %d fields", len(fields))
+	}
+
+	commits := make(map[string]CommitSummary, len(fields)/3)
+	for i := 0; i < len(fields); i += 3 {
+		sha := string(fields[i])
+		if !isHexSHA(sha) {
+			return nil, fmt.Errorf("malformed commit sha %q", sha)
+		}
+
+		committedAt, err := time.Parse(time.RFC3339, string(fields[i+2]))
+		if err != nil {
+			return nil, fmt.Errorf("malformed commit time %q: %w", fields[i+2], err)
+		}
+
+		commits[sha] = CommitSummary{
+			SHA:         sha,
+			Message:     string(fields[i+1]),
+			CommittedAt: committedAt.UTC(),
+		}
+	}
+
+	return commits, nil
 }
 
 // normalizeRev validates an untrusted revision expression; empty means HEAD
