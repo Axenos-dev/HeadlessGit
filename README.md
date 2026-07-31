@@ -154,6 +154,7 @@ Every request requires `Authorization: Bearer <ADMIN_TOKEN>`. Responses are enve
 | Method | Path                                                        | Body        | Description                                                            |
 | ------ | ----------------------------------------------------------- | ----------- | ---------------------------------------------------------------------- |
 | `GET`  | `/repositories/{id}/contents?ref=&path=&include=lastCommit` | —           | List one directory level, optionally with each entry's last commit.    |
+| `GET`  | `/repositories/{id}/commits/{sha}`                          | —           | Get metadata for one commit by its full SHA.                           |
 | `GET`  | `/repositories/{id}/diff?base=&head=`                       | —           | Compare two refs with per-file metadata and unified patches.           |
 | `GET`  | `/repositories/{id}/blob?ref=&path=&lfs=`                   | —           | Stream one file's raw content.                                         |
 | `GET`  | `/repositories/{id}/archive?ref=&format=&lfs=&prefix=`      | —           | Stream a `zip` (default) or `tar.gz` archive of the tree.              |
@@ -199,6 +200,26 @@ Every request requires `Authorization: Bearer <ADMIN_TOKEN>`. Responses are enve
 ```
 
 `type` is `file` | `dir` | `symlink` | `submodule`. Add `include=lastCommit` to populate the optional `lastCommit` object for every entry.
+
+`GET /commits/{sha}` requires commit SHA and returns the complete commit message and metadata:
+
+```json
+{
+  "data": {
+    "sha": "9fb037999f264ba9a7fc6274d15fa3ae2ab98312",
+    "parents": ["7786adb11411791e94b04f5f672e50df2a472a65"],
+    "message": "Update server configuration",
+    "author": {
+      "name": "Alex Developer",
+      "email": "alex@example.com"
+    },
+    "authoredAt": "2026-07-30T18:40:00Z",
+    "committedAt": "2026-07-30T18:42:00Z"
+  }
+}
+```
+
+`parents` is an empty array for a root commit and contains multiple SHAs for a merge commit. A missing commit returns `404 commit_not_found`.
 
 `GET /diff` requires `base` and `head`, each accepting the same ref syntax as the other read endpoints. The all-zero SHA is also accepted on either side as the empty tree, so a ref creation can be diffed as `base=0000...&head=<commit>` and a ref deletion as `base=<commit>&head=0000...`.
 

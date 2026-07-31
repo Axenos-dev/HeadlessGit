@@ -35,6 +35,11 @@ type fakeManager struct {
 	diffBase   string
 	diffHead   string
 
+	commitDetails   domain.CommitDetails
+	getCommitErr    error
+	getCommitSHA    string
+	getCommitRepoID int64
+
 	prepareReq domain.ArchiveRequest
 	prepareErr error
 	prefix     string
@@ -77,6 +82,12 @@ func (f *fakeManager) Diff(ctx context.Context, repositoryID int64, base, head s
 	f.diffBase = base
 	f.diffHead = head
 	return f.diffResult, f.diffErr
+}
+
+func (f *fakeManager) GetCommit(ctx context.Context, repositoryID int64, sha string) (domain.CommitDetails, error) {
+	f.getCommitRepoID = repositoryID
+	f.getCommitSHA = sha
+	return f.commitDetails, f.getCommitErr
 }
 
 func (f *fakeManager) Create(ctx context.Context, ownerID int64, info domain.RepositoryInfo) (domain.Repository, error) {
@@ -401,6 +412,101 @@ func TestGetDiffErrors(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
 			newTestRouter(&fakeManager{diffErr: tc.serviceErr}).ServeHTTP(
+				rec,
+				httptest.NewRequest(http.MethodGet, tc.target, nil),
+			)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			var body struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Error.Code != tc.wantCode {
+				t.Errorf("code = %q, want %q", body.Error.Code, tc.wantCode)
+			}
+		})
+	}
+}
+
+func TestGetCommit(t *testing.T) {
+	authoredAt := time.Date(2026, 7, 30, 18, 40, 0, 0, time.UTC)
+	committedAt := time.Date(2026, 7, 30, 18, 42, 0, 0, time.UTC)
+	parentSHA := strings.Repeat("b", 40)
+	svc := &fakeManager{commitDetails: domain.CommitDetails{
+		SHA:         testSHA,
+		Parents:     []string{parentSHA},
+		Message:     "Update server configuration\n\nFull message.",
+		Author:      domain.CommitIdentity{Name: "Alex Developer", Email: "alex@example.com"},
+		AuthoredAt:  authoredAt,
+		CommittedAt: committedAt,
+	}}
+
+	rec := httptest.NewRecorder()
+	newTestRouter(svc).ServeHTTP(rec, httptest.NewRequest(
+		http.MethodGet,
+		"/repositories/7/commits/"+testSHA,
+		nil,
+	))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if svc.getCommitRepoID != 7 || svc.getCommitSHA != testSHA {
+		t.Errorf("GetCommit args = %d, %q", svc.getCommitRepoID, svc.getCommitSHA)
+	}
+
+	var body struct {
+		Data CommitDetails `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	got := body.Data
+	if got.SHA != testSHA || len(got.Parents) != 1 || got.Parents[0] != parentSHA ||
+		got.Message != svc.commitDetails.Message || got.Author.Name != "Alex Developer" || got.Author.Email != "alex@example.com" ||
+		!got.AuthoredAt.Equal(authoredAt) || !got.CommittedAt.Equal(committedAt) {
+		t.Errorf("commit = %+v", got)
+	}
+}
+
+func TestGetRootCommitParentsIsArray(t *testing.T) {
+	rec := httptest.NewRecorder()
+	newTestRouter(&fakeManager{commitDetails: domain.CommitDetails{
+		SHA:     testSHA,
+		Parents: []string{},
+	}}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/repositories/7/commits/"+testSHA, nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"parents":[]`) {
+		t.Errorf("parents must be an array: %s", rec.Body.String())
+	}
+}
+
+func TestGetCommitErrors(t *testing.T) {
+	cases := []struct {
+		name       string
+		target     string
+		serviceErr error
+		wantStatus int
+		wantCode   string
+	}{
+		{"bad id", "/repositories/nope/commits/" + testSHA, nil, http.StatusBadRequest, "invalid_request"},
+		{"invalid sha", "/repositories/7/commits/nope", reposervice.ErrInvalidCommitSHA, http.StatusBadRequest, "invalid_request"},
+		{"repository not found", "/repositories/7/commits/" + testSHA, reposervice.ErrRepositoryNotFound, http.StatusNotFound, "repository_not_found"},
+		{"commit not found", "/repositories/7/commits/" + testSHA, reposervice.ErrCommitNotFound, http.StatusNotFound, "commit_not_found"},
+		{"internal", "/repositories/7/commits/" + testSHA, io.ErrUnexpectedEOF, http.StatusInternalServerError, "internal_error"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			newTestRouter(&fakeManager{getCommitErr: tc.serviceErr}).ServeHTTP(
 				rec,
 				httptest.NewRequest(http.MethodGet, tc.target, nil),
 			)

@@ -225,6 +225,38 @@ func TestParseCommitSummaries(t *testing.T) {
 	}
 }
 
+func TestParseCommitDetails(t *testing.T) {
+	sha := strings.Repeat("a", 40)
+	firstParent := strings.Repeat("b", 40)
+	secondParent := strings.Repeat("c", 40)
+	out := []byte(sha + "\x00" + firstParent + " " + secondParent +
+		"\x00Alex Developer\x00alex@example.com" +
+		"\x002026-07-30T11:40:00-07:00\x002026-07-30T11:42:00-07:00" +
+		"\x00Update server configuration\n\nKeep the full message.\x00")
+
+	got, err := parseCommitDetails(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SHA != sha || len(got.Parents) != 2 || got.Parents[0] != firstParent || got.Parents[1] != secondParent {
+		t.Errorf("commit identity = %+v", got)
+	}
+	if got.Message != "Update server configuration\n\nKeep the full message." ||
+		got.Author.Name != "Alex Developer" || got.Author.Email != "alex@example.com" {
+		t.Errorf("commit metadata = %+v", got)
+	}
+	if want := "2026-07-30T18:40:00Z"; got.AuthoredAt.Format(time.RFC3339) != want {
+		t.Errorf("authoredAt = %s, want %s", got.AuthoredAt.Format(time.RFC3339), want)
+	}
+	if want := "2026-07-30T18:42:00Z"; got.CommittedAt.Format(time.RFC3339) != want {
+		t.Errorf("committedAt = %s, want %s", got.CommittedAt.Format(time.RFC3339), want)
+	}
+
+	if _, err := parseCommitDetails([]byte(sha + "\x00missing fields\x00")); err == nil {
+		t.Error("malformed output accepted")
+	}
+}
+
 func TestParseDiffOutput(t *testing.T) {
 	oldSHA := strings.Repeat("a", 40)
 	newSHA := strings.Repeat("b", 40)
@@ -487,6 +519,91 @@ func TestListTree(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestGetCommit(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	root := t.TempDir()
+	l, err := NewLocal(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	const repo = "1/test.git"
+
+	if err := l.InitBare(ctx, repo); err != nil {
+		t.Fatal(err)
+	}
+	wt := filepath.Join(t.TempDir(), "wt")
+	gitRun(t, ".", "clone", filepath.Join(root, repo), wt)
+
+	if err := os.WriteFile(filepath.Join(wt, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, wt, "add", "README.md")
+	gitRun(t, wt, "commit", "-m", "Initial commit", "-m", "With a body.")
+	rootSHA := gitOut(t, wt, "rev-parse", "HEAD")
+	baseBranch := gitOut(t, wt, "symbolic-ref", "--short", "HEAD")
+	gitRun(t, wt, "push", "origin", "HEAD:refs/heads/main")
+
+	rootCommit, err := l.GetCommit(ctx, repo, rootSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rootCommit.SHA != rootSHA || len(rootCommit.Parents) != 0 || rootCommit.Parents == nil {
+		t.Errorf("root commit = %+v", rootCommit)
+	}
+	if rootCommit.Message != "Initial commit\n\nWith a body." ||
+		rootCommit.Author.Name != "t" || rootCommit.Author.Email != "t@t" ||
+		rootCommit.AuthoredAt.IsZero() || rootCommit.CommittedAt.IsZero() {
+		t.Errorf("root commit metadata = %+v", rootCommit)
+	}
+
+	gitRun(t, wt, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(wt, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, wt, "add", "feature.txt")
+	gitRun(t, wt, "commit", "-m", "feature")
+	featureSHA := gitOut(t, wt, "rev-parse", "HEAD")
+
+	gitRun(t, wt, "checkout", baseBranch)
+	if err := os.WriteFile(filepath.Join(wt, "main.txt"), []byte("main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, wt, "add", "main.txt")
+	gitRun(t, wt, "commit", "-m", "main")
+	mainSHA := gitOut(t, wt, "rev-parse", "HEAD")
+	gitRun(t, wt, "merge", "--no-ff", "feature", "-m", "Merge feature")
+	mergeSHA := gitOut(t, wt, "rev-parse", "HEAD")
+	gitRun(t, wt, "push", "origin", "HEAD:refs/heads/main")
+
+	mergeCommit, err := l.GetCommit(ctx, repo, mergeSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mergeCommit.Parents) != 2 || mergeCommit.Parents[0] != mainSHA || mergeCommit.Parents[1] != featureSHA {
+		t.Errorf("merge parents = %v, want [%s %s]", mergeCommit.Parents, mainSHA, featureSHA)
+	}
+
+	blobSHA := gitOut(t, wt, "rev-parse", "HEAD:README.md")
+	for _, tc := range []struct {
+		name, sha string
+		want      error
+	}{
+		{"invalid sha", "main", ErrInvalidRev},
+		{"missing commit", strings.Repeat("f", 40), ErrRevNotFound},
+		{"blob is not a commit", blobSHA, ErrRevNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := l.GetCommit(ctx, repo, tc.sha); !errors.Is(err, tc.want) {
+				t.Errorf("GetCommit(%q) = %v, want %v", tc.sha, err, tc.want)
+			}
+		})
+	}
 }
 
 func TestDiff(t *testing.T) {

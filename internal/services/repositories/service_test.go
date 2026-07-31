@@ -77,6 +77,10 @@ type fakeStorage struct {
 	diffResult gitbackend.DiffResult
 	diffErr    error
 
+	commitDetails gitbackend.CommitDetails
+	commitErr     error
+	commitFn      func(storagePath, sha string)
+
 	blobInfo    gitbackend.BlobInfo
 	blobStatErr error
 	blobContent string
@@ -108,6 +112,13 @@ func (f fakeStorage) ListTree(ctx context.Context, storagePath, rev, treePath st
 
 func (f fakeStorage) Diff(ctx context.Context, storagePath, base, head string) (gitbackend.DiffResult, error) {
 	return f.diffResult, f.diffErr
+}
+
+func (f fakeStorage) GetCommit(ctx context.Context, storagePath, sha string) (gitbackend.CommitDetails, error) {
+	if f.commitFn != nil {
+		f.commitFn(storagePath, sha)
+	}
+	return f.commitDetails, f.commitErr
 }
 
 func (f fakeStorage) ArchiveTar(ctx context.Context, storagePath, rev string, out io.Writer) (string, error) {
@@ -343,6 +354,70 @@ func TestDiff(t *testing.T) {
 			)
 			if _, err := svc.Diff(context.Background(), row.ID, "base", "head"); !errors.Is(err, tc.want) {
 				t.Errorf("Diff error = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestGetCommit(t *testing.T) {
+	row := gen.Repository{ID: 7, RepositoryName: "myrepo", StoragePath: "7/myrepo.git", Visibility: "private"}
+	authoredAt := time.Date(2026, 7, 30, 18, 40, 0, 0, time.UTC)
+	committedAt := time.Date(2026, 7, 30, 18, 42, 0, 0, time.UTC)
+	parentSHA := strings.Repeat("b", 40)
+	details := gitbackend.CommitDetails{
+		SHA:         testSHA,
+		Parents:     []string{parentSHA},
+		Message:     "Update server configuration",
+		Author:      gitbackend.Identity{Name: "Alex Developer", Email: "alex@example.com"},
+		AuthoredAt:  authoredAt,
+		CommittedAt: committedAt,
+	}
+
+	var called bool
+	storage := fakeStorage{
+		commitDetails: details,
+		commitFn: func(storagePath, sha string) {
+			called = true
+			if storagePath != row.StoragePath || sha != testSHA {
+				t.Errorf("GetCommit(%q, %q)", storagePath, sha)
+			}
+		},
+	}
+	svc := NewService(zap.NewNop(), fakeRegistry{repo: row}, storage, nil, nil)
+	got, err := svc.GetCommit(context.Background(), row.ID, testSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("GetCommit was not called")
+	}
+	if got.SHA != testSHA || len(got.Parents) != 1 || got.Parents[0] != parentSHA ||
+		got.Message != details.Message || got.Author.Name != details.Author.Name || got.Author.Email != details.Author.Email ||
+		!got.AuthoredAt.Equal(authoredAt) || !got.CommittedAt.Equal(committedAt) {
+		t.Errorf("commit = %+v", got)
+	}
+
+	for _, tc := range []struct {
+		name      string
+		regErr    error
+		commitErr error
+		want      error
+	}{
+		{"repository not found", sql.ErrNoRows, nil, ErrRepositoryNotFound},
+		{"invalid sha", nil, gitbackend.ErrInvalidRev, ErrInvalidCommitSHA},
+		{"commit not found", nil, gitbackend.ErrRevNotFound, ErrCommitNotFound},
+		{"backend failure", nil, io.ErrUnexpectedEOF, io.ErrUnexpectedEOF},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := NewService(
+				zap.NewNop(),
+				fakeRegistry{repo: row, err: tc.regErr},
+				fakeStorage{commitErr: tc.commitErr},
+				nil,
+				nil,
+			)
+			if _, err := svc.GetCommit(context.Background(), row.ID, testSHA); !errors.Is(err, tc.want) {
+				t.Errorf("GetCommit error = %v, want %v", err, tc.want)
 			}
 		})
 	}

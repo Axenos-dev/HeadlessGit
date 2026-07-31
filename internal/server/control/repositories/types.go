@@ -187,6 +187,29 @@ type CommitAuthor struct {
 	Email string `json:"email"`
 }
 
+type CommitDetails struct {
+	SHA         string       `json:"sha"`
+	Parents     []string     `json:"parents"`
+	Message     string       `json:"message"`
+	Author      CommitAuthor `json:"author"`
+	AuthoredAt  time.Time    `json:"authoredAt"`
+	CommittedAt time.Time    `json:"committedAt"`
+}
+
+func newCommitDetails(commit domain.CommitDetails) CommitDetails {
+	return CommitDetails{
+		SHA:     commit.SHA,
+		Parents: commit.Parents,
+		Message: commit.Message,
+		Author: CommitAuthor{
+			Name:  commit.Author.Name,
+			Email: commit.Author.Email,
+		},
+		AuthoredAt:  commit.AuthoredAt,
+		CommittedAt: commit.CommittedAt,
+	}
+}
+
 type CommitOperation struct {
 	Op         string `json:"op"` // "put" | "delete"
 	Path       string `json:"path"`

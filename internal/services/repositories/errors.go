@@ -13,6 +13,9 @@ var (
 	ErrInvalidRef   = errors.New("invalid ref")
 	ErrInvalidPath  = errors.New("invalid path")
 
+	ErrCommitNotFound   = errors.New("commit not found")
+	ErrInvalidCommitSHA = errors.New("invalid commit sha")
+
 	ErrUnsupportedFormat    = errors.New("unsupported archive format")
 	ErrInvalidArchivePrefix = errors.New("invalid archive prefix")
 	ErrLFSNotEnabled        = errors.New("lfs is not enabled")
