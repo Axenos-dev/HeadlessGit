@@ -512,9 +512,7 @@ func (l *Local) ApplyCommit(ctx context.Context, storagePath string, spec Commit
 		oldSHA = zeroSHA
 	}
 
-	// one batch-check verifies every referenced blob (and captures sizes for
-	// the clean filter) plus the existence of every delete target
-	sizes, err := l.verifyCommitInputs(ctx, dir, oldSHA, unborn, ops)
+	ops, sizes, err := l.verifyCommitInputs(ctx, dir, oldSHA, unborn, ops)
 	if err != nil {
 		return RefChange{}, err
 	}
@@ -644,8 +642,13 @@ func validateCommitOps(ops []CommitOp) ([]CommitOp, error) {
 				return nil, fmt.Errorf("%w: control character in path", ErrInvalidOps)
 			}
 		}
-		if seen[p] {
-			return nil, fmt.Errorf("%w: duplicate path %q", ErrInvalidOps, p)
+		for other := range seen {
+			if p == other {
+				return nil, fmt.Errorf("%w: duplicate path %q", ErrInvalidOps, p)
+			}
+			if strings.HasPrefix(p, other+"/") || strings.HasPrefix(other, p+"/") {
+				return nil, fmt.Errorf("%w: overlapping paths %q and %q", ErrInvalidOps, other, p)
+			}
 		}
 		seen[p] = true
 
@@ -668,9 +671,7 @@ func validateCommitOps(ops []CommitOp) ([]CommitOp, error) {
 }
 
 // runs one cat-file --batch-check over every put blob sha (returning their sizes)
-// and every delete target
-// so unknown blobs and missing delete paths fail
-func (l *Local) verifyCommitInputs(ctx context.Context, dir, oldSHA string, unborn bool, ops []CommitOp) (map[string]int64, error) {
+func (l *Local) verifyCommitInputs(ctx context.Context, dir, oldSHA string, unborn bool, ops []CommitOp) ([]CommitOp, map[string]int64, error) {
 	var in strings.Builder
 	type query struct {
 		op    CommitOp
@@ -680,7 +681,7 @@ func (l *Local) verifyCommitInputs(ctx context.Context, dir, oldSHA string, unbo
 	for _, op := range ops {
 		if op.Delete {
 			if unborn {
-				return nil, fmt.Errorf("%w: %q", ErrPathNotFound, op.Path)
+				return nil, nil, fmt.Errorf("%w: %q", ErrPathNotFound, op.Path)
 			}
 			in.WriteString(oldSHA + ":" + op.Path + "\n")
 		} else {
@@ -691,14 +692,15 @@ func (l *Local) verifyCommitInputs(ctx context.Context, dir, oldSHA string, unbo
 
 	out, err := l.runGit(ctx, dir, nil, strings.NewReader(in.String()), "cat-file", "--batch-check")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	lines := strings.Split(out, "\n")
 	if len(lines) != len(queries) {
-		return nil, fmt.Errorf("unexpected batch-check output: %d lines for %d queries", len(lines), len(queries))
+		return nil, nil, fmt.Errorf("unexpected batch-check output: %d lines for %d queries", len(lines), len(queries))
 	}
 
+	expanded := make([]CommitOp, 0, len(ops))
 	sizes := make(map[string]int64)
 	for i, line := range lines {
 		q := queries[i]
@@ -706,28 +708,59 @@ func (l *Local) verifyCommitInputs(ctx context.Context, dir, oldSHA string, unbo
 		switch {
 		case len(fields) >= 2 && fields[len(fields)-1] == "missing":
 			if q.isPut {
-				return nil, fmt.Errorf("%w: %s", ErrUnknownBlob, q.op.BlobSHA)
+				return nil, nil, fmt.Errorf("%w: %s", ErrUnknownBlob, q.op.BlobSHA)
 			}
-			return nil, fmt.Errorf("%w: %q", ErrPathNotFound, q.op.Path)
+			return nil, nil, fmt.Errorf("%w: %q", ErrPathNotFound, q.op.Path)
 		case len(fields) == 3 && fields[1] == "blob":
 			size, err := strconv.ParseInt(fields[2], 10, 64)
 			if err != nil {
-				return nil, fmt.Errorf("malformed batch-check size %q: %w", fields[2], err)
+				return nil, nil, fmt.Errorf("malformed batch-check size %q: %w", fields[2], err)
 			}
 			if q.isPut {
 				sizes[q.op.BlobSHA] = size
 			}
+			expanded = append(expanded, q.op)
+		case len(fields) == 3 && !q.isPut && fields[1] == "tree":
+			deletes, err := l.expandTreeDelete(ctx, dir, q.op.Path, fields[0])
+			if err != nil {
+				return nil, nil, err
+			}
+			expanded = append(expanded, deletes...)
+		case len(fields) == 3 && !q.isPut && fields[1] == "commit":
+			expanded = append(expanded, q.op)
 		case len(fields) == 3:
 			// a delete target resolving to a tree or a put sha naming a non-blob
 			if q.isPut {
-				return nil, fmt.Errorf("%w: %s is a %s", ErrUnknownBlob, q.op.BlobSHA, fields[1])
+				return nil, nil, fmt.Errorf("%w: %s is a %s", ErrUnknownBlob, q.op.BlobSHA, fields[1])
 			}
-			return nil, fmt.Errorf("%w: %q is a %s", ErrNotABlob, q.op.Path, fields[1])
+			return nil, nil, fmt.Errorf("%w: cannot delete %q of type %s", ErrInvalidOps, q.op.Path, fields[1])
 		default:
-			return nil, fmt.Errorf("malformed batch-check line: %q", line)
+			return nil, nil, fmt.Errorf("malformed batch-check line: %q", line)
 		}
 	}
-	return sizes, nil
+	return expanded, sizes, nil
+}
+
+// recursive path listing for given directory, using "ls-tree -r"
+func (l *Local) expandTreeDelete(ctx context.Context, dir, treePath, treeSHA string) ([]CommitOp, error) {
+	out, err := l.runGitBytes(ctx, dir, nil, nil,
+		"ls-tree", "-r", "-z", "--name-only", "--end-of-options", treeSHA,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list delete tree %q: %w", treePath, err)
+	}
+
+	var deletes []CommitOp
+	for name := range bytes.SplitSeq(out, []byte{0}) {
+		if len(name) == 0 {
+			continue
+		}
+		deletes = append(deletes, CommitOp{
+			Delete: true,
+			Path:   treePath + "/" + string(name),
+		})
+	}
+	return deletes, nil
 }
 
 // separates .gitattributes changes from regular file changes

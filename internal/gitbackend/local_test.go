@@ -1029,6 +1029,7 @@ func TestApplyCommit(t *testing.T) {
 	first, err := l.ApplyCommit(ctx, repo, spec(zeroSHA, "init"), []CommitOp{
 		{Path: "README.md", BlobSHA: hello},
 		{Path: "src/run.sh", BlobSHA: script, Mode: "100755"},
+		{Path: "src/config/default.txt", BlobSHA: hello},
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -1058,11 +1059,12 @@ func TestApplyCommit(t *testing.T) {
 		t.Errorf("log = %q", logOut)
 	}
 
-	// second commit: CAS on the known head, update one file, delete another
+	// second commit: CAS on the known head, update one file, and delete a
+	// directory with nested tracked content as one natural path operation
 	v2 := blob("hello v2\n")
 	second, err := l.ApplyCommit(ctx, repo, spec(first.NewSHA, "update"), []CommitOp{
 		{Path: "README.md", BlobSHA: v2},
-		{Path: "src/run.sh", Delete: true},
+		{Path: "src", Delete: true},
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -1075,8 +1077,8 @@ func TestApplyCommit(t *testing.T) {
 	if readme, _ := os.ReadFile(filepath.Join(wt, "README.md")); string(readme) != "hello v2\n" {
 		t.Errorf("README.md after pull = %q", readme)
 	}
-	if _, err := os.Stat(filepath.Join(wt, "src", "run.sh")); !os.IsNotExist(err) {
-		t.Errorf("run.sh should be deleted, stat err = %v", err)
+	if _, err := os.Stat(filepath.Join(wt, "src")); !os.IsNotExist(err) {
+		t.Errorf("src directory should be deleted recursively, stat err = %v", err)
 	}
 
 	t.Run("errors", func(t *testing.T) {
@@ -1095,6 +1097,7 @@ func TestApplyCommit(t *testing.T) {
 			{"hostile branch", CommitSpec{Branch: "--help", Author: author, Message: "x"}, []CommitOp{{Path: "a", BlobSHA: hello}}, ErrInvalidBranch},
 			{"no ops", spec("", "x"), nil, ErrInvalidOps},
 			{"duplicate path", spec("", "x"), []CommitOp{{Path: "a", BlobSHA: hello}, {Path: "a", Delete: true}}, ErrInvalidOps},
+			{"overlapping paths", spec("", "x"), []CommitOp{{Path: "README.md", Delete: true}, {Path: "README.md/child", BlobSHA: hello}}, ErrInvalidOps},
 			{"bad mode", spec("", "x"), []CommitOp{{Path: "a", BlobSHA: hello, Mode: "120000"}}, ErrInvalidOps},
 			{"missing author", CommitSpec{Branch: "main", Author: Identity{}, Message: "x"}, []CommitOp{{Path: "a", BlobSHA: hello}}, ErrInvalidOps},
 			{"missing message", CommitSpec{Branch: "main", Author: author}, []CommitOp{{Path: "a", BlobSHA: hello}}, ErrInvalidOps},
