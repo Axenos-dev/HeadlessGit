@@ -219,7 +219,7 @@ type CommitOperation struct {
 	Op         string           `json:"op"` // "put" | "delete"
 	Path       string           `json:"path"`
 	Lfs        *CommitObjectLfs `json:"lfs,omitempty"`        // puts only, from POST .../lfs/objects/batch
-	BlobSHA    *string          `json:"object,omitempty"`     // puts only, from POST /blobs
+	BlobSHA    *string          `json:"blobSha,omitempty"`    // puts only, from POST /blobs
 	Executable bool             `json:"executable,omitempty"` // puts only
 }
 
@@ -252,11 +252,11 @@ func (r CreateCommitRequest) Validate() error {
 		switch op.Op {
 		case "put":
 			if (op.BlobSHA == nil) == (op.Lfs == nil) {
-				return fmt.Errorf("operations[%d]: exactly one of object or lfs is required for put", i)
+				return fmt.Errorf("operations[%d]: exactly one of blobSha or lfs is required for put", i)
 			}
 			if op.BlobSHA != nil {
 				if *op.BlobSHA == "" {
-					return fmt.Errorf("operations[%d]: object is required for put", i)
+					return fmt.Errorf("operations[%d]: blobSha is required for put", i)
 				}
 			} else {
 				if op.Lfs.OID == "" {
@@ -268,7 +268,7 @@ func (r CreateCommitRequest) Validate() error {
 			}
 		case "delete":
 			if op.BlobSHA != nil || op.Lfs != nil || op.Executable {
-				return fmt.Errorf("operations[%d]: delete takes no object, lfs, or executable", i)
+				return fmt.Errorf("operations[%d]: delete takes no blobSha, lfs, or executable", i)
 			}
 		default:
 			return fmt.Errorf("operations[%d]: op must be 'put' or 'delete'", i)

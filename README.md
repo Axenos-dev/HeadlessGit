@@ -159,7 +159,7 @@ Every request requires `Authorization: Bearer <ADMIN_TOKEN>`. Responses are enve
 | `GET`  | `/repositories/{id}/blob?ref=&path=&lfs=`                   | —           | Stream one file's raw content.                                         |
 | `GET`  | `/repositories/{id}/archive?ref=&format=&lfs=&prefix=`      | —           | Stream a `zip` (default) or `tar.gz` archive of the tree.              |
 | `POST` | `/repositories/{id}/blobs`                                  | _raw bytes_ | Upload content into the repo's object database; returns `{sha, size}`. |
-| `POST` | `/repositories/{id}/commits`                                | JSON        | Create a commit on a branch from uploaded blobs.                       |
+| `POST` | `/repositories/{id}/commits`                                | JSON        | Create a commit from Git blobs or verified LFS objects.                |
 
 ### Reading a repository
 
@@ -290,6 +290,27 @@ curl -H "Authorization: Bearer $TOKEN" -X POST \
 # -> 201 {"data": {"branch": "main", "commitSha": "...", "before": "9fb03799..."}}
 ```
 
+A `put` operation takes exactly one content source:
+
+```json
+{ "op": "put", "path": "README.md", "blobSha": "<sha from POST /blobs>" }
+```
+
+or a repository-scoped LFS object already uploaded and verified through the LFS Batch API:
+
+```json
+{
+  "op": "put",
+  "path": "models/model.bin",
+  "lfs": {
+    "oid": "...",
+    "size": 734003200
+  }
+}
+```
+
+`blobSha` and `lfs` are mutually exclusive. `executable` is optional for puts. A `delete` operation takes only `op` and `path`.
+
 `expectedHeadSha` controls concurrency:
 
 | Value            | Meaning                                                                                  |
@@ -300,7 +321,7 @@ curl -H "Authorization: Bearer $TOKEN" -X POST \
 
 Content is deduplicated by sha, so retrying an upload is free and a lost `409` race can be retried without re-uploading anything. Blobs that never get committed are garbage-collected after a grace period (see `REPO_GC_INTERVAL`).
 
-**LFS is automatic**, the same way it is for a git client: if the repo's `.gitattributes` marks a path as `filter=lfs` (including attributes added in the very same commit), the server stores the content as an LFS object and commits a pointer instead. Content that already _is_ a valid pointer passes through untouched, so pre-uploading big files via the LFS API (presigned, straight to the bucket) and committing the pointer yourself remains the efficient path for large objects.
+**LFS is automatic**, the same way it is for a git client: if the repo's `.gitattributes` marks a path as `filter=lfs` (including attributes added in the very same commit), the server stores an uploaded Git object's content in LFS and commits a pointer instead. For large product uploads, use the LFS Batch API first and pass its verified `{oid, size}` as the operation's `lfs` source; HeadlessGit creates the pointer without putting the large file in the Git ODB. An explicit LFS source is rejected when the path is not LFS-tracked.
 
 API commits dispatch the same signed [webhooks](#webhooks) as a `git push` — consumers can't tell them apart.
 

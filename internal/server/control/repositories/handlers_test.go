@@ -849,7 +849,7 @@ func validCommitBody() string {
 		"expectedHeadSha": "` + strings.Repeat("a", 40) + `",
 		"pusherId": 42,
 		"operations": [
-			{"op": "put", "path": "run.sh", "object": "` + strings.Repeat("b", 40) + `", "executable": true},
+			{"op": "put", "path": "run.sh", "blobSha": "` + strings.Repeat("b", 40) + `", "executable": true},
 			{"op": "delete", "path": "old.txt"}
 		]
 	}`
@@ -901,9 +901,9 @@ func TestCreateCommitValidation(t *testing.T) {
 		{"no operations", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[]}`},
 		{"bad op kind", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"move","path":"a"}]}`},
 		{"put without object", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"put","path":"a"}]}`},
-		{"put with both objects", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"put","path":"a","object":"abc","lfs":{"oid":"def","size":1}}]}`},
+		{"put with both sources", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"put","path":"a","blobSha":"abc","lfs":{"oid":"def","size":1}}]}`},
 		{"put with zero lfs size", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"put","path":"a","lfs":{"oid":"def","size":0}}]}`},
-		{"delete with object", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"delete","path":"a","object":"abc"}]}`},
+		{"delete with blobSha", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"delete","path":"a","blobSha":"abc"}]}`},
 		{"delete with lfs", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"delete","path":"a","lfs":{"oid":"def","size":1}}]}`},
 		{"missing path", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"delete"}]}`},
 	}
