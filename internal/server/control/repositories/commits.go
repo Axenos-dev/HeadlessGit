@@ -57,6 +57,13 @@ func (h *handlers) createCommit(w http.ResponseWriter, r *http.Request) error {
 			BlobSHA:    op.BlobSHA,
 			Executable: op.Executable,
 		}
+
+		if op.Lfs != nil {
+			ops[i].Lfs = &domain.CommitFileLfsObject{
+				OID:  op.Lfs.OID,
+				Size: op.Lfs.Size,
+			}
+		}
 	}
 
 	result, err := h.service.Commit(r.Context(), id, domain.CommitRequest{
@@ -78,6 +85,8 @@ func (h *handlers) createCommit(w http.ResponseWriter, r *http.Request) error {
 		return response.NewError(http.StatusConflict, response.CodeHeadMismatch, "branch head does not match expectedHeadSha")
 	case errors.Is(err, reposervice.ErrUnknownBlob):
 		return response.NewError(http.StatusUnprocessableEntity, response.CodeUnknownBlob, "referenced blob not found, upload it first")
+	case errors.Is(err, reposervice.ErrLFSObjectNotFound):
+		return response.NewError(http.StatusUnprocessableEntity, response.CodeLFSObjectNotFound, "referenced lfs object not found or not verified, upload it first")
 	case errors.Is(err, reposervice.ErrNothingToCommit):
 		return response.NewError(http.StatusUnprocessableEntity, response.CodeNothingToCommit, "operations produce no change")
 	case errors.Is(err, reposervice.ErrPathBlocked):

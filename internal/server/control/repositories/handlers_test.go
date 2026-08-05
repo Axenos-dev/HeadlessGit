@@ -883,7 +883,7 @@ func TestCreateCommit(t *testing.T) {
 		t.Errorf("service request = %+v", req)
 	}
 	if len(req.Operations) != 2 ||
-		req.Operations[0].Delete || !req.Operations[0].Executable || req.Operations[0].BlobSHA != strings.Repeat("b", 40) ||
+		req.Operations[0].Delete || !req.Operations[0].Executable || req.Operations[0].BlobSHA == nil || *req.Operations[0].BlobSHA != strings.Repeat("b", 40) ||
 		!req.Operations[1].Delete || req.Operations[1].Path != "old.txt" {
 		t.Errorf("service operations = %+v", req.Operations)
 	}
@@ -900,8 +900,11 @@ func TestCreateCommitValidation(t *testing.T) {
 		{"missing author", `{"branch":"main","message":"x","operations":[{"op":"delete","path":"a"}]}`},
 		{"no operations", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[]}`},
 		{"bad op kind", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"move","path":"a"}]}`},
-		{"put without blobSha", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"put","path":"a"}]}`},
+		{"put without object", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"put","path":"a"}]}`},
+		{"put with both sources", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"put","path":"a","blobSha":"abc","lfs":{"oid":"def","size":1}}]}`},
+		{"put with zero lfs size", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"put","path":"a","lfs":{"oid":"def","size":0}}]}`},
 		{"delete with blobSha", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"delete","path":"a","blobSha":"abc"}]}`},
+		{"delete with lfs", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"delete","path":"a","lfs":{"oid":"def","size":1}}]}`},
 		{"missing path", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"delete"}]}`},
 	}
 
@@ -933,6 +936,7 @@ func TestCreateCommitErrors(t *testing.T) {
 		{"delete target missing", reposervice.ErrPathNotFound, http.StatusNotFound, "path_not_found"},
 		{"head mismatch", reposervice.ErrHeadMismatch, http.StatusConflict, "head_mismatch"},
 		{"unknown blob", reposervice.ErrUnknownBlob, http.StatusUnprocessableEntity, "unknown_blob"},
+		{"unknown lfs object", reposervice.ErrLFSObjectNotFound, http.StatusUnprocessableEntity, "lfs_object_not_found"},
 		{"nothing to commit", reposervice.ErrNothingToCommit, http.StatusUnprocessableEntity, "nothing_to_commit"},
 		{"path blocked", reposervice.ErrPathBlocked, http.StatusUnprocessableEntity, "path_blocked"},
 		{"delete target is a dir", reposervice.ErrNotAFile, http.StatusBadRequest, "invalid_request"},

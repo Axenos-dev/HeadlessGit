@@ -17,6 +17,7 @@ import (
 	"github.com/Axenos-dev/HeadlessGit/internal/db/gen"
 	"github.com/Axenos-dev/HeadlessGit/internal/domain"
 	"github.com/Axenos-dev/HeadlessGit/internal/gitbackend"
+	lfsservice "github.com/Axenos-dev/HeadlessGit/internal/services/lfs"
 	"go.uber.org/zap"
 )
 
@@ -527,10 +528,22 @@ func (s *Service) Commit(ctx context.Context, repositoryID int64, req domain.Com
 			mode = "100755"
 		}
 		ops[i] = gitbackend.CommitOp{
-			Delete:  op.Delete,
-			Path:    op.Path,
-			BlobSHA: op.BlobSHA,
-			Mode:    mode,
+			Delete: op.Delete,
+			Path:   op.Path,
+			Mode:   mode,
+		}
+		if op.BlobSHA != nil {
+			ops[i].BlobSHA = *op.BlobSHA
+		}
+
+		if op.Lfs != nil {
+			if err := s.validateLfsObject(ctx, repo, *op.Lfs); err != nil {
+				return domain.CommitResult{}, err
+			}
+			ops[i].Lfs = &gitbackend.LfsObject{
+				OID:  op.Lfs.OID,
+				Size: op.Lfs.Size,
+			}
 		}
 	}
 
@@ -555,7 +568,7 @@ func (s *Service) Commit(ctx context.Context, repositoryID int64, req domain.Com
 	switch {
 	case errors.Is(err, gitbackend.ErrInvalidBranch):
 		return domain.CommitResult{}, ErrInvalidBranch
-	case errors.Is(err, gitbackend.ErrInvalidOps), errors.Is(err, gitbackend.ErrInvalidPath), errors.Is(err, gitbackend.ErrInvalidRev):
+	case errors.Is(err, gitbackend.ErrInvalidOps), errors.Is(err, gitbackend.ErrInvalidPath), errors.Is(err, gitbackend.ErrInvalidRev), errors.Is(err, gitbackend.ErrLFSNotTracked):
 		return domain.CommitResult{}, fmt.Errorf("%w: %s", ErrInvalidCommitOps, err)
 	case errors.Is(err, gitbackend.ErrRevNotFound):
 		return domain.CommitResult{}, ErrRefNotFound
@@ -582,6 +595,30 @@ func (s *Service) Commit(ctx context.Context, repositoryID int64, req domain.Com
 		CommitSHA: change.NewSHA,
 		Before:    change.OldSHA,
 	}, nil
+}
+
+// validates the LFS objects, checks if it exists and has a right size
+func (s *Service) validateLfsObject(ctx context.Context, repo domain.Repository, lfsObject domain.CommitFileLfsObject) error {
+	if s.lfs == nil {
+		return ErrLFSNotEnabled
+	}
+
+	// verify if it exists
+	object, size, err := s.lfs.GetObject(ctx, repo, lfsObject.OID)
+	switch {
+	case errors.Is(err, lfsservice.ErrObjectNotFound):
+		return ErrLFSObjectNotFound
+	case err != nil:
+		return err
+	}
+	defer object.Close()
+
+	// verify its size
+	if size != lfsObject.Size {
+		return fmt.Errorf("%w: lfs object %s has size %d, requested %d", ErrInvalidCommitOps, lfsObject.OID, size, lfsObject.Size)
+	}
+
+	return nil
 }
 
 func (s *Service) lfsCleanFunc(ctx context.Context, repo domain.Repository, pusherID int64) gitbackend.CleanFunc {

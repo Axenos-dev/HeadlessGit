@@ -16,10 +16,16 @@ type CommitDetails struct {
 	CommittedAt time.Time
 }
 
+type CommitFileLfsObject struct {
+	OID  string
+	Size int64
+}
+
 type CommitFileOp struct {
 	Delete     bool
 	Path       string
-	BlobSHA    string
+	BlobSHA    *string
+	Lfs        *CommitFileLfsObject
 	Executable bool
 }
 

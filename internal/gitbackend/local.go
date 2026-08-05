@@ -512,9 +512,12 @@ func (l *Local) ApplyCommit(ctx context.Context, storagePath string, spec Commit
 		oldSHA = zeroSHA
 	}
 
-	// one batch-check verifies every referenced blob (and captures sizes for
-	// the clean filter) plus the existence of every delete target
-	sizes, err := l.verifyCommitInputs(ctx, dir, oldSHA, unborn, ops)
+	ops, err = l.materializeLFSPointers(ctx, dir, ops)
+	if err != nil {
+		return RefChange{}, err
+	}
+
+	ops, sizes, err := l.verifyCommitInputs(ctx, dir, oldSHA, unborn, ops)
 	if err != nil {
 		return RefChange{}, err
 	}
@@ -644,15 +647,36 @@ func validateCommitOps(ops []CommitOp) ([]CommitOp, error) {
 				return nil, fmt.Errorf("%w: control character in path", ErrInvalidOps)
 			}
 		}
-		if seen[p] {
-			return nil, fmt.Errorf("%w: duplicate path %q", ErrInvalidOps, p)
+		for other := range seen {
+			if p == other {
+				return nil, fmt.Errorf("%w: duplicate path %q", ErrInvalidOps, p)
+			}
+			if strings.HasPrefix(p, other+"/") || strings.HasPrefix(other, p+"/") {
+				return nil, fmt.Errorf("%w: overlapping paths %q and %q", ErrInvalidOps, other, p)
+			}
 		}
 		seen[p] = true
 
 		op.Path = p
-		if !op.Delete {
-			if !isHexSHA(op.BlobSHA) {
+		if op.Delete {
+			if op.BlobSHA != "" || op.Lfs != nil {
+				return nil, fmt.Errorf("%w: delete %q takes no object", ErrInvalidOps, p)
+			}
+		} else {
+			hasBlob := op.BlobSHA != ""
+			hasLFS := op.Lfs != nil
+
+			if hasBlob == hasLFS {
+				return nil, fmt.Errorf("%w: put %q requires exactly one of blob sha or lfs object", ErrInvalidOps, p)
+			}
+			if hasBlob && !isHexSHA(op.BlobSHA) {
 				return nil, fmt.Errorf("%w: blob sha %q", ErrInvalidOps, op.BlobSHA)
+			}
+			if hasLFS && (!isLFSOID(op.Lfs.OID) || op.Lfs.Size < 0) {
+				return nil, fmt.Errorf("%w: invalid lfs object for %q", ErrInvalidOps, p)
+			}
+			if hasLFS && isAttributesPath(p) {
+				return nil, fmt.Errorf("%w: attributes file %q cannot be an lfs object", ErrInvalidOps, p)
 			}
 			switch op.Mode {
 			case "":
@@ -667,10 +691,35 @@ func validateCommitOps(ops []CommitOp) ([]CommitOp, error) {
 	return out, nil
 }
 
+// transforms lfs objects to its pointers
+func (l *Local) materializeLFSPointers(ctx context.Context, dir string, ops []CommitOp) ([]CommitOp, error) {
+	for i := range ops {
+		if ops[i].Lfs == nil {
+			continue
+		}
+
+		pointer := fmt.Sprintf(
+			"version https://git-lfs.github.com/spec/v1\noid sha256:%s\nsize %d\n",
+			ops[i].Lfs.OID,
+			ops[i].Lfs.Size,
+		)
+		// generate sha for handcrafted pointer
+		sha, err := l.runGit(ctx, dir, nil, strings.NewReader(pointer), "hash-object", "-w", "--stdin")
+		if err != nil {
+			return nil, fmt.Errorf("write lfs pointer for %q: %w", ops[i].Path, err)
+		}
+
+		if !isHexSHA(sha) {
+			return nil, fmt.Errorf("write lfs pointer for %q returned invalid sha %q", ops[i].Path, sha)
+		}
+
+		ops[i].BlobSHA = sha
+	}
+	return ops, nil
+}
+
 // runs one cat-file --batch-check over every put blob sha (returning their sizes)
-// and every delete target
-// so unknown blobs and missing delete paths fail
-func (l *Local) verifyCommitInputs(ctx context.Context, dir, oldSHA string, unborn bool, ops []CommitOp) (map[string]int64, error) {
+func (l *Local) verifyCommitInputs(ctx context.Context, dir, oldSHA string, unborn bool, ops []CommitOp) ([]CommitOp, map[string]int64, error) {
 	var in strings.Builder
 	type query struct {
 		op    CommitOp
@@ -680,7 +729,7 @@ func (l *Local) verifyCommitInputs(ctx context.Context, dir, oldSHA string, unbo
 	for _, op := range ops {
 		if op.Delete {
 			if unborn {
-				return nil, fmt.Errorf("%w: %q", ErrPathNotFound, op.Path)
+				return nil, nil, fmt.Errorf("%w: %q", ErrPathNotFound, op.Path)
 			}
 			in.WriteString(oldSHA + ":" + op.Path + "\n")
 		} else {
@@ -691,14 +740,15 @@ func (l *Local) verifyCommitInputs(ctx context.Context, dir, oldSHA string, unbo
 
 	out, err := l.runGit(ctx, dir, nil, strings.NewReader(in.String()), "cat-file", "--batch-check")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	lines := strings.Split(out, "\n")
 	if len(lines) != len(queries) {
-		return nil, fmt.Errorf("unexpected batch-check output: %d lines for %d queries", len(lines), len(queries))
+		return nil, nil, fmt.Errorf("unexpected batch-check output: %d lines for %d queries", len(lines), len(queries))
 	}
 
+	expanded := make([]CommitOp, 0, len(ops))
 	sizes := make(map[string]int64)
 	for i, line := range lines {
 		q := queries[i]
@@ -706,34 +756,65 @@ func (l *Local) verifyCommitInputs(ctx context.Context, dir, oldSHA string, unbo
 		switch {
 		case len(fields) >= 2 && fields[len(fields)-1] == "missing":
 			if q.isPut {
-				return nil, fmt.Errorf("%w: %s", ErrUnknownBlob, q.op.BlobSHA)
+				return nil, nil, fmt.Errorf("%w: %s", ErrUnknownBlob, q.op.BlobSHA)
 			}
-			return nil, fmt.Errorf("%w: %q", ErrPathNotFound, q.op.Path)
+			return nil, nil, fmt.Errorf("%w: %q", ErrPathNotFound, q.op.Path)
 		case len(fields) == 3 && fields[1] == "blob":
 			size, err := strconv.ParseInt(fields[2], 10, 64)
 			if err != nil {
-				return nil, fmt.Errorf("malformed batch-check size %q: %w", fields[2], err)
+				return nil, nil, fmt.Errorf("malformed batch-check size %q: %w", fields[2], err)
 			}
 			if q.isPut {
 				sizes[q.op.BlobSHA] = size
 			}
+			expanded = append(expanded, q.op)
+		case len(fields) == 3 && !q.isPut && fields[1] == "tree":
+			deletes, err := l.expandTreeDelete(ctx, dir, q.op.Path, fields[0])
+			if err != nil {
+				return nil, nil, err
+			}
+			expanded = append(expanded, deletes...)
+		case len(fields) == 3 && !q.isPut && fields[1] == "commit":
+			expanded = append(expanded, q.op)
 		case len(fields) == 3:
 			// a delete target resolving to a tree or a put sha naming a non-blob
 			if q.isPut {
-				return nil, fmt.Errorf("%w: %s is a %s", ErrUnknownBlob, q.op.BlobSHA, fields[1])
+				return nil, nil, fmt.Errorf("%w: %s is a %s", ErrUnknownBlob, q.op.BlobSHA, fields[1])
 			}
-			return nil, fmt.Errorf("%w: %q is a %s", ErrNotABlob, q.op.Path, fields[1])
+			return nil, nil, fmt.Errorf("%w: cannot delete %q of type %s", ErrInvalidOps, q.op.Path, fields[1])
 		default:
-			return nil, fmt.Errorf("malformed batch-check line: %q", line)
+			return nil, nil, fmt.Errorf("malformed batch-check line: %q", line)
 		}
 	}
-	return sizes, nil
+	return expanded, sizes, nil
+}
+
+// recursive path listing for given directory, using "ls-tree -r"
+func (l *Local) expandTreeDelete(ctx context.Context, dir, treePath, treeSHA string) ([]CommitOp, error) {
+	out, err := l.runGitBytes(ctx, dir, nil, nil,
+		"ls-tree", "-r", "-z", "--name-only", "--end-of-options", treeSHA,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list delete tree %q: %w", treePath, err)
+	}
+
+	var deletes []CommitOp
+	for name := range bytes.SplitSeq(out, []byte{0}) {
+		if len(name) == 0 {
+			continue
+		}
+		deletes = append(deletes, CommitOp{
+			Delete: true,
+			Path:   treePath + "/" + string(name),
+		})
+	}
+	return deletes, nil
 }
 
 // separates .gitattributes changes from regular file changes
 func splitAttrOps(ops []CommitOp) (attr, files []CommitOp) {
 	for _, op := range ops {
-		if op.Path == ".gitattributes" || strings.HasSuffix(op.Path, "/.gitattributes") {
+		if isAttributesPath(op.Path) {
 			attr = append(attr, op)
 		} else {
 			files = append(files, op)
@@ -747,10 +828,15 @@ func splitAttrOps(ops []CommitOp) (attr, files []CommitOp) {
 func (l *Local) cleanLFSTracked(ctx context.Context, dir string, env []string, ops []CommitOp, sizes map[string]int64, clean CleanFunc) ([]CommitOp, error) {
 	var paths []string
 	byPath := make(map[string]int)
+	pendingLFS := make(map[string]struct{})
+
 	for i, op := range ops {
 		if !op.Delete {
 			paths = append(paths, op.Path)
 			byPath[op.Path] = i
+			if op.Lfs != nil {
+				pendingLFS[op.Path] = struct{}{}
+			}
 		}
 	}
 	if len(paths) == 0 {
@@ -767,11 +853,21 @@ func (l *Local) cleanLFSTracked(ctx context.Context, dir string, env []string, o
 	fields := strings.Split(out, "\x00")
 	for i := 0; i+2 < len(fields); i += 3 {
 		path, value := fields[i], fields[i+2]
-		if value != "lfs" {
-			continue
-		}
 		idx, ok := byPath[path]
 		if !ok {
+			continue
+		}
+
+		if ops[idx].Lfs != nil {
+			delete(pendingLFS, path)
+			// do not allow commiting lfs objects, if they are not tracked as lfs
+			if value != "lfs" {
+				return nil, fmt.Errorf("%w: %q", ErrLFSNotTracked, path)
+			}
+			continue
+		}
+
+		if value != "lfs" {
 			continue
 		}
 		if clean == nil {
@@ -787,6 +883,11 @@ func (l *Local) cleanLFSTracked(ctx context.Context, dir string, env []string, o
 		}
 		ops[idx].BlobSHA = pointerSHA
 	}
+
+	if len(pendingLFS) != 0 {
+		return nil, fmt.Errorf("check-attr omitted explicit lfs paths")
+	}
+
 	return ops, nil
 }
 
@@ -1063,6 +1164,22 @@ func isHexSHA(s string) bool {
 		}
 	}
 	return true
+}
+
+func isLFSOID(oid string) bool {
+	if len(oid) != 64 {
+		return false
+	}
+	for _, c := range oid {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func isAttributesPath(treePath string) bool {
+	return treePath == ".gitattributes" || strings.HasSuffix(treePath, "/.gitattributes")
 }
 
 // just to keep track how much bytes were streamed

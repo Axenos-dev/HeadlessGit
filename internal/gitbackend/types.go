@@ -124,9 +124,15 @@ type BlobInfo struct {
 	Size      int64
 }
 
+type LfsObject struct {
+	OID  string
+	Size int64
+}
+
 type CommitOp struct {
 	Delete  bool
 	Path    string
+	Lfs     *LfsObject
 	BlobSHA string // puts only; must exist as a blob in this repo's odb
 	Mode    string // puts only: "100644" (default) or "100755"
 }
