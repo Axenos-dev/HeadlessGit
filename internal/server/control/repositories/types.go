@@ -210,11 +210,17 @@ func newCommitDetails(commit domain.CommitDetails) CommitDetails {
 	}
 }
 
+type CommitObjectLfs struct {
+	OID  string `json:"oid"`
+	Size int64  `json:"size"`
+}
+
 type CommitOperation struct {
-	Op         string `json:"op"` // "put" | "delete"
-	Path       string `json:"path"`
-	BlobSHA    string `json:"blobSha,omitempty"`    // puts only, from POST /blobs
-	Executable bool   `json:"executable,omitempty"` // puts only
+	Op         string           `json:"op"` // "put" | "delete"
+	Path       string           `json:"path"`
+	Lfs        *CommitObjectLfs `json:"lfs,omitempty"`        // puts only, from POST .../lfs/objects/batch
+	BlobSHA    *string          `json:"object,omitempty"`     // puts only, from POST /blobs
+	Executable bool             `json:"executable,omitempty"` // puts only
 }
 
 type CreateCommitRequest struct {
@@ -245,12 +251,24 @@ func (r CreateCommitRequest) Validate() error {
 		}
 		switch op.Op {
 		case "put":
-			if op.BlobSHA == "" {
-				return fmt.Errorf("operations[%d]: blobSha is required for put", i)
+			if (op.BlobSHA == nil) == (op.Lfs == nil) {
+				return fmt.Errorf("operations[%d]: exactly one of object or lfs is required for put", i)
+			}
+			if op.BlobSHA != nil {
+				if *op.BlobSHA == "" {
+					return fmt.Errorf("operations[%d]: object is required for put", i)
+				}
+			} else {
+				if op.Lfs.OID == "" {
+					return fmt.Errorf("operations[%d]: lfs.oid is required", i)
+				}
+				if op.Lfs.Size <= 0 {
+					return fmt.Errorf("operations[%d]: lfs.size must be positive", i)
+				}
 			}
 		case "delete":
-			if op.BlobSHA != "" || op.Executable {
-				return fmt.Errorf("operations[%d]: delete takes no blobSha or executable", i)
+			if op.BlobSHA != nil || op.Lfs != nil || op.Executable {
+				return fmt.Errorf("operations[%d]: delete takes no object, lfs, or executable", i)
 			}
 		default:
 			return fmt.Errorf("operations[%d]: op must be 'put' or 'delete'", i)

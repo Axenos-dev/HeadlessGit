@@ -512,6 +512,11 @@ func (l *Local) ApplyCommit(ctx context.Context, storagePath string, spec Commit
 		oldSHA = zeroSHA
 	}
 
+	ops, err = l.materializeLFSPointers(ctx, dir, ops)
+	if err != nil {
+		return RefChange{}, err
+	}
+
 	ops, sizes, err := l.verifyCommitInputs(ctx, dir, oldSHA, unborn, ops)
 	if err != nil {
 		return RefChange{}, err
@@ -653,9 +658,25 @@ func validateCommitOps(ops []CommitOp) ([]CommitOp, error) {
 		seen[p] = true
 
 		op.Path = p
-		if !op.Delete {
-			if !isHexSHA(op.BlobSHA) {
+		if op.Delete {
+			if op.BlobSHA != "" || op.Lfs != nil {
+				return nil, fmt.Errorf("%w: delete %q takes no object", ErrInvalidOps, p)
+			}
+		} else {
+			hasBlob := op.BlobSHA != ""
+			hasLFS := op.Lfs != nil
+
+			if hasBlob == hasLFS {
+				return nil, fmt.Errorf("%w: put %q requires exactly one of blob sha or lfs object", ErrInvalidOps, p)
+			}
+			if hasBlob && !isHexSHA(op.BlobSHA) {
 				return nil, fmt.Errorf("%w: blob sha %q", ErrInvalidOps, op.BlobSHA)
+			}
+			if hasLFS && (!isLFSOID(op.Lfs.OID) || op.Lfs.Size < 0) {
+				return nil, fmt.Errorf("%w: invalid lfs object for %q", ErrInvalidOps, p)
+			}
+			if hasLFS && isAttributesPath(p) {
+				return nil, fmt.Errorf("%w: attributes file %q cannot be an lfs object", ErrInvalidOps, p)
 			}
 			switch op.Mode {
 			case "":
@@ -668,6 +689,33 @@ func validateCommitOps(ops []CommitOp) ([]CommitOp, error) {
 		out[i] = op
 	}
 	return out, nil
+}
+
+// transforms lfs objects to its pointers
+func (l *Local) materializeLFSPointers(ctx context.Context, dir string, ops []CommitOp) ([]CommitOp, error) {
+	for i := range ops {
+		if ops[i].Lfs == nil {
+			continue
+		}
+
+		pointer := fmt.Sprintf(
+			"version https://git-lfs.github.com/spec/v1\noid sha256:%s\nsize %d\n",
+			ops[i].Lfs.OID,
+			ops[i].Lfs.Size,
+		)
+		// generate sha for handcrafted pointer
+		sha, err := l.runGit(ctx, dir, nil, strings.NewReader(pointer), "hash-object", "-w", "--stdin")
+		if err != nil {
+			return nil, fmt.Errorf("write lfs pointer for %q: %w", ops[i].Path, err)
+		}
+
+		if !isHexSHA(sha) {
+			return nil, fmt.Errorf("write lfs pointer for %q returned invalid sha %q", ops[i].Path, sha)
+		}
+
+		ops[i].BlobSHA = sha
+	}
+	return ops, nil
 }
 
 // runs one cat-file --batch-check over every put blob sha (returning their sizes)
@@ -766,7 +814,7 @@ func (l *Local) expandTreeDelete(ctx context.Context, dir, treePath, treeSHA str
 // separates .gitattributes changes from regular file changes
 func splitAttrOps(ops []CommitOp) (attr, files []CommitOp) {
 	for _, op := range ops {
-		if op.Path == ".gitattributes" || strings.HasSuffix(op.Path, "/.gitattributes") {
+		if isAttributesPath(op.Path) {
 			attr = append(attr, op)
 		} else {
 			files = append(files, op)
@@ -780,10 +828,15 @@ func splitAttrOps(ops []CommitOp) (attr, files []CommitOp) {
 func (l *Local) cleanLFSTracked(ctx context.Context, dir string, env []string, ops []CommitOp, sizes map[string]int64, clean CleanFunc) ([]CommitOp, error) {
 	var paths []string
 	byPath := make(map[string]int)
+	pendingLFS := make(map[string]struct{})
+
 	for i, op := range ops {
 		if !op.Delete {
 			paths = append(paths, op.Path)
 			byPath[op.Path] = i
+			if op.Lfs != nil {
+				pendingLFS[op.Path] = struct{}{}
+			}
 		}
 	}
 	if len(paths) == 0 {
@@ -800,11 +853,21 @@ func (l *Local) cleanLFSTracked(ctx context.Context, dir string, env []string, o
 	fields := strings.Split(out, "\x00")
 	for i := 0; i+2 < len(fields); i += 3 {
 		path, value := fields[i], fields[i+2]
-		if value != "lfs" {
-			continue
-		}
 		idx, ok := byPath[path]
 		if !ok {
+			continue
+		}
+
+		if ops[idx].Lfs != nil {
+			delete(pendingLFS, path)
+			// do not allow commiting lfs objects, if they are not tracked as lfs
+			if value != "lfs" {
+				return nil, fmt.Errorf("%w: %q", ErrLFSNotTracked, path)
+			}
+			continue
+		}
+
+		if value != "lfs" {
 			continue
 		}
 		if clean == nil {
@@ -820,6 +883,11 @@ func (l *Local) cleanLFSTracked(ctx context.Context, dir string, env []string, o
 		}
 		ops[idx].BlobSHA = pointerSHA
 	}
+
+	if len(pendingLFS) != 0 {
+		return nil, fmt.Errorf("check-attr omitted explicit lfs paths")
+	}
+
 	return ops, nil
 }
 
@@ -1096,6 +1164,22 @@ func isHexSHA(s string) bool {
 		}
 	}
 	return true
+}
+
+func isLFSOID(oid string) bool {
+	if len(oid) != 64 {
+		return false
+	}
+	for _, c := range oid {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func isAttributesPath(treePath string) bool {
+	return treePath == ".gitattributes" || strings.HasSuffix(treePath, "/.gitattributes")
 }
 
 // just to keep track how much bytes were streamed

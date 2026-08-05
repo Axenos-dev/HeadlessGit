@@ -1098,6 +1098,11 @@ func TestApplyCommit(t *testing.T) {
 			{"no ops", spec("", "x"), nil, ErrInvalidOps},
 			{"duplicate path", spec("", "x"), []CommitOp{{Path: "a", BlobSHA: hello}, {Path: "a", Delete: true}}, ErrInvalidOps},
 			{"overlapping paths", spec("", "x"), []CommitOp{{Path: "README.md", Delete: true}, {Path: "README.md/child", BlobSHA: hello}}, ErrInvalidOps},
+			{"put without object", spec("", "x"), []CommitOp{{Path: "a"}}, ErrInvalidOps},
+			{"put with both objects", spec("", "x"), []CommitOp{{Path: "a", BlobSHA: hello, Lfs: &LfsObject{OID: strings.Repeat("a", 64), Size: 1}}}, ErrInvalidOps},
+			{"invalid lfs oid", spec("", "x"), []CommitOp{{Path: "a", Lfs: &LfsObject{OID: "nope", Size: 1}}}, ErrInvalidOps},
+			{"invalid lfs size", spec("", "x"), []CommitOp{{Path: "a", Lfs: &LfsObject{OID: strings.Repeat("a", 64), Size: -1}}}, ErrInvalidOps},
+			{"lfs attributes file", spec("", "x"), []CommitOp{{Path: ".gitattributes", Lfs: &LfsObject{OID: strings.Repeat("a", 64), Size: 1}}}, ErrInvalidOps},
 			{"bad mode", spec("", "x"), []CommitOp{{Path: "a", BlobSHA: hello, Mode: "120000"}}, ErrInvalidOps},
 			{"missing author", CommitSpec{Branch: "main", Author: Identity{}, Message: "x"}, []CommitOp{{Path: "a", BlobSHA: hello}}, ErrInvalidOps},
 			{"missing message", CommitSpec{Branch: "main", Author: author}, []CommitOp{{Path: "a", BlobSHA: hello}}, ErrInvalidOps},
@@ -1158,6 +1163,34 @@ func TestApplyCommit(t *testing.T) {
 		}
 		if notes.BlobSHA != hello {
 			t.Errorf("notes.txt was cleaned but is not lfs-tracked")
+		}
+
+		// An explicit LFS object needs no clean callback: the backend writes its
+		// canonical pointer blob and still enforces the effective attributes.
+		explicitOID := strings.Repeat("cd", 32)
+		explicit, err := l.ApplyCommit(ctx, repo, spec(change.NewSHA, "explicit lfs"), []CommitOp{
+			{Path: "direct.bin", Lfs: &LfsObject{OID: explicitOID, Size: 23}},
+		}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		direct, err := l.StatBlob(ctx, repo, explicit.NewSHA, "direct.bin")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var directPointer bytes.Buffer
+		if err := l.ReadBlob(ctx, repo, direct.BlobSHA, &directPointer); err != nil {
+			t.Fatal(err)
+		}
+		wantPointer := "version https://git-lfs.github.com/spec/v1\noid sha256:" + explicitOID + "\nsize 23\n"
+		if directPointer.String() != wantPointer {
+			t.Errorf("direct.bin pointer = %q, want %q", directPointer.String(), wantPointer)
+		}
+
+		if _, err := l.ApplyCommit(ctx, repo, spec(explicit.NewSHA, "untracked lfs"), []CommitOp{
+			{Path: "direct.dat", Lfs: &LfsObject{OID: explicitOID, Size: 23}},
+		}, nil); !errors.Is(err, ErrLFSNotTracked) {
+			t.Fatalf("untracked explicit lfs: want ErrLFSNotTracked, got %v", err)
 		}
 	})
 }

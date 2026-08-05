@@ -17,6 +17,7 @@ import (
 	"github.com/Axenos-dev/HeadlessGit/internal/db/gen"
 	"github.com/Axenos-dev/HeadlessGit/internal/domain"
 	"github.com/Axenos-dev/HeadlessGit/internal/gitbackend"
+	lfsservice "github.com/Axenos-dev/HeadlessGit/internal/services/lfs"
 	"go.uber.org/zap"
 )
 
@@ -165,10 +166,12 @@ type fakeLFS struct {
 	stored  map[string]string // oid -> content received via StoreObject
 }
 
+func stringPtr(value string) *string { return &value }
+
 func (f fakeLFS) GetObject(ctx context.Context, repo domain.Repository, oid string) (io.ReadCloser, int64, error) {
 	content, ok := f.objects[oid]
 	if !ok {
-		return nil, 0, errors.New("object not found")
+		return nil, 0, lfsservice.ErrObjectNotFound
 	}
 	return io.NopCloser(strings.NewReader(content)), int64(len(content)), nil
 }
@@ -677,7 +680,7 @@ func TestCommit(t *testing.T) {
 		ExpectedHeadSHA: strings.Repeat("a", 40),
 		PusherID:        42,
 		Operations: []domain.CommitFileOp{
-			{Path: "run.sh", BlobSHA: blobSHA, Executable: true},
+			{Path: "run.sh", BlobSHA: stringPtr(blobSHA), Executable: true},
 			{Path: "old.txt", Delete: true},
 		},
 	}
@@ -734,6 +737,56 @@ func TestCommit(t *testing.T) {
 		}
 	})
 
+	t.Run("explicit lfs object requires lfs service", func(t *testing.T) {
+		lfsReq := req
+		lfsReq.Operations = []domain.CommitFileOp{{
+			Path: "model.bin",
+			Lfs:  &domain.CommitFileLfsObject{OID: strings.Repeat("a", 64), Size: 42},
+		}}
+		svc := NewService(zap.NewNop(), fakeRegistry{repo: row}, fakeStorage{}, nil, nil)
+		if _, err := svc.Commit(context.Background(), row.ID, lfsReq); !errors.Is(err, ErrLFSNotEnabled) {
+			t.Fatalf("want ErrLFSNotEnabled, got %v", err)
+		}
+	})
+
+	t.Run("maps a verified explicit lfs object", func(t *testing.T) {
+		oid := strings.Repeat("a", 64)
+		lfsReq := req
+		lfsReq.Operations = []domain.CommitFileOp{{
+			Path: "model.bin",
+			Lfs:  &domain.CommitFileLfsObject{OID: oid, Size: 42},
+		}}
+		st := fakeStorage{applyChange: change, applyFn: func(_ gitbackend.CommitSpec, ops []gitbackend.CommitOp, _ gitbackend.CleanFunc) error {
+			if len(ops) != 1 || ops[0].BlobSHA != "" || ops[0].Lfs == nil || ops[0].Lfs.OID != oid || ops[0].Lfs.Size != 42 {
+				t.Errorf("backend ops = %+v", ops)
+			}
+			return nil
+		}}
+		svc := NewService(zap.NewNop(), fakeRegistry{repo: row}, st, fakeLFS{objects: map[string]string{oid: strings.Repeat("x", 42)}}, nil)
+		if _, err := svc.Commit(context.Background(), row.ID, lfsReq); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("rejects unavailable or mismatched lfs object", func(t *testing.T) {
+		oid := strings.Repeat("a", 64)
+		lfsReq := req
+		lfsReq.Operations = []domain.CommitFileOp{{
+			Path: "model.bin",
+			Lfs:  &domain.CommitFileLfsObject{OID: oid, Size: 42},
+		}}
+
+		missing := NewService(zap.NewNop(), fakeRegistry{repo: row}, fakeStorage{}, fakeLFS{}, nil)
+		if _, err := missing.Commit(context.Background(), row.ID, lfsReq); !errors.Is(err, ErrLFSObjectNotFound) {
+			t.Fatalf("missing object: want ErrLFSObjectNotFound, got %v", err)
+		}
+
+		mismatch := NewService(zap.NewNop(), fakeRegistry{repo: row}, fakeStorage{}, fakeLFS{objects: map[string]string{oid: "short"}}, nil)
+		if _, err := mismatch.Commit(context.Background(), row.ID, lfsReq); !errors.Is(err, ErrInvalidCommitOps) {
+			t.Fatalf("size mismatch: want ErrInvalidCommitOps, got %v", err)
+		}
+	})
+
 	t.Run("error mapping and no event on failure", func(t *testing.T) {
 		cases := []struct {
 			backend error
@@ -748,6 +801,7 @@ func TestCommit(t *testing.T) {
 			{gitbackend.ErrUnknownBlob, ErrUnknownBlob},
 			{gitbackend.ErrNothingToCommit, ErrNothingToCommit},
 			{gitbackend.ErrLFSRequired, ErrLFSNotEnabled},
+			{gitbackend.ErrLFSNotTracked, ErrInvalidCommitOps},
 		}
 		for _, tc := range cases {
 			var events []domain.RepositoryEvent
@@ -770,7 +824,7 @@ func TestCommitCleanClosure(t *testing.T) {
 		Message: "x",
 		Author:  domain.CommitIdentity{Name: "t", Email: "t@t"},
 		Operations: []domain.CommitFileOp{
-			{Path: "big.bin", BlobSHA: blobSHA},
+			{Path: "big.bin", BlobSHA: stringPtr(blobSHA)},
 		},
 	}
 
@@ -885,12 +939,12 @@ func TestCommitPathPolicies(t *testing.T) {
 		ops     []domain.CommitFileOp
 		blocked bool
 	}{
-		{"put inside blocked dir", []domain.CommitFileOp{{Path: "runtime/state.json", BlobSHA: blobSHA}}, true},
-		{"put blocked file", []domain.CommitFileOp{{Path: "config.lock", BlobSHA: blobSHA}}, true},
-		{"dot-segment evasion", []domain.CommitFileOp{{Path: "./runtime/state.json", BlobSHA: blobSHA}}, true},
+		{"put inside blocked dir", []domain.CommitFileOp{{Path: "runtime/state.json", BlobSHA: stringPtr(blobSHA)}}, true},
+		{"put blocked file", []domain.CommitFileOp{{Path: "config.lock", BlobSHA: stringPtr(blobSHA)}}, true},
+		{"dot-segment evasion", []domain.CommitFileOp{{Path: "./runtime/state.json", BlobSHA: stringPtr(blobSHA)}}, true},
 		{"delete of blocked path allowed", []domain.CommitFileOp{{Path: "runtime/state.json", Delete: true}}, false},
-		{"unrelated put", []domain.CommitFileOp{{Path: "src/main.go", BlobSHA: blobSHA}}, false},
-		{"sibling prefix not blocked", []domain.CommitFileOp{{Path: "runtimes/x", BlobSHA: blobSHA}}, false},
+		{"unrelated put", []domain.CommitFileOp{{Path: "src/main.go", BlobSHA: stringPtr(blobSHA)}}, false},
+		{"sibling prefix not blocked", []domain.CommitFileOp{{Path: "runtimes/x", BlobSHA: stringPtr(blobSHA)}}, false},
 	}
 
 	for _, tc := range cases {
@@ -927,7 +981,7 @@ func TestCommitPathPolicies(t *testing.T) {
 	t.Run("reason is echoed", func(t *testing.T) {
 		svc := NewService(zap.NewNop(), fakeRegistry{repo: row, policies: policies}, fakeStorage{}, nil, nil)
 		req := base
-		req.Operations = []domain.CommitFileOp{{Path: "runtime/x", BlobSHA: blobSHA}}
+		req.Operations = []domain.CommitFileOp{{Path: "runtime/x", BlobSHA: stringPtr(blobSHA)}}
 		_, err := svc.Commit(context.Background(), row.ID, req)
 		if err == nil || !strings.Contains(err.Error(), "deploy-managed state") {
 			t.Errorf("reason missing from error: %v", err)
