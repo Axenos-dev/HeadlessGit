@@ -321,8 +321,6 @@ or a repository-scoped LFS object already uploaded and verified through the LFS 
 
 Content is deduplicated by sha, so retrying an upload is free and a lost `409` race can be retried without re-uploading anything. Blobs that never get committed are garbage-collected after a grace period (see `REPO_GC_INTERVAL`).
 
-**LFS is automatic**, the same way it is for a git client: if the repo's `.gitattributes` marks a path as `filter=lfs` (including attributes added in the very same commit), the server stores an uploaded Git object's content in LFS and commits a pointer instead. For large product uploads, use the LFS Batch API first and pass its verified `{oid, size}` as the operation's `lfs` source; HeadlessGit creates the pointer without putting the large file in the Git ODB. An explicit LFS source is rejected when the path is not LFS-tracked.
-
 API commits dispatch the same signed [webhooks](#webhooks) as a `git push` — consumers can't tell them apart.
 
 ### Health
