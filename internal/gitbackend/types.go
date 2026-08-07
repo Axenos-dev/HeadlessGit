@@ -130,11 +130,12 @@ type LfsObject struct {
 }
 
 type CommitOp struct {
-	Delete  bool
-	Path    string
-	Lfs     *LfsObject
-	BlobSHA string // puts only; must exist as a blob in this repo's odb
-	Mode    string // puts only: "100644" (default) or "100755"
+	Delete   bool
+	MoveFrom string // moves only; Path is the destination
+	Path     string
+	Lfs      *LfsObject
+	BlobSHA  string // puts only; must exist as a blob in this repo's odb
+	Mode     string // puts only: "100644" (default) or "100755"
 }
 
 type Identity struct {
@@ -153,3 +154,6 @@ type CommitSpec struct {
 
 // write-side mirror of archive.SmudgeFunc
 type CleanFunc func(path, blobSHA string, size int64) (string, error)
+
+// rejects writes to paths that are blocked by repository policy
+type CheckWriteFunc func(path string) error

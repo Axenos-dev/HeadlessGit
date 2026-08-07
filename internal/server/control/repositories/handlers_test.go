@@ -889,6 +889,26 @@ func TestCreateCommit(t *testing.T) {
 	}
 }
 
+func TestCreateCommitMove(t *testing.T) {
+	fake := &fakeManager{commitResult: domain.CommitResult{Branch: "main", CommitSHA: testSHA}}
+	body := `{
+		"branch":"main",
+		"message":"reorganize",
+		"author":{"name":"api-user","email":"api@test"},
+		"operations":[{"op":"move","fromPath":"plugins","path":"server/plugins"}]
+	}`
+	rec := httptest.NewRecorder()
+	newTestRouter(fake).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/repositories/7/commits", strings.NewReader(body)))
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	if len(fake.commitReq.Operations) != 1 || fake.commitReq.Operations[0].MoveFrom != "plugins" ||
+		fake.commitReq.Operations[0].Path != "server/plugins" {
+		t.Errorf("service operations = %+v", fake.commitReq.Operations)
+	}
+}
+
 func TestCreateCommitValidation(t *testing.T) {
 	cases := []struct {
 		name string
@@ -899,7 +919,10 @@ func TestCreateCommitValidation(t *testing.T) {
 		{"missing message", `{"branch":"main","author":{"name":"a","email":"e"},"operations":[{"op":"delete","path":"a"}]}`},
 		{"missing author", `{"branch":"main","message":"x","operations":[{"op":"delete","path":"a"}]}`},
 		{"no operations", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[]}`},
-		{"bad op kind", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"move","path":"a"}]}`},
+		{"bad op kind", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"copy","path":"a"}]}`},
+		{"move without source", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"move","path":"a"}]}`},
+		{"move with blob", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"move","fromPath":"a","path":"b","blobSha":"abc"}]}`},
+		{"put with source", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"put","fromPath":"old","path":"a","blobSha":"abc"}]}`},
 		{"put without object", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"put","path":"a"}]}`},
 		{"put with both sources", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"put","path":"a","blobSha":"abc","lfs":{"oid":"def","size":1}}]}`},
 		{"put with zero lfs size", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"put","path":"a","lfs":{"oid":"def","size":0}}]}`},
@@ -934,6 +957,7 @@ func TestCreateCommitErrors(t *testing.T) {
 		{"repo not found", reposervice.ErrRepositoryNotFound, http.StatusNotFound, "repository_not_found"},
 		{"branch not found", reposervice.ErrRefNotFound, http.StatusNotFound, "ref_not_found"},
 		{"delete target missing", reposervice.ErrPathNotFound, http.StatusNotFound, "path_not_found"},
+		{"move destination exists", reposervice.ErrPathConflict, http.StatusConflict, "path_conflict"},
 		{"head mismatch", reposervice.ErrHeadMismatch, http.StatusConflict, "head_mismatch"},
 		{"unknown blob", reposervice.ErrUnknownBlob, http.StatusUnprocessableEntity, "unknown_blob"},
 		{"unknown lfs object", reposervice.ErrLFSObjectNotFound, http.StatusUnprocessableEntity, "lfs_object_not_found"},

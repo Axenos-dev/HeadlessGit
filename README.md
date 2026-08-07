@@ -311,6 +311,28 @@ or a repository-scoped LFS object already uploaded and verified through the LFS 
 
 `blobSha` and `lfs` are mutually exclusive. `executable` is optional for puts. A `delete` operation takes only `op` and `path`.
 
+A `move` relocates a file or a whole directory tree:
+
+```json
+{
+  "op": "move",
+  "fromPath": "plugins",
+  "path": "server/plugins"
+}
+```
+
+Operations are applied in array order. After the move, later operations in the same request use the destination path:
+
+```json
+{
+  "operations": [
+    { "op": "move", "fromPath": "plugins", "path": "server/plugins" },
+    { "op": "put", "path": "server/plugins/config.yml", "blobSha": "<sha>" },
+    { "op": "delete", "path": "server/plugins/something.yaml" }
+  ]
+}
+```
+
 `expectedHeadSha` controls concurrency:
 
 | Value            | Meaning                                                                                  |

@@ -23,6 +23,7 @@ type CommitFileLfsObject struct {
 
 type CommitFileOp struct {
 	Delete     bool
+	MoveFrom   string
 	Path       string
 	BlobSHA    *string
 	Lfs        *CommitFileLfsObject

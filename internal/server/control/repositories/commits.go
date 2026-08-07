@@ -53,6 +53,7 @@ func (h *handlers) createCommit(w http.ResponseWriter, r *http.Request) error {
 	for i, op := range req.Operations {
 		ops[i] = domain.CommitFileOp{
 			Delete:     op.Op == "delete",
+			MoveFrom:   op.FromPath,
 			Path:       op.Path,
 			BlobSHA:    op.BlobSHA,
 			Executable: op.Executable,
@@ -80,7 +81,9 @@ func (h *handlers) createCommit(w http.ResponseWriter, r *http.Request) error {
 	case errors.Is(err, reposervice.ErrRefNotFound):
 		return response.NewError(http.StatusNotFound, response.CodeRefNotFound, "branch not found; pass the all-zero expectedHeadSha to create it")
 	case errors.Is(err, reposervice.ErrPathNotFound):
-		return response.NewError(http.StatusNotFound, response.CodePathNotFound, "delete target not found")
+		return response.NewError(http.StatusNotFound, response.CodePathNotFound, "delete target or move source not found")
+	case errors.Is(err, reposervice.ErrPathConflict):
+		return response.NewError(http.StatusConflict, response.CodePathConflict, "move destination already exists")
 	case errors.Is(err, reposervice.ErrHeadMismatch):
 		return response.NewError(http.StatusConflict, response.CodeHeadMismatch, "branch head does not match expectedHeadSha")
 	case errors.Is(err, reposervice.ErrUnknownBlob):

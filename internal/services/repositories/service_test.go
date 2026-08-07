@@ -90,7 +90,8 @@ type fakeStorage struct {
 	applyChange  gitbackend.RefChange
 	applyErr     error
 	// optional hook to inspect (and exercise) what ApplyCommit received
-	applyFn func(spec gitbackend.CommitSpec, ops []gitbackend.CommitOp, clean gitbackend.CleanFunc) error
+	applyFn        func(spec gitbackend.CommitSpec, ops []gitbackend.CommitOp, clean gitbackend.CleanFunc) error
+	checkWritePath []string
 }
 
 func (f fakeStorage) InitBare(ctx context.Context, storagePath string) error {
@@ -149,7 +150,14 @@ func (f fakeStorage) WriteBlob(ctx context.Context, storagePath string, r io.Rea
 	return f.writeBlobSHA, n, nil
 }
 
-func (f fakeStorage) ApplyCommit(ctx context.Context, storagePath string, spec gitbackend.CommitSpec, ops []gitbackend.CommitOp, clean gitbackend.CleanFunc) (gitbackend.RefChange, error) {
+func (f fakeStorage) ApplyCommit(ctx context.Context, storagePath string, spec gitbackend.CommitSpec, ops []gitbackend.CommitOp, clean gitbackend.CleanFunc, checkWrite gitbackend.CheckWriteFunc) (gitbackend.RefChange, error) {
+	for _, path := range f.checkWritePath {
+		if checkWrite != nil {
+			if err := checkWrite(path); err != nil {
+				return gitbackend.RefChange{}, err
+			}
+		}
+	}
 	if f.applyFn != nil {
 		if err := f.applyFn(spec, ops, clean); err != nil {
 			return gitbackend.RefChange{}, err
@@ -682,6 +690,7 @@ func TestCommit(t *testing.T) {
 		Operations: []domain.CommitFileOp{
 			{Path: "run.sh", BlobSHA: stringPtr(blobSHA), Executable: true},
 			{Path: "old.txt", Delete: true},
+			{MoveFrom: "plugins", Path: "server/plugins"},
 		},
 	}
 
@@ -707,7 +716,8 @@ func TestCommit(t *testing.T) {
 		if gotSpec.Branch != "main" || gotSpec.ExpectedOld != req.ExpectedHeadSHA || gotSpec.Author.Name != "api-user" {
 			t.Errorf("spec = %+v", gotSpec)
 		}
-		if len(gotOps) != 2 || gotOps[0].Mode != "100755" || !gotOps[1].Delete {
+		if len(gotOps) != 3 || gotOps[0].Mode != "100755" || !gotOps[1].Delete ||
+			gotOps[2].MoveFrom != "plugins" || gotOps[2].Path != "server/plugins" {
 			t.Errorf("ops = %+v", gotOps)
 		}
 		if gotClean == nil {
@@ -796,6 +806,7 @@ func TestCommit(t *testing.T) {
 			{gitbackend.ErrInvalidOps, ErrInvalidCommitOps},
 			{gitbackend.ErrRevNotFound, ErrRefNotFound},
 			{gitbackend.ErrPathNotFound, ErrPathNotFound},
+			{gitbackend.ErrPathExists, ErrPathConflict},
 			{gitbackend.ErrNotABlob, ErrNotAFile},
 			{gitbackend.ErrHeadMismatch, ErrHeadMismatch},
 			{gitbackend.ErrUnknownBlob, ErrUnknownBlob},
@@ -985,6 +996,19 @@ func TestCommitPathPolicies(t *testing.T) {
 		_, err := svc.Commit(context.Background(), row.ID, req)
 		if err == nil || !strings.Contains(err.Error(), "deploy-managed state") {
 			t.Errorf("reason missing from error: %v", err)
+		}
+	})
+
+	t.Run("move descendants are checked", func(t *testing.T) {
+		st := fakeStorage{
+			applyChange:    change,
+			checkWritePath: []string{"runtime/moved/state.json"},
+		}
+		svc := NewService(zap.NewNop(), fakeRegistry{repo: row, policies: policies}, st, nil, nil)
+		req := base
+		req.Operations = []domain.CommitFileOp{{MoveFrom: "plugins", Path: "runtime/moved"}}
+		if _, err := svc.Commit(context.Background(), row.ID, req); !errors.Is(err, ErrPathBlocked) {
+			t.Fatalf("want ErrPathBlocked, got %v", err)
 		}
 	})
 }

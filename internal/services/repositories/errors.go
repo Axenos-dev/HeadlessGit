@@ -10,6 +10,7 @@ var (
 
 	ErrRefNotFound  = errors.New("ref not found")
 	ErrPathNotFound = errors.New("path not found")
+	ErrPathConflict = errors.New("path already exists")
 	ErrInvalidRef   = errors.New("invalid ref")
 	ErrInvalidPath  = errors.New("invalid path")
 
