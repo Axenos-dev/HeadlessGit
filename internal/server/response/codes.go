@@ -13,6 +13,7 @@ const (
 	CodeRefNotFound        = "ref_not_found"
 	CodeCommitNotFound     = "commit_not_found"
 	CodePathNotFound       = "path_not_found"
+	CodePathConflict       = "path_conflict"
 	CodeLFSObjectNotFound  = "lfs_object_not_found"
 
 	CodeHeadMismatch    = "head_mismatch"

@@ -1022,7 +1022,7 @@ func TestApplyCommit(t *testing.T) {
 	script := blob("#!/bin/sh\n")
 
 	// creating a branch requires explicitly expecting non-existence
-	if _, err := l.ApplyCommit(ctx, repo, spec("", "init"), []CommitOp{{Path: "README.md", BlobSHA: hello}}, nil); !errors.Is(err, ErrRevNotFound) {
+	if _, err := l.ApplyCommit(ctx, repo, spec("", "init"), []CommitOp{{Path: "README.md", BlobSHA: hello}}, nil, nil); !errors.Is(err, ErrRevNotFound) {
 		t.Fatalf("missing branch without zero expected-old: want ErrRevNotFound, got %v", err)
 	}
 
@@ -1030,7 +1030,7 @@ func TestApplyCommit(t *testing.T) {
 		{Path: "README.md", BlobSHA: hello},
 		{Path: "src/run.sh", BlobSHA: script, Mode: "100755"},
 		{Path: "src/config/default.txt", BlobSHA: hello},
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1065,7 +1065,7 @@ func TestApplyCommit(t *testing.T) {
 	second, err := l.ApplyCommit(ctx, repo, spec(first.NewSHA, "update"), []CommitOp{
 		{Path: "README.md", BlobSHA: v2},
 		{Path: "src", Delete: true},
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1081,6 +1081,45 @@ func TestApplyCommit(t *testing.T) {
 		t.Errorf("src directory should be deleted recursively, stat err = %v", err)
 	}
 
+	// A move reuses the staged entries recursively. Operations after it address
+	// the destination, so callers can reorganize and edit in one commit.
+	third, err := l.ApplyCommit(ctx, repo, spec(second.NewSHA, "add plugins"), []CommitOp{
+		{Path: "plugins/config.yml", BlobSHA: hello},
+		{Path: "plugins/obsolete.yml", BlobSHA: hello},
+		{Path: "plugins/bin/run", BlobSHA: script, Mode: "100755"},
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fourth, err := l.ApplyCommit(ctx, repo, spec(third.NewSHA, "move plugins"), []CommitOp{
+		{MoveFrom: "plugins", Path: "server/plugins"},
+		{Path: "server/plugins/config.yml", BlobSHA: v2},
+		{Path: "server/plugins/obsolete.yml", Delete: true},
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.StatBlob(ctx, repo, fourth.NewSHA, "plugins/config.yml"); !errors.Is(err, ErrPathNotFound) {
+		t.Errorf("old path still exists: %v", err)
+	}
+	config, err := l.StatBlob(ctx, repo, fourth.NewSHA, "server/plugins/config.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.BlobSHA != v2 {
+		t.Errorf("moved config blob = %s, want %s", config.BlobSHA, v2)
+	}
+	if _, err := l.StatBlob(ctx, repo, fourth.NewSHA, "server/plugins/obsolete.yml"); !errors.Is(err, ErrPathNotFound) {
+		t.Errorf("deleted moved path still exists: %v", err)
+	}
+	listing, err := l.ListTree(ctx, repo, fourth.NewSHA, "server/plugins/bin", ListTreeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listing.Entries) != 1 || listing.Entries[0].Path != "server/plugins/bin/run" || listing.Entries[0].Mode != "100755" {
+		t.Errorf("moved executable = %+v", listing.Entries)
+	}
+
 	t.Run("errors", func(t *testing.T) {
 		cases := []struct {
 			name string
@@ -1093,6 +1132,10 @@ func TestApplyCommit(t *testing.T) {
 			{"unknown blob", spec("", "x"), []CommitOp{{Path: "a", BlobSHA: strings.Repeat("d", 40)}}, ErrUnknownBlob},
 			{"nothing to commit", spec("", "x"), []CommitOp{{Path: "README.md", BlobSHA: v2}}, ErrNothingToCommit},
 			{"delete missing path", spec("", "x"), []CommitOp{{Path: "nope.txt", Delete: true}}, ErrPathNotFound},
+			{"move missing path", spec("", "x"), []CommitOp{{MoveFrom: "nope", Path: "elsewhere"}}, ErrPathNotFound},
+			{"move destination exists", spec("", "x"), []CommitOp{{MoveFrom: "server/plugins", Path: "README.md"}}, ErrPathExists},
+			{"move destination parent is a file", spec("", "x"), []CommitOp{{MoveFrom: "README.md", Path: "server/plugins/bin/run/child"}}, ErrPathExists},
+			{"move into itself", spec("", "x"), []CommitOp{{MoveFrom: "server", Path: "server/nested"}}, ErrInvalidOps},
 			{"bad branch", CommitSpec{Branch: "a..b", ExpectedOld: "", Author: author, Message: "x"}, []CommitOp{{Path: "a", BlobSHA: hello}}, ErrInvalidBranch},
 			{"hostile branch", CommitSpec{Branch: "--help", Author: author, Message: "x"}, []CommitOp{{Path: "a", BlobSHA: hello}}, ErrInvalidBranch},
 			{"no ops", spec("", "x"), nil, ErrInvalidOps},
@@ -1109,10 +1152,29 @@ func TestApplyCommit(t *testing.T) {
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
-				if _, err := l.ApplyCommit(ctx, repo, tc.spec, tc.ops, nil); !errors.Is(err, tc.want) {
+				if _, err := l.ApplyCommit(ctx, repo, tc.spec, tc.ops, nil, nil); !errors.Is(err, tc.want) {
 					t.Errorf("ApplyCommit = %v, want %v", err, tc.want)
 				}
 			})
+		}
+	})
+
+	t.Run("move checks every destination path before changing the ref", func(t *testing.T) {
+		blocked := errors.New("blocked destination")
+		check := func(path string) error {
+			if path == "blocked/plugins/bin/run" {
+				return blocked
+			}
+			return nil
+		}
+		_, err := l.ApplyCommit(ctx, repo, spec(fourth.NewSHA, "blocked move"), []CommitOp{
+			{MoveFrom: "server/plugins", Path: "blocked/plugins"},
+		}, nil, check)
+		if !errors.Is(err, blocked) {
+			t.Fatalf("want blocked destination, got %v", err)
+		}
+		if head := gitOut(t, filepath.Join(root, repo), "rev-parse", "refs/heads/main"); head != fourth.NewSHA {
+			t.Errorf("head changed after rejected move: %s", head)
 		}
 	})
 
@@ -1126,7 +1188,7 @@ func TestApplyCommit(t *testing.T) {
 		if _, err := l.ApplyCommit(ctx, repo, spec("", "track"), []CommitOp{
 			{Path: ".gitattributes", BlobSHA: attrs},
 			{Path: "big.bin", BlobSHA: payload},
-		}, nil); !errors.Is(err, ErrLFSRequired) {
+		}, nil, nil); !errors.Is(err, ErrLFSRequired) {
 			t.Fatalf("want ErrLFSRequired, got %v", err)
 		}
 
@@ -1141,7 +1203,7 @@ func TestApplyCommit(t *testing.T) {
 			{Path: ".gitattributes", BlobSHA: attrs},
 			{Path: "big.bin", BlobSHA: payload},
 			{Path: "notes.txt", BlobSHA: hello}, // untracked, must NOT be cleaned
-		}, clean)
+		}, clean, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1170,7 +1232,7 @@ func TestApplyCommit(t *testing.T) {
 		explicitOID := strings.Repeat("cd", 32)
 		explicit, err := l.ApplyCommit(ctx, repo, spec(change.NewSHA, "explicit lfs"), []CommitOp{
 			{Path: "direct.bin", Lfs: &LfsObject{OID: explicitOID, Size: 23}},
-		}, nil)
+		}, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1189,8 +1251,39 @@ func TestApplyCommit(t *testing.T) {
 
 		if _, err := l.ApplyCommit(ctx, repo, spec(explicit.NewSHA, "untracked lfs"), []CommitOp{
 			{Path: "direct.dat", Lfs: &LfsObject{OID: explicitOID, Size: 23}},
-		}, nil); !errors.Is(err, ErrLFSNotTracked) {
+		}, nil, nil); !errors.Is(err, ErrLFSNotTracked) {
 			t.Fatalf("untracked explicit lfs: want ErrLFSNotTracked, got %v", err)
+		}
+
+		moved, err := l.ApplyCommit(ctx, repo, spec(explicit.NewSHA, "move lfs pointer"), []CommitOp{
+			{MoveFrom: "direct.bin", Path: "assets/direct.bin"},
+		}, func(string, string, int64) (string, error) {
+			return "", errors.New("move must not invoke lfs clean")
+		}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		movedDirect, err := l.StatBlob(ctx, repo, moved.NewSHA, "assets/direct.bin")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if movedDirect.BlobSHA != direct.BlobSHA {
+			t.Errorf("moved lfs pointer blob = %s, want %s", movedDirect.BlobSHA, direct.BlobSHA)
+		}
+
+		var cleanedPath string
+		_, err = l.ApplyCommit(ctx, repo, spec(moved.NewSHA, "move attributes and add"), []CommitOp{
+			{MoveFrom: ".gitattributes", Path: "assets/.gitattributes"},
+			{Path: "assets/new.bin", BlobSHA: payload},
+		}, func(path, _ string, _ int64) (string, error) {
+			cleanedPath = path
+			return pointer, nil
+		}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cleanedPath != "assets/new.bin" {
+			t.Errorf("moved attributes cleaned %q, want assets/new.bin", cleanedPath)
 		}
 	})
 }
@@ -1285,7 +1378,7 @@ func TestPreReceive(t *testing.T) {
 			expected = ""
 			gitRun(t, repoDir, "update-ref", "refs/heads/scratch", base)
 		}
-		change, err := l.ApplyCommit(ctx, repo, CommitSpec{Branch: "scratch", ExpectedOld: expected, Author: author, Message: "staged"}, ops, nil)
+		change, err := l.ApplyCommit(ctx, repo, CommitSpec{Branch: "scratch", ExpectedOld: expected, Author: author, Message: "staged"}, ops, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1329,7 +1422,7 @@ func TestPreReceive(t *testing.T) {
 		// the blocked path already exists on a real branch (added before the
 		// policy); a push that only deletes it must pass
 		base, err := l.ApplyCommit(ctx, repo, CommitSpec{Branch: "cleanup", ExpectedOld: zeroSHA, Author: author, Message: "pre-policy"},
-			[]CommitOp{{Path: "runtime/state.json", BlobSHA: blob("old\n")}}, nil)
+			[]CommitOp{{Path: "runtime/state.json", BlobSHA: blob("old\n")}}, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

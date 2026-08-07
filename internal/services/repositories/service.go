@@ -45,7 +45,7 @@ type RepositoryStorage interface {
 	StatBlob(ctx context.Context, storagePath, rev, treePath string) (gitbackend.BlobInfo, error)
 	ReadBlob(ctx context.Context, storagePath, blobSHA string, out io.Writer) error
 	WriteBlob(ctx context.Context, storagePath string, r io.Reader) (string, int64, error)
-	ApplyCommit(ctx context.Context, storagePath string, spec gitbackend.CommitSpec, ops []gitbackend.CommitOp, clean gitbackend.CleanFunc) (gitbackend.RefChange, error)
+	ApplyCommit(ctx context.Context, storagePath string, spec gitbackend.CommitSpec, ops []gitbackend.CommitOp, clean gitbackend.CleanFunc, checkWrite gitbackend.CheckWriteFunc) (gitbackend.RefChange, error)
 	GC(ctx context.Context, storagePath string) error
 }
 
@@ -517,8 +517,18 @@ func (s *Service) Commit(ctx context.Context, repositoryID int64, req domain.Com
 		return domain.CommitResult{}, err
 	}
 
-	if err := s.checkPathPolicies(ctx, repositoryID, req.Operations); err != nil {
+	checkWrite, err := s.pathPolicyChecker(ctx, repositoryID)
+	if err != nil {
 		return domain.CommitResult{}, err
+	}
+
+	for _, op := range req.Operations {
+		if !op.Delete && op.MoveFrom == "" && checkWrite != nil {
+			cleaned := path.Clean("/" + op.Path)[1:]
+			if err := checkWrite(cleaned); err != nil {
+				return domain.CommitResult{}, err
+			}
+		}
 	}
 
 	ops := make([]gitbackend.CommitOp, len(req.Operations))
@@ -528,9 +538,10 @@ func (s *Service) Commit(ctx context.Context, repositoryID int64, req domain.Com
 			mode = "100755"
 		}
 		ops[i] = gitbackend.CommitOp{
-			Delete: op.Delete,
-			Path:   op.Path,
-			Mode:   mode,
+			Delete:   op.Delete,
+			MoveFrom: op.MoveFrom,
+			Path:     op.Path,
+			Mode:     mode,
 		}
 		if op.BlobSHA != nil {
 			ops[i].BlobSHA = *op.BlobSHA
@@ -564,7 +575,7 @@ func (s *Service) Commit(ctx context.Context, repositoryID int64, req domain.Com
 		clean = s.lfsCleanFunc(ctx, repo, req.PusherID)
 	}
 
-	change, err := s.storage.ApplyCommit(ctx, repo.StoragePath, spec, ops, clean)
+	change, err := s.storage.ApplyCommit(ctx, repo.StoragePath, spec, ops, clean, checkWrite)
 	switch {
 	case errors.Is(err, gitbackend.ErrInvalidBranch):
 		return domain.CommitResult{}, ErrInvalidBranch
@@ -574,6 +585,8 @@ func (s *Service) Commit(ctx context.Context, repositoryID int64, req domain.Com
 		return domain.CommitResult{}, ErrRefNotFound
 	case errors.Is(err, gitbackend.ErrPathNotFound):
 		return domain.CommitResult{}, ErrPathNotFound
+	case errors.Is(err, gitbackend.ErrPathExists):
+		return domain.CommitResult{}, ErrPathConflict
 	case errors.Is(err, gitbackend.ErrNotABlob):
 		return domain.CommitResult{}, ErrNotAFile
 	case errors.Is(err, gitbackend.ErrHeadMismatch):
@@ -687,13 +700,13 @@ func (s *Service) dispatchPush(ctx context.Context, repo domain.Repository, req 
 	}
 }
 
-func (s *Service) checkPathPolicies(ctx context.Context, repositoryID int64, ops []domain.CommitFileOp) error {
+func (s *Service) pathPolicyChecker(ctx context.Context, repositoryID int64) (gitbackend.CheckWriteFunc, error) {
 	rows, err := s.registry.ListRepositoryPathPolicies(ctx, repositoryID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if len(rows) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	patterns := make([]string, 0, len(rows))
@@ -705,12 +718,7 @@ func (s *Service) checkPathPolicies(ctx context.Context, repositoryID int64, ops
 		}
 	}
 
-	for _, op := range ops {
-		if op.Delete { // never block for deletions
-			continue
-		}
-
-		cleaned := path.Clean("/" + op.Path)[1:]
+	return func(cleaned string) error {
 		if pattern, blocked := domain.PathBlocked(patterns, cleaned); blocked {
 			// return nice error with reason, if present
 			if reason := reasons[pattern]; reason != "" {
@@ -718,8 +726,8 @@ func (s *Service) checkPathPolicies(ctx context.Context, repositoryID int64, ops
 			}
 			return fmt.Errorf("%w: %q matches %q", ErrPathBlocked, cleaned, pattern)
 		}
-	}
-	return nil
+		return nil
+	}, nil
 }
 
 func toDomain(r gen.Repository) domain.Repository {
