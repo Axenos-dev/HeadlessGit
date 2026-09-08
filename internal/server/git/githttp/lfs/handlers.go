@@ -28,6 +28,7 @@ type Service interface {
 	Verify(ctx context.Context, repo domain.Repository, oid string, size int64) error
 	GetObject(ctx context.Context, repo domain.Repository, oid string) (io.ReadCloser, int64, error)
 	PutObject(ctx context.Context, repo domain.Repository, oid string, size int64, r io.Reader) error
+	Upload(ctx context.Context, auth domain.LFSUploadAuthorization, r io.Reader) (domain.LFSUploadedObject, error)
 }
 
 type Handlers struct {
@@ -47,6 +48,9 @@ func NewHandlers(logger *zap.Logger, resolver RepositoryResolver, authz Authoriz
 }
 
 func (h *Handlers) RegisterRoutes(r chi.Router) {
+	r.Options("/uploads/{uploadID}", h.handleUploadOptions)
+	r.Put("/uploads/{uploadID}", h.handleDirectUpload)
+
 	r.Post("/{namespace}/{name}/info/lfs/objects/batch", h.handleBatch)
 	r.Post("/{namespace}/{name}/info/lfs/verify", h.handleVerify)
 

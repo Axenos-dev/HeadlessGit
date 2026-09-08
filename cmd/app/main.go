@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"log"
 	"os"
@@ -71,11 +72,18 @@ func main() {
 		}
 
 		// and initialize the service
+		var uploadKey []byte
+		if config.AdminToken != "" {
+			sum := sha256.Sum256([]byte("headlessgit-lfs-upload\x00" + config.AdminToken))
+			uploadKey = sum[:]
+		}
+
 		lfsService = lfs.NewService(
 			root.With(zap.String("service", "lfs")),
 			lfs.NewRegistry(db),
 			store,
 			config.LFS.PublicURL,
+			uploadKey,
 		)
 	}
 

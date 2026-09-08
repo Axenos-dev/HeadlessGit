@@ -93,7 +93,9 @@ Git LFS is enabled if `LFS_ENABLED=true` set in environment. Clients then use it
 **Storage** sits behind an interface, separate from the bare repos. It can be one of those:
 
 - `disk` (default) — objects stored locally on disk under `LFS_ROOT`.
-- `s3` — any S3-compatible bucket (AWS S3, Cloudflare R2, MinIO). Transfers use **presigned URLs**, so object bytes flow directly between the client and the bucket instead of streaming through the server.
+- `s3` — any S3-compatible bucket (AWS S3, Cloudflare R2, MinIO). Git LFS clients use **presigned URLs**, so object bytes flow directly between the client and the bucket.
+
+The control API can create a signed upload URL for clients that do not know the object's SHA-256. The client sends raw `application/octet-stream` data to that URL. HeadlessGit hashes the stream while writing it to LFS storage, then returns `{oid, size}` for the commit API.
 
 | Variable                   | Default                 | Description                                                                           |
 | -------------------------- | ----------------------- | ------------------------------------------------------------------------------------- |
@@ -159,6 +161,7 @@ Every request requires `Authorization: Bearer <ADMIN_TOKEN>`. Responses are enve
 | `GET`  | `/repositories/{id}/blob?ref=&path=&lfs=`                   | —           | Stream one file's raw content.                                         |
 | `GET`  | `/repositories/{id}/archive?ref=&format=&lfs=&prefix=`      | —           | Stream a `zip` (default) or `tar.gz` archive of the tree.              |
 | `POST` | `/repositories/{id}/blobs`                                  | _raw bytes_ | Upload content into the repo's object database; returns `{sha, size}`. |
+| `POST` | `/repositories/{id}/uploads`                                | `{userId, size}` | Create a signed LFS upload URL.                                    |
 | `POST` | `/repositories/{id}/commits`                                | JSON        | Create a commit from Git blobs or verified LFS objects.                |
 
 ### Reading a repository
@@ -296,7 +299,7 @@ A `put` operation takes exactly one content source:
 { "op": "put", "path": "README.md", "blobSha": "<sha from POST /blobs>" }
 ```
 
-or a repository-scoped LFS object already uploaded and verified through the LFS Batch API:
+or a repository-scoped LFS object already uploaded and verified through the LFS Batch API or a signed upload URL:
 
 ```json
 {

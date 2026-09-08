@@ -15,6 +15,7 @@ const (
 	CodePathNotFound       = "path_not_found"
 	CodePathConflict       = "path_conflict"
 	CodeLFSObjectNotFound  = "lfs_object_not_found"
+	CodeLFSUnavailable     = "lfs_unavailable"
 
 	CodeHeadMismatch    = "head_mismatch"
 	CodeUnknownBlob     = "unknown_blob"

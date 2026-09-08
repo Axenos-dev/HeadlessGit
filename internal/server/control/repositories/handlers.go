@@ -25,6 +25,7 @@ type RepositoryManager interface {
 	PrepareBlob(ctx context.Context, repositoryID int64, ref, treePath string, includeLFS bool) (domain.BlobRequest, error)
 	StreamBlob(ctx context.Context, req domain.BlobRequest, out io.Writer) error
 	WriteBlob(ctx context.Context, repositoryID int64, in io.Reader) (string, int64, error)
+	CreateLFSUpload(ctx context.Context, repositoryID, userID, size int64) (domain.LFSUploadTarget, error)
 	Commit(ctx context.Context, repositoryID int64, req domain.CommitRequest) (domain.CommitResult, error)
 	ListPathPolicies(ctx context.Context, repositoryID int64) ([]domain.PathPolicy, error)
 	AddPathPolicy(ctx context.Context, repositoryID int64, pattern, reason string) (domain.PathPolicy, error)
@@ -48,6 +49,7 @@ func (h *handlers) RegisterRoutes(parent chi.Router) {
 		r.Post("/", response.Handler(h.logger, h.createRepository))
 		r.Get("/by-path/{namespace}/{name}", response.Handler(h.logger, h.getRepositoryByPath))
 		r.Post("/{repositoryID}/blobs", response.Handler(h.logger, h.uploadBlob))
+		r.Post("/{repositoryID}/uploads", response.Handler(h.logger, h.createLFSUpload))
 		r.Post("/{repositoryID}/commits", response.Handler(h.logger, h.createCommit))
 		r.Get("/{repositoryID}/commits/{sha}", response.Handler(h.logger, h.getCommit))
 		r.Get("/{repositoryID}", response.Handler(h.logger, h.getRepository))

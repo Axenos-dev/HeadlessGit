@@ -52,6 +52,7 @@ type RepositoryStorage interface {
 type LFSObjects interface {
 	GetObject(ctx context.Context, repo domain.Repository, oid string) (io.ReadCloser, int64, error)
 	StoreObject(ctx context.Context, repo domain.Repository, uploaderID int64, oid string, size int64, r io.Reader) error
+	CreateUpload(repo domain.Repository, userID, size int64) (domain.LFSUploadTarget, error)
 }
 
 // implemented by the webhooks service; nil disables push events for api commits
@@ -459,6 +460,17 @@ func (s *Service) WriteBlob(ctx context.Context, repositoryID int64, in io.Reade
 	}
 
 	return s.storage.WriteBlob(ctx, repo.StoragePath, in)
+}
+
+func (s *Service) CreateLFSUpload(ctx context.Context, repositoryID, userID, size int64) (domain.LFSUploadTarget, error) {
+	if s.lfs == nil {
+		return domain.LFSUploadTarget{}, ErrLFSNotEnabled
+	}
+	repo, err := s.Get(ctx, repositoryID)
+	if err != nil {
+		return domain.LFSUploadTarget{}, err
+	}
+	return s.lfs.CreateUpload(repo, userID, size)
 }
 
 func (s *Service) ListPathPolicies(ctx context.Context, repositoryID int64) ([]domain.PathPolicy, error) {

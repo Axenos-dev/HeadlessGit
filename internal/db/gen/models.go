@@ -16,6 +16,7 @@ type LfsObject struct {
 	SizeBytes       int64
 	Verified        bool
 	CreatedAtUnixMs int64
+	StorageKey      string
 }
 
 type PathPolicy struct {
