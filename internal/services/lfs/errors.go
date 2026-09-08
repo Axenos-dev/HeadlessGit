@@ -7,7 +7,6 @@ var (
 	ErrObjectNotFound       = errors.New("lfs: object not found")
 	ErrObjectMismatch       = errors.New("lfs: object content does not match oid/size")
 	ErrUnsupportedOperation = errors.New("lfs: unsupported batch operation")
-	ErrUploadUnavailable    = errors.New("lfs: direct uploads are unavailable")
 	ErrInvalidUpload        = errors.New("lfs: invalid upload authorization")
 	ErrUploadExpired        = errors.New("lfs: upload authorization expired")
 )

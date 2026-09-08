@@ -7,8 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
-	"net/url"
-	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -66,11 +65,8 @@ func TestUploadStreamsAndRegistersObject(t *testing.T) {
 	store := &uploadStorage{}
 	service := NewService(zap.NewNop(), registry, store, "https://git.test", []byte("upload-key"))
 
-	target, err := service.CreateUpload(repo, 42, int64(len(payload)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	auth := authorizationFromURL(t, target)
+	auth := domain.UploadAuthorization{Kind: domain.UploadLFS, UploadID: strings.Repeat("a", 64), RepositoryID: repo.ID, UserID: 42, Size: int64(len(payload)), ExpiresAt: time.Now().Add(time.Minute)}
+	auth.Signature = auth.Sign([]byte("upload-key"))
 	object, err := service.Upload(context.Background(), auth, bytes.NewReader(payload))
 	if err != nil {
 		t.Fatal(err)
@@ -94,13 +90,11 @@ func TestUploadStreamsAndRegistersObject(t *testing.T) {
 
 func TestUploadAuthorization(t *testing.T) {
 	service := NewService(zap.NewNop(), &uploadRegistry{}, &uploadStorage{}, "https://git.test", []byte("upload-key"))
-	target, err := service.CreateUpload(domain.Repository{ID: 7}, 42, 4)
-	if err != nil {
-		t.Fatal(err)
-	}
+	auth := domain.UploadAuthorization{Kind: domain.UploadLFS, UploadID: strings.Repeat("a", 64), RepositoryID: 7, UserID: 42, Size: 4, ExpiresAt: time.Now().Add(time.Minute)}
+	auth.Signature = auth.Sign([]byte("upload-key"))
 
 	t.Run("tampered", func(t *testing.T) {
-		auth := authorizationFromURL(t, target)
+		auth := auth
 		auth.UserID++
 		if _, err := service.Upload(context.Background(), auth, bytes.NewReader([]byte("data"))); !errors.Is(err, ErrInvalidUpload) {
 			t.Fatalf("error = %v", err)
@@ -108,35 +102,11 @@ func TestUploadAuthorization(t *testing.T) {
 	})
 
 	t.Run("expired", func(t *testing.T) {
-		auth := authorizationFromURL(t, target)
+		auth := auth
 		auth.ExpiresAt = time.Unix(1, 0)
-		auth.Signature = service.signUpload(auth)
+		auth.Signature = auth.Sign([]byte("upload-key"))
 		if _, err := service.Upload(context.Background(), auth, bytes.NewReader([]byte("data"))); !errors.Is(err, ErrUploadExpired) {
 			t.Fatalf("error = %v", err)
 		}
 	})
-}
-
-func authorizationFromURL(t *testing.T, target domain.LFSUploadTarget) domain.LFSUploadAuthorization {
-	t.Helper()
-	u, err := url.Parse(target.Href)
-	if err != nil {
-		t.Fatal(err)
-	}
-	query := u.Query()
-	parse := func(name string) int64 {
-		value, err := strconv.ParseInt(query.Get(name), 10, 64)
-		if err != nil {
-			t.Fatalf("parse %s: %v", name, err)
-		}
-		return value
-	}
-	return domain.LFSUploadAuthorization{
-		UploadID:     target.UploadID,
-		RepositoryID: parse("repositoryId"),
-		UserID:       parse("userId"),
-		Size:         parse("size"),
-		ExpiresAt:    time.Unix(parse("expires"), 0).UTC(),
-		Signature:    query.Get("signature"),
-	}
 }

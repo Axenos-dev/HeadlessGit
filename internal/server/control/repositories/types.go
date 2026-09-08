@@ -191,21 +191,23 @@ func (r CreateUploadRequest) Validate() error {
 	if r.UserID <= 0 {
 		return errors.New("userId must be positive")
 	}
-	if r.Size <= 0 {
-		return errors.New("size must be positive")
+	if r.Size < 0 {
+		return errors.New("size must not be negative")
 	}
 	return nil
 }
 
 type UploadTarget struct {
+	Kind      domain.UploadKind `json:"kind"`
 	UploadID  string            `json:"uploadId"`
 	UploadURL string            `json:"uploadUrl"`
 	Headers   map[string]string `json:"headers"`
 	ExpiresAt time.Time         `json:"expiresAt"`
 }
 
-func newUploadTarget(target domain.LFSUploadTarget) UploadTarget {
+func newUploadTarget(target domain.UploadTarget) UploadTarget {
 	return UploadTarget{
+		Kind:      target.Kind,
 		UploadID:  target.UploadID,
 		UploadURL: target.Href,
 		Headers:   target.Header,

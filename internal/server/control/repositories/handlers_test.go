@@ -53,7 +53,7 @@ type fakeManager struct {
 	writeSHA string
 	writeErr error
 
-	uploadTarget       domain.LFSUploadTarget
+	uploadTarget       domain.UploadTarget
 	uploadRepositoryID int64
 	uploadUserID       int64
 	uploadSize         int64
@@ -171,7 +171,7 @@ func (f fakeManager) WriteBlob(ctx context.Context, repositoryID int64, in io.Re
 	return f.writeSHA, n, nil
 }
 
-func (f *fakeManager) CreateLFSUpload(_ context.Context, repositoryID, userID, size int64) (domain.LFSUploadTarget, error) {
+func (f *fakeManager) CreateUpload(_ context.Context, repositoryID, userID, size int64) (domain.UploadTarget, error) {
 	f.uploadRepositoryID = repositoryID
 	f.uploadUserID = userID
 	f.uploadSize = size
@@ -805,9 +805,9 @@ func TestUploadBlobErrors(t *testing.T) {
 	}
 }
 
-func TestCreateLFSUpload(t *testing.T) {
+func TestCreateUpload(t *testing.T) {
 	expiresAt := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
-	service := &fakeManager{uploadTarget: domain.LFSUploadTarget{
+	service := &fakeManager{uploadTarget: domain.UploadTarget{
 		UploadID:  "upload-id",
 		Href:      "https://git.test/uploads/upload-id?signature=signed",
 		Header:    map[string]string{"Content-Type": "application/octet-stream"},

@@ -21,6 +21,8 @@ func (h *handlers) getCommit(w http.ResponseWriter, r *http.Request) error {
 
 	commit, err := h.service.GetCommit(r.Context(), id, chi.URLParam(r, "sha"))
 	switch {
+	case errors.Is(err, reposervice.ErrBlobTooLarge):
+		return response.NewError(http.StatusRequestEntityTooLarge, response.CodeInvalidRequest, err.Error())
 	case errors.Is(err, reposervice.ErrRepositoryNotFound):
 		return response.NewError(http.StatusNotFound, response.CodeRepositoryNotFound, "repository not found")
 	case errors.Is(err, reposervice.ErrCommitNotFound):

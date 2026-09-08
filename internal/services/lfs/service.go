@@ -2,7 +2,6 @@ package lfs
 
 import (
 	"context"
-	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
@@ -10,8 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
@@ -64,77 +61,43 @@ func (s *Service) LFSEndpoint(namespace, name string) string {
 	return s.lfsBase(namespace, name)
 }
 
-func (s *Service) CreateUpload(repo domain.Repository, userID, size int64) (domain.LFSUploadTarget, error) {
-	if len(s.uploadKey) == 0 {
-		return domain.LFSUploadTarget{}, ErrUploadUnavailable
+func (s *Service) Upload(ctx context.Context, auth domain.UploadAuthorization, r io.Reader) (domain.UploadedObject, error) {
+	if auth.Kind != domain.UploadLFS || !validUploadID(auth.UploadID) || auth.RepositoryID <= 0 || auth.UserID <= 0 || auth.Size <= 0 || auth.Signature == "" {
+		return domain.UploadedObject{}, ErrInvalidUpload
 	}
-
-	uploadID, err := randomHex(32)
-	if err != nil {
-		return domain.LFSUploadTarget{}, err
-	}
-	expiresAt := time.Now().UTC().Add(presignTTL).Truncate(time.Second)
-	auth := domain.LFSUploadAuthorization{
-		UploadID:     uploadID,
-		RepositoryID: repo.ID,
-		UserID:       userID,
-		Size:         size,
-		ExpiresAt:    expiresAt,
-	}
-	auth.Signature = s.signUpload(auth)
-
-	query := url.Values{}
-	query.Set("repositoryId", strconv.FormatInt(auth.RepositoryID, 10))
-	query.Set("userId", strconv.FormatInt(auth.UserID, 10))
-	query.Set("size", strconv.FormatInt(auth.Size, 10))
-	query.Set("expires", strconv.FormatInt(auth.ExpiresAt.Unix(), 10))
-	query.Set("signature", auth.Signature)
-
-	return domain.LFSUploadTarget{
-		UploadID:  uploadID,
-		Href:      s.publicURL + "/uploads/" + uploadID + "?" + query.Encode(),
-		Header:    map[string]string{"Content-Type": "application/octet-stream"},
-		ExpiresAt: expiresAt,
-	}, nil
-}
-
-func (s *Service) Upload(ctx context.Context, auth domain.LFSUploadAuthorization, r io.Reader) (domain.LFSUploadedObject, error) {
-	if !validUploadID(auth.UploadID) || auth.RepositoryID <= 0 || auth.UserID <= 0 || auth.Size <= 0 || auth.Signature == "" {
-		return domain.LFSUploadedObject{}, ErrInvalidUpload
-	}
-	if !s.validUploadSignature(auth) {
-		return domain.LFSUploadedObject{}, ErrInvalidUpload
+	if !auth.ValidSignature(s.uploadKey) {
+		return domain.UploadedObject{}, ErrInvalidUpload
 	}
 	if time.Now().After(auth.ExpiresAt) {
-		return domain.LFSUploadedObject{}, ErrUploadExpired
+		return domain.UploadedObject{}, ErrUploadExpired
 	}
 
 	objectID, err := randomHex(32)
 	if err != nil {
-		return domain.LFSUploadedObject{}, err
+		return domain.UploadedObject{}, err
 	}
 	key := uploadedObjectKey(auth.RepositoryID, objectID)
 	hasher := sha256.New()
 	counter := &countingReader{r: io.TeeReader(r, hasher)}
 	if err := s.storage.Put(ctx, key, auth.Size, counter); err != nil {
 		s.deleteObject(ctx, key)
-		return domain.LFSUploadedObject{}, err
+		return domain.UploadedObject{}, err
 	}
 	if counter.n != auth.Size {
 		s.deleteObject(ctx, key)
-		return domain.LFSUploadedObject{}, ErrObjectMismatch
+		return domain.UploadedObject{}, ErrObjectMismatch
 	}
 
 	oid := hex.EncodeToString(hasher.Sum(nil))
-	object := domain.LFSUploadedObject{OID: oid, Size: counter.n}
+	object := domain.UploadedObject{Kind: domain.UploadLFS, OID: oid, Size: counter.n}
 	if err := s.registerUpload(ctx, auth, object, key); err != nil {
 		s.deleteObject(ctx, key)
-		return domain.LFSUploadedObject{}, err
+		return domain.UploadedObject{}, err
 	}
 	return object, nil
 }
 
-func (s *Service) registerUpload(ctx context.Context, auth domain.LFSUploadAuthorization, object domain.LFSUploadedObject, key string) error {
+func (s *Service) registerUpload(ctx context.Context, auth domain.UploadAuthorization, object domain.UploadedObject, key string) error {
 	_, err := s.registry.CreateVerifiedLFSObject(ctx, auth.UserID, auth.RepositoryID, object.OID, object.Size, key)
 	if err == nil {
 		return nil
@@ -161,26 +124,6 @@ func (s *Service) registerUpload(ctx context.Context, auth domain.LFSUploadAutho
 
 	s.deleteObject(ctx, key)
 	return nil
-}
-
-func (s *Service) signUpload(auth domain.LFSUploadAuthorization) string {
-	mac := hmac.New(sha256.New, s.uploadKey)
-	io.WriteString(mac, uploadSignaturePayload(auth))
-	return hex.EncodeToString(mac.Sum(nil))
-}
-
-func (s *Service) validUploadSignature(auth domain.LFSUploadAuthorization) bool {
-	provided, err := hex.DecodeString(auth.Signature)
-	if err != nil {
-		return false
-	}
-	mac := hmac.New(sha256.New, s.uploadKey)
-	io.WriteString(mac, uploadSignaturePayload(auth))
-	return hmac.Equal(provided, mac.Sum(nil))
-}
-
-func uploadSignaturePayload(auth domain.LFSUploadAuthorization) string {
-	return fmt.Sprintf("%s\n%d\n%d\n%d\n%d", auth.UploadID, auth.RepositoryID, auth.UserID, auth.Size, auth.ExpiresAt.Unix())
 }
 
 func (s *Service) Batch(

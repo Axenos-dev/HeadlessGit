@@ -3,6 +3,7 @@ package gitbackend
 import "errors"
 
 var (
+	ErrBlobTooLarge = errors.New("raw blob exceeds size limit; upload through LFS")
 	ErrInvalidRev   = errors.New("invalid revision")
 	ErrInvalidPath  = errors.New("invalid tree path")
 	ErrRevNotFound  = errors.New("revision not found")
@@ -17,5 +18,4 @@ var (
 	ErrHeadMismatch    = errors.New("branch head mismatch")
 	ErrNothingToCommit = errors.New("nothing to commit")
 	ErrLFSRequired     = errors.New("path is lfs-tracked but no clean filter is available")
-	ErrLFSNotTracked   = errors.New("lfs object path is not lfs-tracked")
 )
