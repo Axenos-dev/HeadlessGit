@@ -76,6 +76,7 @@ func main() {
 			lfs.NewRegistry(db),
 			store,
 			config.LFS.PublicURL,
+			[]byte(config.AdminToken),
 		)
 	}
 

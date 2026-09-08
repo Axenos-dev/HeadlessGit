@@ -2,12 +2,16 @@ package lfs
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,10 +25,12 @@ import (
 const presignTTL = 15 * time.Minute
 
 type Registry interface {
-	CreateLFSObject(ctx context.Context, userID, repositoryID int64, objectID string, sizeBytes int64) (gen.LfsObject, error)
+	CreateLFSObject(ctx context.Context, userID, repositoryID int64, objectID string, sizeBytes int64, storageKey string) (gen.LfsObject, error)
+	CreateVerifiedLFSObject(ctx context.Context, userID, repositoryID int64, objectID string, sizeBytes int64, storageKey string) (gen.LfsObject, error)
 	GetLFSObject(ctx context.Context, repositoryID int64, objectID string) (gen.LfsObject, error)
 	DeleteLFSObject(ctx context.Context, repositoryID int64, objectID string) error
 	SetLFSObjectVerified(ctx context.Context, repositoryID int64, objectID string, verified bool) (gen.LfsObject, error)
+	VerifyLFSObjectAtKey(ctx context.Context, userID, repositoryID int64, objectID string, sizeBytes int64, storageKey string) (gen.LfsObject, error)
 }
 type Service struct {
 	logger   *zap.Logger
@@ -37,14 +43,16 @@ type Service struct {
 	// pre, ok := storage.(storage.Presigner)
 
 	publicURL string
+	uploadKey []byte
 }
 
-func NewService(logger *zap.Logger, registry Registry, storage storage.Storage, publicURL string) *Service {
+func NewService(logger *zap.Logger, registry Registry, storage storage.Storage, publicURL string, uploadKey []byte) *Service {
 	return &Service{
 		logger:    logger,
 		registry:  registry,
 		storage:   storage,
 		publicURL: strings.TrimRight(publicURL, "/"),
+		uploadKey: uploadKey,
 	}
 }
 
@@ -54,6 +62,125 @@ func (s *Service) lfsBase(namespace, name string) string {
 
 func (s *Service) LFSEndpoint(namespace, name string) string {
 	return s.lfsBase(namespace, name)
+}
+
+func (s *Service) CreateUpload(repo domain.Repository, userID, size int64) (domain.LFSUploadTarget, error) {
+	if len(s.uploadKey) == 0 {
+		return domain.LFSUploadTarget{}, ErrUploadUnavailable
+	}
+
+	uploadID, err := randomHex(32)
+	if err != nil {
+		return domain.LFSUploadTarget{}, err
+	}
+	expiresAt := time.Now().UTC().Add(presignTTL).Truncate(time.Second)
+	auth := domain.LFSUploadAuthorization{
+		UploadID:     uploadID,
+		RepositoryID: repo.ID,
+		UserID:       userID,
+		Size:         size,
+		ExpiresAt:    expiresAt,
+	}
+	auth.Signature = s.signUpload(auth)
+
+	query := url.Values{}
+	query.Set("repositoryId", strconv.FormatInt(auth.RepositoryID, 10))
+	query.Set("userId", strconv.FormatInt(auth.UserID, 10))
+	query.Set("size", strconv.FormatInt(auth.Size, 10))
+	query.Set("expires", strconv.FormatInt(auth.ExpiresAt.Unix(), 10))
+	query.Set("signature", auth.Signature)
+
+	return domain.LFSUploadTarget{
+		UploadID:  uploadID,
+		Href:      s.publicURL + "/uploads/" + uploadID + "?" + query.Encode(),
+		Header:    map[string]string{"Content-Type": "application/octet-stream"},
+		ExpiresAt: expiresAt,
+	}, nil
+}
+
+func (s *Service) Upload(ctx context.Context, auth domain.LFSUploadAuthorization, r io.Reader) (domain.LFSUploadedObject, error) {
+	if !validUploadID(auth.UploadID) || auth.RepositoryID <= 0 || auth.UserID <= 0 || auth.Size <= 0 || auth.Signature == "" {
+		return domain.LFSUploadedObject{}, ErrInvalidUpload
+	}
+	if !s.validUploadSignature(auth) {
+		return domain.LFSUploadedObject{}, ErrInvalidUpload
+	}
+	if time.Now().After(auth.ExpiresAt) {
+		return domain.LFSUploadedObject{}, ErrUploadExpired
+	}
+
+	objectID, err := randomHex(32)
+	if err != nil {
+		return domain.LFSUploadedObject{}, err
+	}
+	key := uploadedObjectKey(auth.RepositoryID, objectID)
+	hasher := sha256.New()
+	counter := &countingReader{r: io.TeeReader(r, hasher)}
+	if err := s.storage.Put(ctx, key, auth.Size, counter); err != nil {
+		s.deleteObject(ctx, key)
+		return domain.LFSUploadedObject{}, err
+	}
+	if counter.n != auth.Size {
+		s.deleteObject(ctx, key)
+		return domain.LFSUploadedObject{}, ErrObjectMismatch
+	}
+
+	oid := hex.EncodeToString(hasher.Sum(nil))
+	object := domain.LFSUploadedObject{OID: oid, Size: counter.n}
+	if err := s.registerUpload(ctx, auth, object, key); err != nil {
+		s.deleteObject(ctx, key)
+		return domain.LFSUploadedObject{}, err
+	}
+	return object, nil
+}
+
+func (s *Service) registerUpload(ctx context.Context, auth domain.LFSUploadAuthorization, object domain.LFSUploadedObject, key string) error {
+	_, err := s.registry.CreateVerifiedLFSObject(ctx, auth.UserID, auth.RepositoryID, object.OID, object.Size, key)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+
+	_, err = s.registry.VerifyLFSObjectAtKey(ctx, auth.UserID, auth.RepositoryID, object.OID, object.Size, key)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+
+	existing, err := s.registry.GetLFSObject(ctx, auth.RepositoryID, object.OID)
+	if err != nil {
+		return err
+	}
+	if !existing.Verified || existing.SizeBytes != object.Size {
+		return ErrObjectMismatch
+	}
+
+	s.deleteObject(ctx, key)
+	return nil
+}
+
+func (s *Service) signUpload(auth domain.LFSUploadAuthorization) string {
+	mac := hmac.New(sha256.New, s.uploadKey)
+	io.WriteString(mac, uploadSignaturePayload(auth))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func (s *Service) validUploadSignature(auth domain.LFSUploadAuthorization) bool {
+	provided, err := hex.DecodeString(auth.Signature)
+	if err != nil {
+		return false
+	}
+	mac := hmac.New(sha256.New, s.uploadKey)
+	io.WriteString(mac, uploadSignaturePayload(auth))
+	return hmac.Equal(provided, mac.Sum(nil))
+}
+
+func uploadSignaturePayload(auth domain.LFSUploadAuthorization) string {
+	return fmt.Sprintf("%s\n%d\n%d\n%d\n%d", auth.UploadID, auth.RepositoryID, auth.UserID, auth.Size, auth.ExpiresAt.Unix())
 }
 
 func (s *Service) Batch(
@@ -111,7 +238,7 @@ func (s *Service) batchUpload(
 		// if row exists but never confirmed -> let the client reupload
 	case errors.Is(err, sql.ErrNoRows):
 		// record the pending upload
-		if _, cerr := s.registry.CreateLFSObject(ctx, uploaderID, repo.ID, p.OID, p.Size); cerr != nil && !errors.Is(cerr, sql.ErrNoRows) {
+		if _, cerr := s.registry.CreateLFSObject(ctx, uploaderID, repo.ID, p.OID, p.Size, objectKey(repo.ID, p.OID)); cerr != nil && !errors.Is(cerr, sql.ErrNoRows) {
 			return domain.LFSObjectResponse{}, cerr
 		}
 	default:
@@ -134,7 +261,7 @@ func (s *Service) batchDownload(ctx context.Context, repo domain.Repository, lfs
 		return domain.LFSObjectResponse{}, err
 	}
 
-	action, err := s.downloadAction(ctx, repo, lfsBase, row.ObjectID)
+	action, err := s.downloadAction(ctx, lfsBase, row.ObjectID, row.StorageKey)
 	if err != nil {
 		return domain.LFSObjectResponse{}, err
 	}
@@ -165,9 +292,9 @@ func (s *Service) uploadActions(ctx context.Context, repo domain.Repository, lfs
 	}, nil
 }
 
-func (s *Service) downloadAction(ctx context.Context, repo domain.Repository, lfsBase, oid string) (domain.LFSAction, error) {
+func (s *Service) downloadAction(ctx context.Context, lfsBase, oid, key string) (domain.LFSAction, error) {
 	if pre, ok := s.storage.(storage.Presigner); ok {
-		url, err := pre.PresignGet(ctx, objectKey(repo.ID, oid), presignTTL)
+		url, err := pre.PresignGet(ctx, key, presignTTL)
 		if err != nil {
 			return domain.LFSAction{}, err
 		}
@@ -184,7 +311,15 @@ func (s *Service) Verify(ctx context.Context, repo domain.Repository, oid string
 		return err
 	}
 
-	exists, actual, err := s.storage.Stat(ctx, objectKey(repo.ID, oid))
+	row, err := s.registry.GetLFSObject(ctx, repo.ID, oid)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrObjectNotFound
+	}
+	if err != nil {
+		return err
+	}
+
+	exists, actual, err := s.storage.Stat(ctx, row.StorageKey)
 	if err != nil {
 		return err
 	}
@@ -210,7 +345,7 @@ func (s *Service) GetObject(ctx context.Context, repo domain.Repository, oid str
 		return nil, 0, err
 	}
 
-	rc, err := s.storage.Get(ctx, objectKey(repo.ID, oid))
+	rc, err := s.storage.Get(ctx, row.StorageKey)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -256,7 +391,7 @@ func (s *Service) StoreObject(ctx context.Context, repo domain.Repository, uploa
 	}
 
 	// record the pending object; a conflicting existing row is fine
-	if _, err := s.registry.CreateLFSObject(ctx, uploaderID, repo.ID, oid, size); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if _, err := s.registry.CreateLFSObject(ctx, uploaderID, repo.ID, oid, size, objectKey(repo.ID, oid)); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
 
@@ -267,6 +402,36 @@ func (s *Service) StoreObject(ctx context.Context, repo domain.Repository, uploa
 // {repo_id}/ab/cd/<oid>
 func objectKey(repoID int64, oid string) string {
 	return fmt.Sprintf("%d/%s/%s/%s", repoID, oid[0:2], oid[2:4], oid)
+}
+
+func uploadedObjectKey(repoID int64, objectID string) string {
+	return fmt.Sprintf("%d/objects/%s", repoID, objectID)
+}
+
+func randomHex(size int) (string, error) {
+	b := make([]byte, size)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+func validUploadID(uploadID string) bool {
+	if len(uploadID) != 64 {
+		return false
+	}
+	for _, c := range uploadID {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Service) deleteObject(ctx context.Context, key string) {
+	if err := s.storage.Delete(ctx, key); err != nil {
+		s.logger.Warn("failed to remove lfs object", zap.String("storage_key", key), zap.Error(err))
+	}
 }
 
 // enforces a 64 char lowercase hex sha256

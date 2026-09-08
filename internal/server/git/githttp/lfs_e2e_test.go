@@ -92,7 +92,7 @@ func TestGitLFSEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("init s3: %v", err)
 	}
-	lfsSvc := lfs.NewService(log, lfs.NewRegistry(database), store, publicURL)
+	lfsSvc := lfs.NewService(log, lfs.NewRegistry(database), store, publicURL, nil)
 
 	srv := githttp.NewServer(log, githttp.Services{
 		Repositories:   repoSvc,

@@ -53,6 +53,11 @@ type fakeManager struct {
 	writeSHA string
 	writeErr error
 
+	uploadTarget       domain.LFSUploadTarget
+	uploadRepositoryID int64
+	uploadUserID       int64
+	uploadSize         int64
+
 	commitResult domain.CommitResult
 	commitErr    error
 	commitReq    domain.CommitRequest
@@ -164,6 +169,13 @@ func (f fakeManager) WriteBlob(ctx context.Context, repositoryID int64, in io.Re
 		return "", 0, f.writeErr
 	}
 	return f.writeSHA, n, nil
+}
+
+func (f *fakeManager) CreateLFSUpload(_ context.Context, repositoryID, userID, size int64) (domain.LFSUploadTarget, error) {
+	f.uploadRepositoryID = repositoryID
+	f.uploadUserID = userID
+	f.uploadSize = size
+	return f.uploadTarget, nil
 }
 
 // newTestRouter mounts the handlers the same way the control server does
@@ -790,6 +802,38 @@ func TestUploadBlobErrors(t *testing.T) {
 				t.Errorf("code = %q, want %q", body.Error.Code, tc.wantCode)
 			}
 		})
+	}
+}
+
+func TestCreateLFSUpload(t *testing.T) {
+	expiresAt := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+	service := &fakeManager{uploadTarget: domain.LFSUploadTarget{
+		UploadID:  "upload-id",
+		Href:      "https://git.test/uploads/upload-id?signature=signed",
+		Header:    map[string]string{"Content-Type": "application/octet-stream"},
+		ExpiresAt: expiresAt,
+	}}
+	rec := httptest.NewRecorder()
+	newTestRouter(service).ServeHTTP(rec, httptest.NewRequest(
+		http.MethodPost,
+		"/repositories/7/uploads",
+		strings.NewReader(`{"userId":42,"size":1024}`),
+	))
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if service.uploadRepositoryID != 7 || service.uploadUserID != 42 || service.uploadSize != 1024 {
+		t.Fatalf("arguments = repository %d, user %d, size %d", service.uploadRepositoryID, service.uploadUserID, service.uploadSize)
+	}
+	var body struct {
+		Data UploadTarget `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Data.UploadID != "upload-id" || body.Data.UploadURL != service.uploadTarget.Href || !body.Data.ExpiresAt.Equal(expiresAt) {
+		t.Fatalf("response = %+v", body.Data)
 	}
 }
 

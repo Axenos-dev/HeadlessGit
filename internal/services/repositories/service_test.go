@@ -195,6 +195,10 @@ func (f fakeLFS) StoreObject(ctx context.Context, repo domain.Repository, upload
 	return nil
 }
 
+func (f fakeLFS) CreateUpload(repo domain.Repository, userID, size int64) (domain.LFSUploadTarget, error) {
+	return domain.LFSUploadTarget{}, nil
+}
+
 type fakeDispatcher struct {
 	events *[]domain.RepositoryEvent
 }

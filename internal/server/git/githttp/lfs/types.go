@@ -51,6 +51,11 @@ type errorResponse struct {
 	Message string `json:"message"`
 }
 
+type uploadedObject struct {
+	OID  string `json:"oid"`
+	Size int64  `json:"size"`
+}
+
 func toObjectsJSON(results []domain.LFSObjectResponse) []objectJSON {
 	out := make([]objectJSON, len(results))
 	for i, res := range results {

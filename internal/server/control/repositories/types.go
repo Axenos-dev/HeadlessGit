@@ -182,6 +182,37 @@ type UploadBlobResponse struct {
 	Size int64  `json:"size"`
 }
 
+type CreateUploadRequest struct {
+	UserID int64 `json:"userId"`
+	Size   int64 `json:"size"`
+}
+
+func (r CreateUploadRequest) Validate() error {
+	if r.UserID <= 0 {
+		return errors.New("userId must be positive")
+	}
+	if r.Size <= 0 {
+		return errors.New("size must be positive")
+	}
+	return nil
+}
+
+type UploadTarget struct {
+	UploadID  string            `json:"uploadId"`
+	UploadURL string            `json:"uploadUrl"`
+	Headers   map[string]string `json:"headers"`
+	ExpiresAt time.Time         `json:"expiresAt"`
+}
+
+func newUploadTarget(target domain.LFSUploadTarget) UploadTarget {
+	return UploadTarget{
+		UploadID:  target.UploadID,
+		UploadURL: target.Href,
+		Headers:   target.Header,
+		ExpiresAt: target.ExpiresAt,
+	}
+}
+
 type CommitAuthor struct {
 	Name  string `json:"name"`
 	Email string `json:"email"`

@@ -39,6 +39,27 @@ type LFSObjectResponse struct {
 	Error   *LFSObjectError
 }
 
+type LFSUploadTarget struct {
+	UploadID  string
+	Href      string
+	Header    map[string]string
+	ExpiresAt time.Time
+}
+
+type LFSUploadAuthorization struct {
+	UploadID     string
+	RepositoryID int64
+	UserID       int64
+	Size         int64
+	ExpiresAt    time.Time
+	Signature    string
+}
+
+type LFSUploadedObject struct {
+	OID  string
+	Size int64
+}
+
 func ParseLFSPointer(data []byte) (LFSPointer, bool) {
 	if len(data) == 0 || len(data) > LFSPointerMaxSize {
 		return LFSPointer{}, false

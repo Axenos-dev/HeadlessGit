@@ -17,12 +17,23 @@ func NewRegistry(db *db.DB) *LFSRegistry {
 	}
 }
 
-func (r *LFSRegistry) CreateLFSObject(ctx context.Context, userID, repositoryID int64, objectID string, sizeBytes int64) (gen.LfsObject, error) {
+func (r *LFSRegistry) CreateLFSObject(ctx context.Context, userID, repositoryID int64, objectID string, sizeBytes int64, storageKey string) (gen.LfsObject, error) {
 	return r.db.CreateLFSObject(ctx, gen.CreateLFSObjectParams{
 		UserID:       userID,
 		RepositoryID: repositoryID,
 		ObjectID:     objectID,
 		SizeBytes:    sizeBytes,
+		StorageKey:   storageKey,
+	})
+}
+
+func (r *LFSRegistry) CreateVerifiedLFSObject(ctx context.Context, userID, repositoryID int64, objectID string, sizeBytes int64, storageKey string) (gen.LfsObject, error) {
+	return r.db.CreateVerifiedLFSObject(ctx, gen.CreateVerifiedLFSObjectParams{
+		UserID:       userID,
+		RepositoryID: repositoryID,
+		ObjectID:     objectID,
+		SizeBytes:    sizeBytes,
+		StorageKey:   storageKey,
 	})
 }
 
@@ -45,5 +56,15 @@ func (r *LFSRegistry) SetLFSObjectVerified(ctx context.Context, repositoryID int
 		Verified:     verified,
 		ObjectID:     objectID,
 		RepositoryID: repositoryID,
+	})
+}
+
+func (r *LFSRegistry) VerifyLFSObjectAtKey(ctx context.Context, userID, repositoryID int64, objectID string, sizeBytes int64, storageKey string) (gen.LfsObject, error) {
+	return r.db.VerifyLFSObjectAtKey(ctx, gen.VerifyLFSObjectAtKeyParams{
+		UserID:       userID,
+		RepositoryID: repositoryID,
+		ObjectID:     objectID,
+		SizeBytes:    sizeBytes,
+		StorageKey:   storageKey,
 	})
 }

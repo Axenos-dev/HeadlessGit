@@ -11,11 +11,11 @@ import (
 
 const createLFSObject = `-- name: CreateLFSObject :one
 insert into lfs_objects (
-  user_id, repository_id, object_id, size_bytes
+  user_id, repository_id, object_id, size_bytes, storage_key
 ) values (
-  ?, ?, ?, ?
+  ?, ?, ?, ?, ?
 ) on conflict(repository_id, object_id) do nothing 
-returning id, user_id, repository_id, object_id, size_bytes, verified, created_at_unix_ms
+returning id, user_id, repository_id, object_id, size_bytes, verified, created_at_unix_ms, storage_key
 `
 
 type CreateLFSObjectParams struct {
@@ -23,6 +23,7 @@ type CreateLFSObjectParams struct {
 	RepositoryID int64
 	ObjectID     string
 	SizeBytes    int64
+	StorageKey   string
 }
 
 func (q *Queries) CreateLFSObject(ctx context.Context, arg CreateLFSObjectParams) (LfsObject, error) {
@@ -31,6 +32,7 @@ func (q *Queries) CreateLFSObject(ctx context.Context, arg CreateLFSObjectParams
 		arg.RepositoryID,
 		arg.ObjectID,
 		arg.SizeBytes,
+		arg.StorageKey,
 	)
 	var i LfsObject
 	err := row.Scan(
@@ -41,6 +43,46 @@ func (q *Queries) CreateLFSObject(ctx context.Context, arg CreateLFSObjectParams
 		&i.SizeBytes,
 		&i.Verified,
 		&i.CreatedAtUnixMs,
+		&i.StorageKey,
+	)
+	return i, err
+}
+
+const createVerifiedLFSObject = `-- name: CreateVerifiedLFSObject :one
+insert into lfs_objects (
+  user_id, repository_id, object_id, size_bytes, storage_key, verified
+) values (
+  ?, ?, ?, ?, ?, 1
+) on conflict(repository_id, object_id) do nothing
+returning id, user_id, repository_id, object_id, size_bytes, verified, created_at_unix_ms, storage_key
+`
+
+type CreateVerifiedLFSObjectParams struct {
+	UserID       int64
+	RepositoryID int64
+	ObjectID     string
+	SizeBytes    int64
+	StorageKey   string
+}
+
+func (q *Queries) CreateVerifiedLFSObject(ctx context.Context, arg CreateVerifiedLFSObjectParams) (LfsObject, error) {
+	row := q.db.QueryRowContext(ctx, createVerifiedLFSObject,
+		arg.UserID,
+		arg.RepositoryID,
+		arg.ObjectID,
+		arg.SizeBytes,
+		arg.StorageKey,
+	)
+	var i LfsObject
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.RepositoryID,
+		&i.ObjectID,
+		&i.SizeBytes,
+		&i.Verified,
+		&i.CreatedAtUnixMs,
+		&i.StorageKey,
 	)
 	return i, err
 }
@@ -61,7 +103,7 @@ func (q *Queries) DeleteLFSObject(ctx context.Context, arg DeleteLFSObjectParams
 }
 
 const getLFSObject = `-- name: GetLFSObject :one
-select id, user_id, repository_id, object_id, size_bytes, verified, created_at_unix_ms from lfs_objects
+select id, user_id, repository_id, object_id, size_bytes, verified, created_at_unix_ms, storage_key from lfs_objects
 where object_id = ? and repository_id=? limit 1
 `
 
@@ -81,6 +123,7 @@ func (q *Queries) GetLFSObject(ctx context.Context, arg GetLFSObjectParams) (Lfs
 		&i.SizeBytes,
 		&i.Verified,
 		&i.CreatedAtUnixMs,
+		&i.StorageKey,
 	)
 	return i, err
 }
@@ -88,7 +131,7 @@ func (q *Queries) GetLFSObject(ctx context.Context, arg GetLFSObjectParams) (Lfs
 const setLFSObjectVerified = `-- name: SetLFSObjectVerified :one
 update lfs_objects 
 set verified=? where object_id=? and repository_id=?
-returning id, user_id, repository_id, object_id, size_bytes, verified, created_at_unix_ms
+returning id, user_id, repository_id, object_id, size_bytes, verified, created_at_unix_ms, storage_key
 `
 
 type SetLFSObjectVerifiedParams struct {
@@ -108,6 +151,44 @@ func (q *Queries) SetLFSObjectVerified(ctx context.Context, arg SetLFSObjectVeri
 		&i.SizeBytes,
 		&i.Verified,
 		&i.CreatedAtUnixMs,
+		&i.StorageKey,
+	)
+	return i, err
+}
+
+const verifyLFSObjectAtKey = `-- name: VerifyLFSObjectAtKey :one
+update lfs_objects
+set user_id=?, size_bytes=?, storage_key=?, verified=1
+where object_id=? and repository_id=? and verified=0
+returning id, user_id, repository_id, object_id, size_bytes, verified, created_at_unix_ms, storage_key
+`
+
+type VerifyLFSObjectAtKeyParams struct {
+	UserID       int64
+	SizeBytes    int64
+	StorageKey   string
+	ObjectID     string
+	RepositoryID int64
+}
+
+func (q *Queries) VerifyLFSObjectAtKey(ctx context.Context, arg VerifyLFSObjectAtKeyParams) (LfsObject, error) {
+	row := q.db.QueryRowContext(ctx, verifyLFSObjectAtKey,
+		arg.UserID,
+		arg.SizeBytes,
+		arg.StorageKey,
+		arg.ObjectID,
+		arg.RepositoryID,
+	)
+	var i LfsObject
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.RepositoryID,
+		&i.ObjectID,
+		&i.SizeBytes,
+		&i.Verified,
+		&i.CreatedAtUnixMs,
+		&i.StorageKey,
 	)
 	return i, err
 }
