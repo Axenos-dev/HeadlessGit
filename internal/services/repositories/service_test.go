@@ -195,8 +195,56 @@ func (f fakeLFS) StoreObject(ctx context.Context, repo domain.Repository, upload
 	return nil
 }
 
-func (f fakeLFS) CreateUpload(repo domain.Repository, userID, size int64) (domain.LFSUploadTarget, error) {
-	return domain.LFSUploadTarget{}, nil
+func (f fakeLFS) Upload(ctx context.Context, auth domain.UploadAuthorization, r io.Reader) (domain.UploadedObject, error) {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return domain.UploadedObject{}, err
+	}
+	if int64(len(data)) != auth.Size {
+		return domain.UploadedObject{}, lfsservice.ErrObjectMismatch
+	}
+	hash := sha256.Sum256(data)
+	return domain.UploadedObject{Kind: domain.UploadLFS, OID: fmt.Sprintf("%x", hash), Size: int64(len(data))}, nil
+}
+
+func TestSignedUploadRouting(t *testing.T) {
+	svc := NewService(zap.NewNop(), fakeRegistry{repo: gen.Repository{ID: 7}}, fakeStorage{writeBlobSHA: testSHA}, fakeLFS{}, nil)
+	svc.Uploads = UploadConfig{PublicURL: "https://git.test", SigningKey: []byte("secret"), Threshold: 4}
+	for _, size := range []int64{0, 3, 4, 5} {
+		target, err := svc.CreateUpload(context.Background(), 7, 42, size)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := domain.UploadBlob
+		if size >= 4 {
+			want = domain.UploadLFS
+		}
+		if target.Kind != want {
+			t.Fatalf("size %d: kind %s", size, target.Kind)
+		}
+		auth := domain.UploadAuthorization{Kind: target.Kind, UploadID: target.UploadID, RepositoryID: 7, UserID: 42, Size: size, ExpiresAt: target.ExpiresAt}
+		auth.Signature = auth.Sign(svc.Uploads.SigningKey)
+		object, err := svc.Upload(context.Background(), auth, strings.NewReader(strings.Repeat("x", int(size))))
+		if err != nil || object.Kind != want || object.Size != size {
+			t.Fatalf("object %+v: %v", object, err)
+		}
+		auth.Kind = "invalid"
+		if _, err := svc.Upload(context.Background(), auth, strings.NewReader("")); !errors.Is(err, ErrInvalidUpload) {
+			t.Fatalf("tampering accepted: %v", err)
+		}
+	}
+	auth := domain.UploadAuthorization{Kind: domain.UploadBlob, UploadID: strings.Repeat("a", 64), RepositoryID: 7, UserID: 42, Size: 3, ExpiresAt: time.Now().Add(time.Minute)}
+	auth.Signature = auth.Sign(svc.Uploads.SigningKey)
+	for _, body := range []string{"xx", "xxxx"} {
+		if _, err := svc.Upload(context.Background(), auth, strings.NewReader(body)); !errors.Is(err, lfsservice.ErrObjectMismatch) {
+			t.Fatalf("size mismatch: %v", err)
+		}
+	}
+	auth.ExpiresAt = time.Unix(1, 0)
+	auth.Signature = auth.Sign(svc.Uploads.SigningKey)
+	if _, err := svc.Upload(context.Background(), auth, strings.NewReader("xxx")); !errors.Is(err, ErrUploadExpired) {
+		t.Fatalf("expiry: %v", err)
+	}
 }
 
 type fakeDispatcher struct {
@@ -816,7 +864,6 @@ func TestCommit(t *testing.T) {
 			{gitbackend.ErrUnknownBlob, ErrUnknownBlob},
 			{gitbackend.ErrNothingToCommit, ErrNothingToCommit},
 			{gitbackend.ErrLFSRequired, ErrLFSNotEnabled},
-			{gitbackend.ErrLFSNotTracked, ErrInvalidCommitOps},
 		}
 		for _, tc := range cases {
 			var events []domain.RepositoryEvent

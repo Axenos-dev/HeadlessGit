@@ -95,13 +95,16 @@ Git LFS is enabled if `LFS_ENABLED=true` set in environment. Clients then use it
 - `disk` (default) — objects stored locally on disk under `LFS_ROOT`.
 - `s3` — any S3-compatible bucket (AWS S3, Cloudflare R2, MinIO). Git LFS clients use **presigned URLs**, so object bytes flow directly between the client and the bucket.
 
-The control API can create a signed upload URL for clients that do not know the object's SHA-256. The client sends raw `application/octet-stream` data to that URL. HeadlessGit hashes the stream while writing it to LFS storage, then returns `{oid, size}` for the commit API.
+The control API creates signed upload URLs without a destination path or client-computed hash. Files smaller than `LFS_THRESHOLD_BYTES` go to the repository's Git object database. Files at or above the threshold stream to LFS storage, with SHA-256 computed by HeadlessGit.
+
+The size limit also applies to raw blob uploads, API commits, and new blobs introduced by Git pushes. Oversized raw blobs are rejected even if `.gitattributes` is absent or modified. Existing attribute-based cleaning remains available for smaller tracked files. Explicit verified LFS objects can be committed at any allowed path.
 
 | Variable                   | Default                 | Description                                                                           |
 | -------------------------- | ----------------------- | ------------------------------------------------------------------------------------- |
 | `LFS_ENABLED`              | `false`                 | Enable Git LFS.                                                                       |
+| `LFS_THRESHOLD_BYTES`      | `1048576`               | Files at or above this size use LFS. Minimum: 1024 bytes. Applies even when LFS is disabled. |
 | `LFS_STORAGE_TYPE`         | `disk`                  | `disk` or `s3`.                                                                       |
-| `LFS_PUBLIC_URL`           | _(required if enabled)_ | Externally-reachable base URL of the Git HTTP server, e.g. `https://git.example.com`. |
+| `LFS_PUBLIC_URL`           | _(empty)_               | Externally-reachable Git HTTP base URL. Required for signed uploads and Git LFS.     |
 | `LFS_ROOT`                 | `data/lfs`              | Object directory when `LFS_STORAGE_TYPE=disk`.                                        |
 | `LFS_S3_BUCKET`            | _(required for s3)_     | Bucket name.                                                                          |
 | `LFS_S3_ENDPOINT`          | _(required for s3)_     | Host without scheme, e.g. `<account>.r2.cloudflarestorage.com`.                       |
@@ -161,8 +164,23 @@ Every request requires `Authorization: Bearer <ADMIN_TOKEN>`. Responses are enve
 | `GET`  | `/repositories/{id}/blob?ref=&path=&lfs=`                   | —           | Stream one file's raw content.                                         |
 | `GET`  | `/repositories/{id}/archive?ref=&format=&lfs=&prefix=`      | —           | Stream a `zip` (default) or `tar.gz` archive of the tree.              |
 | `POST` | `/repositories/{id}/blobs`                                  | _raw bytes_ | Upload content into the repo's object database; returns `{sha, size}`. |
-| `POST` | `/repositories/{id}/uploads`                                | `{userId, size}` | Create a signed LFS upload URL.                                    |
+| `POST` | `/repositories/{id}/uploads`                                | `{userId, size}` | Create a signed blob or LFS upload URL.                            |
 | `POST` | `/repositories/{id}/commits`                                | JSON        | Create a commit from Git blobs or verified LFS objects.                |
+
+### Uploading a file
+
+`POST /repositories/{id}/uploads` accepts a positive `userId` and a nonnegative `size`. It returns `{kind, uploadId, uploadUrl, headers, expiresAt}` in the data envelope. The URL expires after 15 minutes. Signed uploads require `ADMIN_TOKEN` and `LFS_PUBLIC_URL`; small blob uploads work with LFS disabled.
+
+Send a `PUT` to `uploadUrl` with the returned headers and raw bytes. The byte count must match the signed size. HeadlessGit returns one of:
+
+```json
+{"data":{"kind":"blob","sha":"...","size":123}}
+{"data":{"kind":"lfs","oid":"...","size":1048576}}
+```
+
+The successful PUT completes the upload. There is no completion request. Use `sha` as `blobSha` or `{oid, size}` as `lfs` in a commit operation. Objects are reusable at multiple destinations within their repository. Path policies apply when committing.
+
+Git clients still use `.gitattributes` to select their LFS clean and smudge filters. The API can resolve LFS content independently through `lfs=true` on blob and archive reads.
 
 ### Reading a repository
 

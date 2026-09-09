@@ -22,6 +22,8 @@ func (h *handlers) uploadBlob(w http.ResponseWriter, r *http.Request) error {
 
 	sha, byteCount, err := h.service.WriteBlob(r.Context(), id, r.Body)
 	switch {
+	case errors.Is(err, reposervice.ErrBlobTooLarge):
+		return response.NewError(http.StatusRequestEntityTooLarge, response.CodeInvalidRequest, err.Error())
 	case errors.Is(err, reposervice.ErrRepositoryNotFound):
 		return response.NewError(http.StatusNotFound, response.CodeRepositoryNotFound, "repository not found")
 	case err != nil:

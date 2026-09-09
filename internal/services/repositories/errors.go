@@ -3,6 +3,10 @@ package repositories
 import "errors"
 
 var (
+	ErrBlobTooLarge          = errors.New("raw blob exceeds size limit; upload through LFS")
+	ErrUploadUnavailable     = errors.New("uploads unavailable")
+	ErrInvalidUpload         = errors.New("invalid upload authorization")
+	ErrUploadExpired         = errors.New("upload authorization expired")
 	ErrRepositoryNotFound    = errors.New("repository not found")
 	ErrRepositoryExists      = errors.New("repository already exists")
 	ErrInvalidRepositoryName = errors.New("invalid repository name")

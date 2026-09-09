@@ -3,13 +3,16 @@ package repositories
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -50,9 +53,9 @@ type RepositoryStorage interface {
 }
 
 type LFSObjects interface {
+	Upload(ctx context.Context, auth domain.UploadAuthorization, r io.Reader) (domain.UploadedObject, error)
 	GetObject(ctx context.Context, repo domain.Repository, oid string) (io.ReadCloser, int64, error)
 	StoreObject(ctx context.Context, repo domain.Repository, uploaderID int64, oid string, size int64, r io.Reader) error
-	CreateUpload(repo domain.Repository, userID, size int64) (domain.LFSUploadTarget, error)
 }
 
 // implemented by the webhooks service; nil disables push events for api commits
@@ -60,7 +63,15 @@ type PushDispatcher interface {
 	DispatchEvent(ctx context.Context, event domain.RepositoryEvent) error
 }
 
+type UploadConfig struct {
+	PublicURL  string
+	SigningKey []byte
+	Threshold  int64
+}
+
 type Service struct {
+	Uploads  UploadConfig
+	
 	logger   *zap.Logger
 	registry Registry
 	storage  RepositoryStorage
@@ -70,6 +81,7 @@ type Service struct {
 
 func NewService(logger *zap.Logger, registry Registry, storage RepositoryStorage, lfs LFSObjects, events PushDispatcher) *Service {
 	return &Service{
+		Uploads:  UploadConfig{Threshold: domain.DefaultLFSThreshold},
 		logger:   logger,
 		registry: registry,
 		storage:  storage,
@@ -459,18 +471,11 @@ func (s *Service) WriteBlob(ctx context.Context, repositoryID int64, in io.Reade
 		return "", 0, err
 	}
 
-	return s.storage.WriteBlob(ctx, repo.StoragePath, in)
-}
-
-func (s *Service) CreateLFSUpload(ctx context.Context, repositoryID, userID, size int64) (domain.LFSUploadTarget, error) {
-	if s.lfs == nil {
-		return domain.LFSUploadTarget{}, ErrLFSNotEnabled
+	sha, size, err := s.storage.WriteBlob(ctx, repo.StoragePath, in)
+	if errors.Is(err, gitbackend.ErrBlobTooLarge) {
+		return "", 0, ErrBlobTooLarge
 	}
-	repo, err := s.Get(ctx, repositoryID)
-	if err != nil {
-		return domain.LFSUploadTarget{}, err
-	}
-	return s.lfs.CreateUpload(repo, userID, size)
+	return sha, size, err
 }
 
 func (s *Service) ListPathPolicies(ctx context.Context, repositoryID int64) ([]domain.PathPolicy, error) {
@@ -589,9 +594,11 @@ func (s *Service) Commit(ctx context.Context, repositoryID int64, req domain.Com
 
 	change, err := s.storage.ApplyCommit(ctx, repo.StoragePath, spec, ops, clean, checkWrite)
 	switch {
+	case errors.Is(err, gitbackend.ErrBlobTooLarge):
+		return domain.CommitResult{}, ErrBlobTooLarge
 	case errors.Is(err, gitbackend.ErrInvalidBranch):
 		return domain.CommitResult{}, ErrInvalidBranch
-	case errors.Is(err, gitbackend.ErrInvalidOps), errors.Is(err, gitbackend.ErrInvalidPath), errors.Is(err, gitbackend.ErrInvalidRev), errors.Is(err, gitbackend.ErrLFSNotTracked):
+	case errors.Is(err, gitbackend.ErrInvalidOps), errors.Is(err, gitbackend.ErrInvalidPath), errors.Is(err, gitbackend.ErrInvalidRev):
 		return domain.CommitResult{}, fmt.Errorf("%w: %s", ErrInvalidCommitOps, err)
 	case errors.Is(err, gitbackend.ErrRevNotFound):
 		return domain.CommitResult{}, ErrRefNotFound
@@ -845,4 +852,105 @@ func toDiff(diff gitbackend.DiffResult) domain.RepositoryDiff {
 		Files:     files,
 		Truncated: diff.Truncated,
 	}
+}
+
+func (s *Service) CreateUpload(ctx context.Context, repositoryID, userID, size int64) (domain.UploadTarget, error) {
+	if len(s.Uploads.SigningKey) == 0 || s.Uploads.PublicURL == "" {
+		return domain.UploadTarget{}, ErrUploadUnavailable
+	}
+
+	if repositoryID <= 0 || userID <= 0 || size < 0 {
+		return domain.UploadTarget{}, ErrInvalidUpload
+	}
+	repo, err := s.Get(ctx, repositoryID)
+	if err != nil {
+		return domain.UploadTarget{}, err
+	}
+	kind := domain.UploadBlob
+	if size >= s.Uploads.Threshold {
+		kind = domain.UploadLFS
+	}
+	if kind == domain.UploadLFS && s.lfs == nil {
+		return domain.UploadTarget{}, ErrLFSNotEnabled
+	}
+	uploadIDBytes := make([]byte, 32)
+	_, err = rand.Read(uploadIDBytes)
+	uploadID := hex.EncodeToString(uploadIDBytes)
+	if err != nil {
+		return domain.UploadTarget{}, err
+	}
+	expiresAt := time.Now().UTC().Add(15 * time.Minute).Truncate(time.Second)
+	auth := domain.UploadAuthorization{
+		UploadID:     uploadID,
+		Kind:         kind,
+		RepositoryID: repo.ID,
+		UserID:       userID,
+		Size:         size,
+		ExpiresAt:    expiresAt,
+	}
+	auth.Signature = auth.Sign(s.Uploads.SigningKey)
+
+	query := url.Values{}
+	query.Set("kind", string(kind))
+	query.Set("repositoryId", strconv.FormatInt(auth.RepositoryID, 10))
+	query.Set("userId", strconv.FormatInt(auth.UserID, 10))
+	query.Set("size", strconv.FormatInt(auth.Size, 10))
+	query.Set("expires", strconv.FormatInt(auth.ExpiresAt.Unix(), 10))
+	query.Set("signature", auth.Signature)
+
+	return domain.UploadTarget{
+		UploadID:  uploadID,
+		Kind:      kind,
+		Href:      strings.TrimRight(s.Uploads.PublicURL, "/") + "/uploads/" + uploadID + "?" + query.Encode(),
+		Header:    map[string]string{"Content-Type": "application/octet-stream"},
+		ExpiresAt: expiresAt,
+	}, nil
+}
+
+func (s *Service) Upload(ctx context.Context, auth domain.UploadAuthorization, r io.Reader) (domain.UploadedObject, error) {
+	if !validUploadID(auth.UploadID) || auth.RepositoryID <= 0 || auth.UserID <= 0 || auth.Size < 0 ||
+		(auth.Kind != domain.UploadBlob && auth.Kind != domain.UploadLFS) || len(s.Uploads.SigningKey) == 0 || !auth.ValidSignature(s.Uploads.SigningKey) {
+		return domain.UploadedObject{}, ErrInvalidUpload
+	}
+	if time.Now().After(auth.ExpiresAt) {
+		return domain.UploadedObject{}, ErrUploadExpired
+	}
+	repo, err := s.Get(ctx, auth.RepositoryID)
+	if err != nil {
+		return domain.UploadedObject{}, err
+	}
+	if auth.Kind == domain.UploadLFS {
+		if s.lfs == nil {
+			return domain.UploadedObject{}, ErrLFSNotEnabled
+		}
+		return s.lfs.Upload(ctx, auth, r)
+	}
+	// Buffer only the bounded blob payload so a mismatch never writes an object.
+	if auth.Size >= s.Uploads.Threshold {
+		return domain.UploadedObject{}, ErrInvalidUpload
+	}
+	data, err := io.ReadAll(io.LimitReader(r, auth.Size+1))
+	if err != nil {
+		return domain.UploadedObject{}, err
+	}
+	if int64(len(data)) != auth.Size {
+		return domain.UploadedObject{}, lfsservice.ErrObjectMismatch
+	}
+	sha, size, err := s.storage.WriteBlob(ctx, repo.StoragePath, bytes.NewReader(data))
+	if err != nil {
+		return domain.UploadedObject{}, err
+	}
+	return domain.UploadedObject{Kind: domain.UploadBlob, SHA: sha, Size: size}, nil
+}
+
+func validUploadID(uploadID string) bool {
+	if len(uploadID) != 64 {
+		return false
+	}
+	for _, c := range uploadID {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }

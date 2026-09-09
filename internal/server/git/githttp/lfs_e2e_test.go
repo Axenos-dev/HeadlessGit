@@ -3,6 +3,9 @@ package githttp_test
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -24,6 +27,143 @@ import (
 	"github.com/Axenos-dev/HeadlessGit/internal/storage"
 	"go.uber.org/zap"
 )
+
+func TestSignedUploads(t *testing.T) {
+	ctx := context.Background()
+	log := zap.NewNop()
+	database, err := db.Open(filepath.Join(t.TempDir(), "uploads.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	backend, err := gitbackend.NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend.LFSThreshold = 1024
+	store, err := storage.NewDisk(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewUnstartedServer(nil)
+	defer ts.Close()
+	publicURL := "http://" + ts.Listener.Addr().String()
+	key := []byte("test-upload-signing-key")
+	lfsSvc := lfs.NewService(log, lfs.NewRegistry(database), store, publicURL, key)
+	repoSvc := repositories.NewService(log, repositories.NewRegistry(database), backend, lfsSvc, nil)
+	repoSvc.Uploads = repositories.UploadConfig{PublicURL: publicURL, SigningKey: key, Threshold: 1024}
+	owner, err := users.NewService(users.NewRegistry(database)).Create(ctx, domain.UserInfo{Username: "uploads", Kind: domain.UserKindUser})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := repoSvc.Create(ctx, owner.UserID, domain.RepositoryInfo{RepositoryName: "test", Visibility: domain.RepoVisibilityPrivate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts.Config.Handler = githttp.NewServer(log, githttp.Services{
+		Repositories: repoSvc, Backend: backend, LFS: lfsSvc,
+		Authentication: auth.NewService(log, auth.NewRegistry(database)),
+		Authorization:  permissions.NewService(permissions.NewRegistry(database)),
+	}).Handler()
+	ts.Start()
+	head := strings.Repeat("0", 40)
+	for _, payload := range []string{"", "small\x00binary", strings.Repeat("x", 1024)} {
+		target, err := repoSvc.CreateUpload(ctx, repo.ID, owner.UserID, int64(len(payload)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req, err := http.NewRequest(http.MethodPut, target.Href, strings.NewReader(payload))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for k, v := range target.Header {
+			req.Header.Set(k, v)
+		}
+		tampered, err := http.NewRequest(http.MethodPut, target.Href, strings.NewReader(payload))
+		if err != nil {
+			t.Fatal(err)
+		}
+		tampered.Header = req.Header.Clone()
+		q := tampered.URL.Query()
+		if target.Kind == domain.UploadBlob {
+			q.Set("kind", "lfs")
+		} else {
+			q.Set("kind", "blob")
+		}
+		tampered.URL.RawQuery = q.Encode()
+		rejected, err := ts.Client().Do(tampered)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rejected.Body.Close()
+		if rejected.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("tampered kind accepted: %d", rejected.StatusCode)
+		}
+		res, err := ts.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var envelope struct {
+			Data struct {
+				Kind domain.UploadKind
+				SHA  string
+				OID  string
+				Size int64
+			}
+		}
+		data, err := io.ReadAll(res.Body)
+		res.Body.Close()
+		if err != nil || res.StatusCode != http.StatusCreated {
+			t.Fatalf("upload status %d: %s (%v)", res.StatusCode, data, err)
+		}
+		if err := json.Unmarshal(data, &envelope); err != nil {
+			t.Fatal(err)
+		}
+		object := envelope.Data
+		if object.Kind != target.Kind || object.Size != int64(len(payload)) {
+			t.Fatalf("object %+v", object)
+		}
+		// Reuse the uploaded object at two arbitrary paths, without .gitattributes.
+		ops := []domain.CommitFileOp{{Path: "first.dat"}, {Path: "second.dat"}}
+		for i := range ops {
+			if object.Kind == domain.UploadBlob {
+				ops[i].BlobSHA = &object.SHA
+			} else {
+				ops[i].Lfs = &domain.CommitFileLfsObject{OID: object.OID, Size: object.Size}
+			}
+		}
+		commit, err := repoSvc.Commit(ctx, repo.ID, domain.CommitRequest{
+			Branch: "main", Message: "Upload files", ExpectedHeadSHA: head, Author: domain.CommitIdentity{Name: "test", Email: "test@test"}, Operations: ops,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		head = commit.CommitSHA
+		for _, op := range ops {
+			info, err := backend.StatBlob(ctx, repo.StoragePath, commit.CommitSHA, op.Path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var content strings.Builder
+			if object.Kind == domain.UploadBlob {
+				err = backend.ReadBlob(ctx, repo.StoragePath, info.BlobSHA, &content)
+			} else {
+				stream, _, readErr := lfsSvc.GetObject(ctx, repo, object.OID)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				_, err = io.Copy(&content, stream)
+				stream.Close()
+			}
+			if err != nil || content.String() != payload {
+				t.Fatalf("round trip failed: %v", err)
+			}
+		}
+	}
+}
 
 // TestGitLFSEndToEnd drives a real git + git-lfs client against the full HTTP
 // stack backed by an S3/R2 bucket. It proves the whole chain: clean filter ->

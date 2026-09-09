@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Axenos-dev/HeadlessGit/internal/domain"
 )
 
 // Local implementation of git backend
@@ -30,10 +32,11 @@ const gcTimeout = 30 * time.Minute
 // local implementation of Git backend
 // it runs the git pack protocol against bare repos on the local filesystem
 type Local struct {
-	root     string
-	gitPath  string
-	hooksDir string
-	timeout  time.Duration
+	LFSThreshold int64
+	root         string
+	gitPath      string
+	hooksDir     string
+	timeout      time.Duration
 
 	mu    sync.Mutex
 	locks map[string]*sync.Mutex
@@ -59,11 +62,12 @@ func NewLocal(root string) (*Local, error) {
 	}
 
 	return &Local{
-		root:     absRoot,
-		gitPath:  gitPath,
-		hooksDir: hooksDir,
-		timeout:  30 * time.Second,
-		locks:    make(map[string]*sync.Mutex),
+		LFSThreshold: domain.DefaultLFSThreshold,
+		root:         absRoot,
+		gitPath:      gitPath,
+		hooksDir:     hooksDir,
+		timeout:      30 * time.Second,
+		locks:        make(map[string]*sync.Mutex),
 	}, nil
 }
 
@@ -131,6 +135,7 @@ func (l *Local) ReceivePack(ctx context.Context, storagePath string, stateless b
 	// and IGNORE error, as we dont need to block main receive-pack operation
 
 	env := append(hookEnv,
+		"LFS_THRESHOLD_BYTES="+strconv.FormatInt(l.LFSThreshold, 10),
 		"GIT_CONFIG_COUNT=1",
 		"GIT_CONFIG_KEY_0=core.hooksPath",
 		"GIT_CONFIG_VALUE_0="+l.hooksDir,
@@ -448,7 +453,14 @@ func (l *Local) WriteBlob(ctx context.Context, storagePath string, r io.Reader) 
 		return "", 0, err
 	}
 
-	counter := &countingReader{r: r}
+	data, err := io.ReadAll(io.LimitReader(r, l.LFSThreshold))
+	if err != nil {
+		return "", 0, err
+	}
+	if int64(len(data)) >= l.LFSThreshold {
+		return "", 0, ErrBlobTooLarge
+	}
+	counter := &countingReader{r: bytes.NewReader(data)}
 	cmd := exec.CommandContext(ctx, l.gitPath, "-C", dir, "hash-object", "-w", "--stdin")
 	cmd.Stdin = counter
 

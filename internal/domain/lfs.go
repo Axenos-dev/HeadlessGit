@@ -1,6 +1,10 @@
 package domain
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -39,14 +43,25 @@ type LFSObjectResponse struct {
 	Error   *LFSObjectError
 }
 
-type LFSUploadTarget struct {
+const DefaultLFSThreshold int64 = 1024 * 1024
+
+type UploadKind string
+
+const (
+	UploadBlob UploadKind = "blob"
+	UploadLFS  UploadKind = "lfs"
+)
+
+type UploadTarget struct {
+	Kind      UploadKind
 	UploadID  string
 	Href      string
 	Header    map[string]string
 	ExpiresAt time.Time
 }
 
-type LFSUploadAuthorization struct {
+type UploadAuthorization struct {
+	Kind         UploadKind
 	UploadID     string
 	RepositoryID int64
 	UserID       int64
@@ -55,7 +70,27 @@ type LFSUploadAuthorization struct {
 	Signature    string
 }
 
-type LFSUploadedObject struct {
+func (a UploadAuthorization) Sign(key []byte) string {
+	mac := hmac.New(sha256.New, key)
+	fmt.Fprintf(mac, "%s\n%s\n%d\n%d\n%d\n%d", a.Kind, a.UploadID, a.RepositoryID, a.UserID, a.Size, a.ExpiresAt.Unix())
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func (a UploadAuthorization) ValidSignature(key []byte) bool {
+	if len(key) == 0 {
+		return false
+	}
+	supplied, err := hex.DecodeString(a.Signature)
+	if err != nil {
+		return false
+	}
+	expected, _ := hex.DecodeString(a.Sign(key))
+	return hmac.Equal(supplied, expected)
+}
+
+type UploadedObject struct {
+	Kind UploadKind
+	SHA  string
 	OID  string
 	Size int64
 }

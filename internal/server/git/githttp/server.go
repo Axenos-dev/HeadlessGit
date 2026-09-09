@@ -88,6 +88,8 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) registerRoutes(r chi.Router) {
+	r.Options("/uploads/{uploadID}", s.handleUploadOptions)
+	r.Put("/uploads/{uploadID}", s.handleDirectUpload)
 	var dispatcher smart.Dispatcher
 	if s.dispatcher != nil {
 		dispatcher = s.dispatcher

@@ -1249,13 +1249,13 @@ func TestApplyCommit(t *testing.T) {
 			t.Errorf("direct.bin pointer = %q, want %q", directPointer.String(), wantPointer)
 		}
 
-		if _, err := l.ApplyCommit(ctx, repo, spec(explicit.NewSHA, "untracked lfs"), []CommitOp{
+		if _, err := l.ApplyCommit(ctx, repo, spec("", "untracked lfs"), []CommitOp{
 			{Path: "direct.dat", Lfs: &LfsObject{OID: explicitOID, Size: 23}},
-		}, nil, nil); !errors.Is(err, ErrLFSNotTracked) {
-			t.Fatalf("untracked explicit lfs: want ErrLFSNotTracked, got %v", err)
+		}, nil, nil); err != nil {
+			t.Fatalf("untracked explicit lfs: %v", err)
 		}
 
-		moved, err := l.ApplyCommit(ctx, repo, spec(explicit.NewSHA, "move lfs pointer"), []CommitOp{
+		moved, err := l.ApplyCommit(ctx, repo, spec("", "move lfs pointer"), []CommitOp{
 			{MoveFrom: "direct.bin", Path: "assets/direct.bin"},
 		}, func(string, string, int64) (string, error) {
 			return "", errors.New("move must not invoke lfs clean")
@@ -1286,6 +1286,38 @@ func TestApplyCommit(t *testing.T) {
 			t.Errorf("moved attributes cleaned %q, want assets/new.bin", cleanedPath)
 		}
 	})
+}
+
+func TestRawBlobSizeLimit(t *testing.T) {
+	l, err := NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	const repo = "1/size.git"
+	if err := l.InitBare(ctx, repo); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate an existing object uploaded before this limit was configured.
+	large, _, err := l.WriteBlob(ctx, repo, strings.NewReader(strings.Repeat("x", 1024)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.LFSThreshold = 1024
+	for _, size := range []int{0, 1023, 1024, 1025} {
+		_, n, err := l.WriteBlob(ctx, repo, strings.NewReader(strings.Repeat("x", size)))
+		if size < 1024 {
+			if err != nil || n != int64(size) {
+				t.Fatalf("size %d: %d %v", size, n, err)
+			}
+		} else if !errors.Is(err, ErrBlobTooLarge) {
+			t.Fatalf("size %d: %v", size, err)
+		}
+	}
+	_, err = l.ApplyCommit(ctx, repo, CommitSpec{Branch: "main", ExpectedOld: zeroSHA, Message: "large raw object", Author: Identity{Name: "test", Email: "test@test"}}, []CommitOp{{Path: "file.txt", BlobSHA: large}}, nil, nil)
+	if !errors.Is(err, ErrBlobTooLarge) {
+		t.Fatalf("oversized commit: %v", err)
+	}
 }
 
 func TestGC(t *testing.T) {
@@ -1390,12 +1422,19 @@ func TestPreReceive(t *testing.T) {
 		return strings.NewReader(zeroSHA + " " + newSHA + " refs/heads/main\n")
 	}
 
+	t.Run("large raw blob rejected without path policies", func(t *testing.T) {
+		sha := stage("", []CommitOp{{Path: "anything.txt", BlobSHA: blob(strings.Repeat("x", 1024))}})
+		if err := PreReceive(ctx, repoDir, line(sha), nil, 1024); !errors.Is(err, ErrBlobTooLarge) {
+			t.Fatalf("size policy: %v", err)
+		}
+	})
+
 	t.Run("blocked path is rejected with the reason", func(t *testing.T) {
 		sha := stage("", []CommitOp{
 			{Path: "README.md", BlobSHA: blob("ok\n")},
 			{Path: "runtime/state.json", BlobSHA: blob("{}\n")},
 		})
-		err := PreReceive(ctx, repoDir, line(sha), policies)
+		err := PreReceive(ctx, repoDir, line(sha), policies, domain.DefaultLFSThreshold)
 		if err == nil || !strings.Contains(err.Error(), "deploy-managed state") {
 			t.Errorf("want rejection with reason, got %v", err)
 		}
@@ -1403,7 +1442,7 @@ func TestPreReceive(t *testing.T) {
 
 	t.Run("clean push is allowed", func(t *testing.T) {
 		sha := stage("", []CommitOp{{Path: "src/main.go", BlobSHA: blob("package main\n")}})
-		if err := PreReceive(ctx, repoDir, line(sha), policies); err != nil {
+		if err := PreReceive(ctx, repoDir, line(sha), policies, domain.DefaultLFSThreshold); err != nil {
 			t.Errorf("clean push rejected: %v", err)
 		}
 	})
@@ -1413,7 +1452,7 @@ func TestPreReceive(t *testing.T) {
 		// diff is clean but the content would live in history forever
 		first := stage("", []CommitOp{{Path: "runtime/state.json", BlobSHA: blob("leak\n")}})
 		second := stage(first, []CommitOp{{Path: "runtime/state.json", Delete: true}, {Path: "ok.txt", BlobSHA: blob("x\n")}})
-		if err := PreReceive(ctx, repoDir, line(second), policies); err == nil {
+		if err := PreReceive(ctx, repoDir, line(second), policies, domain.DefaultLFSThreshold); err == nil {
 			t.Error("intermediate violation slipped through")
 		}
 	})
@@ -1427,26 +1466,26 @@ func TestPreReceive(t *testing.T) {
 			t.Fatal(err)
 		}
 		sha := stage(base.NewSHA, []CommitOp{{Path: "runtime/state.json", Delete: true}})
-		if err := PreReceive(ctx, repoDir, line(sha), policies); err != nil {
+		if err := PreReceive(ctx, repoDir, line(sha), policies, domain.DefaultLFSThreshold); err != nil {
 			t.Errorf("cleanup push rejected: %v", err)
 		}
 	})
 
 	t.Run("ref deletion is allowed", func(t *testing.T) {
 		in := strings.NewReader(strings.Repeat("a", 40) + " " + zeroSHA + " refs/heads/gone\n")
-		if err := PreReceive(ctx, repoDir, in, policies); err != nil {
+		if err := PreReceive(ctx, repoDir, in, policies, domain.DefaultLFSThreshold); err != nil {
 			t.Errorf("ref deletion rejected: %v", err)
 		}
 	})
 
 	t.Run("no policies short-circuits", func(t *testing.T) {
-		if err := PreReceive(ctx, repoDir, strings.NewReader("garbage that is never read"), nil); err != nil {
+		if err := PreReceive(ctx, repoDir, strings.NewReader(""), nil, domain.DefaultLFSThreshold); err != nil {
 			t.Errorf("no-policy push rejected: %v", err)
 		}
 	})
 
 	t.Run("malformed input fails closed", func(t *testing.T) {
-		if err := PreReceive(ctx, repoDir, strings.NewReader("what\n"), policies); err == nil {
+		if err := PreReceive(ctx, repoDir, strings.NewReader("what\n"), policies, domain.DefaultLFSThreshold); err == nil {
 			t.Error("malformed input must reject")
 		}
 	})

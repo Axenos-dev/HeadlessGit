@@ -28,6 +28,7 @@ type ServerConfig struct {
 }
 
 type LFSConfig struct {
+	Threshold   int64  `env:"LFS_THRESHOLD_BYTES" envDefault:"1048576"`
 	Enabled     bool   `env:"LFS_ENABLED" envDefault:"false"`
 	StorageType string `env:"LFS_STORAGE_TYPE" envDefault:"disk"` // disk or s3
 	Root        string `env:"LFS_ROOT" envDefault:"data/lfs"`     // if storage type is disk
@@ -63,6 +64,9 @@ func Load() (config, error) {
 		return config{}, fmt.Errorf("parse config: %w", err)
 	}
 
+	if cfg.LFS.Threshold < 1024 {
+		return config{}, fmt.Errorf("LFS_THRESHOLD_BYTES must be at least 1024")
+	}
 	if cfg.LFS.Enabled {
 		if cfg.LFS.PublicURL == "" {
 			return config{}, fmt.Errorf("LFS_PUBLIC_URL is required when LFS_ENABLED is true")

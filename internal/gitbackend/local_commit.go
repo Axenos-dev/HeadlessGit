@@ -60,6 +60,12 @@ func (l *Local) ApplyCommit(ctx context.Context, storagePath string, spec Commit
 		return RefChange{}, err
 	}
 
+	for _, size := range sizes {
+		if size >= l.LFSThreshold {
+			return RefChange{}, ErrBlobTooLarge
+		}
+	}
+
 	// private index file: commits never touch the repo's real index (bare
 	// repos have none) and concurrent commits cannot see each other
 	idx, err := os.CreateTemp(dir, "headlessgit-index-*")
@@ -548,10 +554,6 @@ func (l *Local) cleanLFSTracked(ctx context.Context, dir string, env []string, o
 
 		if ops[idx].Lfs != nil {
 			delete(pendingLFS, path)
-			// do not allow commiting lfs objects, if they are not tracked as lfs
-			if value != "lfs" {
-				return nil, fmt.Errorf("%w: %q", ErrLFSNotTracked, path)
-			}
 			continue
 		}
 

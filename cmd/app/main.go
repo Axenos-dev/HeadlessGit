@@ -61,6 +61,8 @@ func main() {
 		log.Fatal(err)
 	}
 
+	gitBackend.LFSThreshold = config.LFS.Threshold
+
 	// nil when LFS is disabled
 	var lfsService *lfs.Service
 	if config.LFS.Enabled {
@@ -98,6 +100,12 @@ func main() {
 		repoLFS,
 		webhooksService,
 	)
+
+	repoService.Uploads = repositories.UploadConfig{
+		PublicURL:  config.LFS.PublicURL,
+		SigningKey: []byte(config.AdminToken),
+		Threshold:  config.LFS.Threshold,
+	}
 
 	authService := auth.NewService(
 		root.With(zap.String("service", "auth")),

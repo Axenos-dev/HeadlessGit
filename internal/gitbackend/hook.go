@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,7 +32,15 @@ func HookMain(args []string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	if err := PreReceive(ctx, ".", os.Stdin, policies); err != nil {
+	threshold := domain.DefaultLFSThreshold
+	if raw := os.Getenv("LFS_THRESHOLD_BYTES"); raw != "" {
+		threshold, err = strconv.ParseInt(raw, 10, 64)
+		if err != nil || threshold < 1024 {
+			fmt.Fprintln(os.Stderr, "invalid LFS_THRESHOLD_BYTES")
+			return 1
+		}
+	}
+	if err := PreReceive(ctx, ".", os.Stdin, policies, threshold); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
@@ -44,10 +53,7 @@ func HookMain(args []string) int {
 // and returns an error describing the first path policy violation
 //
 // it runs inside the hook process, before any ref has moved
-func PreReceive(ctx context.Context, dir string, in io.Reader, policies []domain.PathPolicy) error {
-	if len(policies) == 0 {
-		return nil
-	}
+func PreReceive(ctx context.Context, dir string, in io.Reader, policies []domain.PathPolicy, threshold int64) error {
 
 	patterns := make([]string, len(policies))
 	reasons := make(map[string]string, len(policies))
@@ -78,6 +84,30 @@ func PreReceive(ctx context.Context, dir string, in io.Reader, policies []domain
 		// deleting a ref adds no content
 		if newSHA == zeroSHA {
 			continue
+		}
+
+		objects, err := hookGit(ctx, gitPath, dir, nil, "rev-list", "--objects", "--no-object-names", newSHA, "--not", "--all")
+		if err != nil {
+			return err
+		}
+		if objects != "" {
+			sizes, err := hookGit(ctx, gitPath, dir, strings.NewReader(objects+"\n"), "cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)")
+			if err != nil {
+				return err
+			}
+			for line := range strings.SplitSeq(sizes, "\n") {
+				fields := strings.Fields(line)
+				if len(fields) != 3 {
+					return fmt.Errorf("invalid object metadata: %q", line)
+				}
+				size, err := strconv.ParseInt(fields[2], 10, 64)
+				if err != nil {
+					return err
+				}
+				if fields[1] == "blob" && size >= threshold {
+					return fmt.Errorf("push rejected: %s: %w", fields[0], ErrBlobTooLarge)
+				}
+			}
 		}
 
 		// exactly the commits this push introduces: everything reachable
