@@ -93,10 +93,3 @@ func setUploadCORS(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Methods", http.MethodPut)
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 }
-
-type uploadedObject struct {
-	Kind domain.UploadKind `json:"kind"`
-	SHA  string            `json:"sha,omitempty"`
-	OID  string            `json:"oid,omitempty"`
-	Size int64             `json:"size"`
-}
