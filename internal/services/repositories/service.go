@@ -68,8 +68,10 @@ type UploadConfig struct {
 	SigningKey []byte
 	Threshold  int64
 }
+
 type Service struct {
 	Uploads  UploadConfig
+	
 	logger   *zap.Logger
 	registry Registry
 	storage  RepositoryStorage
