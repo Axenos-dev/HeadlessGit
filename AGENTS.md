@@ -11,7 +11,7 @@ It provides:
 - Git over SSH and HTTP (clone / fetch / push).
 - Git LFS (object transfer over HTTP; disk or S3 storage).
 - A control API to manage repositories, users, SSH keys, tokens, permissions, and webhooks.
-- Repo APIs on the control plane: contents listing, blob read/upload, streamed
+- Repo APIs on the control plane: tree listing, file read/upload, streamed
   zip/tar.gz archives (optional LFS smudging), and commit creation on bare repos
   (blobs + commits, CAS ref updates, `.gitattributes`-driven LFS cleaning) — so
   products never need local clones.
@@ -59,7 +59,7 @@ Package map:
 | `internal/services/*`         | Business logic per area (repositories, users, auth, permissions, lfs); each has a service + a registry over `db`. |
 | `internal/storage`            | LFS object storage behind an interface (`disk`, `s3`).                                                            |
 | `internal/archive`            | Pure mechanism: streaming tar re-encode to zip/tar.gz with an injected LFS smudge callback.                       |
-| `internal/gitbackend`         | Git subprocesses behind a small interface: pack protocol, read ops (ls-tree, blobs, archive), commit creation.    |
+| `internal/gitbackend`         | Git subprocesses behind a small interface: pack protocol, read ops (ls-tree, objects, archive), commit creation.  |
 | `internal/server`             | Composition root: wires control + git servers, runs and shuts down listeners.                                     |
 | `internal/server/control`     | Control API (REST); sub-handlers in `repositories/`, `users/`, `permissions/`.                                    |
 | `internal/server/git/gitssh`  | Git-over-SSH transport (custom in-process SSH server).                                                            |
@@ -182,7 +182,7 @@ storage clients. Do not roll your own SSH or Git protocol implementation.
   `full_name`), a `pusher` object (`id`, `username`), and `timestamp`. Creates/
   deletes use the all-zero SHA for the missing side.
 - Each delivery is signed with the per-webhook secret: `X-HeadlessGit-Signature:
-  sha256=<hmac>` over the raw body. The secret is generated server-side and
+sha256=<hmac>` over the raw body. The secret is generated server-side and
   returned once at registration; it is stored recoverably (needed to sign), unlike
   hashed tokens.
 - Registered per repo via the control API; webhook detection lives in `gitbackend`

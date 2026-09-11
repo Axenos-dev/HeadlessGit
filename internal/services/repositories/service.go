@@ -594,8 +594,6 @@ func (s *Service) Commit(ctx context.Context, repositoryID int64, req domain.Com
 		return domain.CommitResult{}, ErrPathNotFound
 	case errors.Is(err, gitbackend.ErrPathExists):
 		return domain.CommitResult{}, ErrPathConflict
-	case errors.Is(err, gitbackend.ErrNotABlob):
-		return domain.CommitResult{}, ErrNotAFile
 	case errors.Is(err, gitbackend.ErrHeadMismatch):
 		return domain.CommitResult{}, ErrHeadMismatch
 	case errors.Is(err, gitbackend.ErrUnknownBlob):

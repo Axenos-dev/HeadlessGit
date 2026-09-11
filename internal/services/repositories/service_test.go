@@ -839,7 +839,6 @@ func TestCommit(t *testing.T) {
 			{gitbackend.ErrRevNotFound, ErrRefNotFound},
 			{gitbackend.ErrPathNotFound, ErrPathNotFound},
 			{gitbackend.ErrPathExists, ErrPathConflict},
-			{gitbackend.ErrNotABlob, ErrNotAFile},
 			{gitbackend.ErrHeadMismatch, ErrHeadMismatch},
 			{gitbackend.ErrUnknownBlob, ErrUnknownBlob},
 			{gitbackend.ErrNothingToCommit, ErrNothingToCommit},

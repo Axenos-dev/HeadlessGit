@@ -119,12 +119,6 @@ type DiffResult struct {
 	Truncated bool
 }
 
-type BlobInfo struct {
-	CommitSHA string
-	BlobSHA   string
-	Size      int64
-}
-
 type ObjectInfo struct {
 	SHA  string
 	Type string // blob | tree | commit

@@ -42,6 +42,15 @@ func gitOut(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
+func listPath(t *testing.T, l *Local, ctx context.Context, repo, rev, path string) TreeListing {
+	t.Helper()
+	listing, err := l.ListTree(ctx, repo, rev, path, ListTreeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return listing
+}
+
 func gitSupportsLastModified() bool {
 	out, err := exec.Command("git", "help", "-a").Output()
 	return err == nil && strings.Contains(string(out), "last-modified")
@@ -929,30 +938,27 @@ func TestBlob(t *testing.T) {
 	gitRun(t, wt, "commit", "-m", "init")
 	gitRun(t, wt, "push", "origin", "HEAD:refs/heads/main")
 
-	info, err := l.StatBlob(ctx, "1/test.git", "main", "src/main.go")
-	if err != nil {
-		t.Fatal(err)
+	listing := listPath(t, l, ctx, "1/test.git", "main", "src/main.go")
+	if listing.Node.Type != "blob" || listing.Node.Size != int64(len("package main\n")) {
+		t.Errorf("file node = %+v", listing.Node)
 	}
-	if info.Size != int64(len("package main\n")) {
-		t.Errorf("size = %d", info.Size)
-	}
-	if !isHexSHA(info.CommitSHA) || !isHexSHA(info.BlobSHA) {
-		t.Errorf("shas not resolved: %+v", info)
+	if !isHexSHA(listing.CommitSHA) || !isHexSHA(listing.Node.SHA) {
+		t.Errorf("shas not resolved: %+v", listing)
 	}
 
 	var buf bytes.Buffer
-	if err := l.ReadBlob(ctx, "1/test.git", info.BlobSHA, &buf); err != nil {
+	if err := l.ReadBlob(ctx, "1/test.git", listing.Node.SHA, &buf); err != nil {
 		t.Fatal(err)
 	}
 	if buf.String() != "package main\n" {
 		t.Errorf("content = %q", buf.String())
 	}
 
-	obj, err := l.StatObject(ctx, "1/test.git", info.BlobSHA)
+	obj, err := l.StatObject(ctx, "1/test.git", listing.Node.SHA)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if obj.Type != "blob" || obj.SHA != info.BlobSHA || obj.Size != info.Size {
+	if obj.Type != "blob" || obj.SHA != listing.Node.SHA || obj.Size != listing.Node.Size {
 		t.Errorf("StatObject = %+v", obj)
 	}
 
@@ -1003,24 +1009,6 @@ func TestBlob(t *testing.T) {
 	})
 
 	t.Run("errors", func(t *testing.T) {
-		cases := []struct {
-			name, rev, path string
-			want            error
-		}{
-			{"root is a tree", "main", "", ErrNotABlob},
-			{"dir is a tree", "main", "src", ErrNotABlob},
-			{"missing path", "main", "nope.txt", ErrPathNotFound},
-			{"unknown rev", "nope", "src/main.go", ErrRevNotFound},
-			{"hostile rev", "--help", "src/main.go", ErrInvalidRev},
-		}
-		for _, tc := range cases {
-			t.Run(tc.name, func(t *testing.T) {
-				if _, err := l.StatBlob(ctx, "1/test.git", tc.rev, tc.path); !errors.Is(err, tc.want) {
-					t.Errorf("StatBlob(%q, %q) = %v, want %v", tc.rev, tc.path, err, tc.want)
-				}
-			})
-		}
-
 		// ReadBlob refuses anything that is not a plain object id
 		for _, sha := range []string{"main", "--help", "HEAD", strings.Repeat("a", 39), strings.Repeat("A", 40)} {
 			if err := l.ReadBlob(ctx, "1/test.git", sha, io.Discard); !errors.Is(err, ErrInvalidRev) {
@@ -1141,17 +1129,14 @@ func TestApplyCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := l.StatBlob(ctx, repo, fourth.NewSHA, "plugins/config.yml"); !errors.Is(err, ErrPathNotFound) {
+	if _, err := l.ListTree(ctx, repo, fourth.NewSHA, "plugins/config.yml", ListTreeOptions{}); !errors.Is(err, ErrPathNotFound) {
 		t.Errorf("old path still exists: %v", err)
 	}
-	config, err := l.StatBlob(ctx, repo, fourth.NewSHA, "server/plugins/config.yml")
-	if err != nil {
-		t.Fatal(err)
+	config := listPath(t, l, ctx, repo, fourth.NewSHA, "server/plugins/config.yml")
+	if config.Node.SHA != v2 {
+		t.Errorf("moved config blob = %s, want %s", config.Node.SHA, v2)
 	}
-	if config.BlobSHA != v2 {
-		t.Errorf("moved config blob = %s, want %s", config.BlobSHA, v2)
-	}
-	if _, err := l.StatBlob(ctx, repo, fourth.NewSHA, "server/plugins/obsolete.yml"); !errors.Is(err, ErrPathNotFound) {
+	if _, err := l.ListTree(ctx, repo, fourth.NewSHA, "server/plugins/obsolete.yml", ListTreeOptions{}); !errors.Is(err, ErrPathNotFound) {
 		t.Errorf("deleted moved path still exists: %v", err)
 	}
 	listing, err := l.ListTree(ctx, repo, fourth.NewSHA, "server/plugins/bin", ListTreeOptions{})
@@ -1250,18 +1235,12 @@ func TestApplyCommit(t *testing.T) {
 		}
 
 		// the committed tree holds the pointer, not the payload
-		committed, err := l.StatBlob(ctx, repo, change.NewSHA, "big.bin")
-		if err != nil {
-			t.Fatal(err)
+		committed := listPath(t, l, ctx, repo, change.NewSHA, "big.bin")
+		if committed.Node.SHA != pointer {
+			t.Errorf("big.bin blob = %s, want pointer %s", committed.Node.SHA, pointer)
 		}
-		if committed.BlobSHA != pointer {
-			t.Errorf("big.bin blob = %s, want pointer %s", committed.BlobSHA, pointer)
-		}
-		notes, err := l.StatBlob(ctx, repo, change.NewSHA, "notes.txt")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if notes.BlobSHA != hello {
+		notes := listPath(t, l, ctx, repo, change.NewSHA, "notes.txt")
+		if notes.Node.SHA != hello {
 			t.Errorf("notes.txt was cleaned but is not lfs-tracked")
 		}
 
@@ -1273,12 +1252,9 @@ func TestApplyCommit(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		movedPointer, err := l.StatBlob(ctx, repo, moved.NewSHA, "assets/big.bin")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if movedPointer.BlobSHA != committed.BlobSHA {
-			t.Errorf("moved lfs pointer blob = %s, want %s", movedPointer.BlobSHA, committed.BlobSHA)
+		movedPointer := listPath(t, l, ctx, repo, moved.NewSHA, "assets/big.bin")
+		if movedPointer.Node.SHA != committed.Node.SHA {
+			t.Errorf("moved lfs pointer blob = %s, want %s", movedPointer.Node.SHA, committed.Node.SHA)
 		}
 
 		var cleanedPath string

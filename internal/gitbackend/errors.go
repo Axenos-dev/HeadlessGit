@@ -9,7 +9,6 @@ var (
 	ErrRevNotFound  = errors.New("revision not found")
 	ErrPathNotFound = errors.New("path not found in tree")
 	ErrPathExists   = errors.New("path already exists in tree")
-	ErrNotABlob     = errors.New("path is not a blob")
 
 	// commit creation
 	ErrInvalidBranch   = errors.New("invalid branch name")

@@ -400,52 +400,6 @@ func (l *Local) ArchiveTar(ctx context.Context, storagePath, rev string, out io.
 	return commitSHA, nil
 }
 
-func (l *Local) StatBlob(ctx context.Context, storagePath, rev, treePath string) (BlobInfo, error) {
-	dir, err := l.resolve(storagePath)
-	if err != nil {
-		return BlobInfo{}, err
-	}
-
-	treePath, err = normalizeTreePath(treePath)
-	if err != nil {
-		return BlobInfo{}, err
-	}
-	if treePath == "" {
-		// the root is a tree by definition (and its not a blob)
-		return BlobInfo{}, fmt.Errorf("%w: %q", ErrNotABlob, treePath)
-	}
-
-	commitSHA, err := l.ResolveCommit(ctx, storagePath, rev)
-	if err != nil {
-		return BlobInfo{}, err
-	}
-
-	blobSHA, err := l.revParse(ctx, dir, commitSHA+":"+treePath)
-	if err != nil {
-		return BlobInfo{}, fmt.Errorf("%w: %q", ErrPathNotFound, treePath)
-	}
-
-	out, err := l.runGit(ctx, dir, nil, strings.NewReader(blobSHA+"\n"), "cat-file", "--batch-check")
-	if err != nil {
-		return BlobInfo{}, err
-	}
-
-	// output shape: "<sha> <type> <size>"
-	fields := strings.Fields(out)
-	if len(fields) != 3 {
-		return BlobInfo{}, fmt.Errorf("malformed batch-check output: %q", out)
-	}
-	if fields[1] != "blob" {
-		return BlobInfo{}, fmt.Errorf("%w: %q is a %s", ErrNotABlob, treePath, fields[1])
-	}
-	size, err := strconv.ParseInt(fields[2], 10, 64)
-	if err != nil {
-		return BlobInfo{}, fmt.Errorf("malformed blob size %q: %w", fields[2], err)
-	}
-
-	return BlobInfo{CommitSHA: commitSHA, BlobSHA: blobSHA, Size: size}, nil
-}
-
 func (l *Local) StatObject(ctx context.Context, storagePath, sha string) (ObjectInfo, error) {
 	dir, err := l.resolve(storagePath)
 	if err != nil {
