@@ -18,6 +18,7 @@ type Backend interface {
 	ResolveCommit(ctx context.Context, storagePath, rev string) (string, error)
 	ArchiveTar(ctx context.Context, storagePath, rev string, out io.Writer) (string, error)
 	StatBlob(ctx context.Context, storagePath, rev, treePath string) (BlobInfo, error)
+	StatObject(ctx context.Context, storagePath, sha string) (ObjectInfo, error)
 	ReadBlob(ctx context.Context, storagePath, blobSHA string, out io.Writer) error
 	WriteBlob(ctx context.Context, storagePath string, r io.Reader) (string, int64, error)
 	ApplyCommit(ctx context.Context, storagePath string, spec CommitSpec, ops []CommitOp, clean CleanFunc, checkWrite CheckWriteFunc) (RefChange, error)

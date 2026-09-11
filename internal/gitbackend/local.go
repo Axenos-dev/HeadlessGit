@@ -226,14 +226,33 @@ func (l *Local) ListTree(ctx context.Context, storagePath, rev, treePath string,
 		return TreeListing{}, err
 	}
 
-	treeish := commitSHA
-	if treePath != "" {
-		treeish += ":" + treePath
+	if treePath == "" {
+		return l.listRoot(ctx, dir, commitSHA, opts)
 	}
 
-	out, err := l.runGitBytes(ctx, dir, nil, nil, "ls-tree", "--long", "-z", "--end-of-options", treeish)
+	node, err := l.lookupTreePath(ctx, dir, commitSHA, treePath)
 	if err != nil {
-		// the rev already resolved, so this is a missing path or a non-directory
+		return TreeListing{}, err
+	}
+
+	listing := TreeListing{CommitSHA: commitSHA, Node: node}
+	if node.Type != "tree" {
+		if opts.IncludeLastCommit {
+			parent := path.Dir(treePath)
+			if parent == "." {
+				parent = ""
+			}
+			entries := []TreeEntry{node}
+			if err := l.addLastCommits(ctx, dir, commitSHA, parent, entries); err != nil {
+				return TreeListing{}, err
+			}
+			listing.Node = entries[0]
+		}
+		return listing, nil
+	}
+
+	out, err := l.runGitBytes(ctx, dir, nil, nil, "ls-tree", "--long", "-z", "--end-of-options", commitSHA+":"+treePath)
+	if err != nil {
 		return TreeListing{}, fmt.Errorf("%w: %q", ErrPathNotFound, treePath)
 	}
 
@@ -246,7 +265,57 @@ func (l *Local) ListTree(ctx context.Context, storagePath, rev, treePath string,
 			return TreeListing{}, err
 		}
 	}
-	return TreeListing{CommitSHA: commitSHA, Entries: entries, Truncated: truncated}, nil
+
+	listing.Entries = entries
+	listing.Truncated = truncated
+	return listing, nil
+}
+
+func (l *Local) listRoot(ctx context.Context, dir, commitSHA string, opts ListTreeOptions) (TreeListing, error) {
+	treeSHA, err := l.revParse(ctx, dir, commitSHA+"^{tree}")
+	if err != nil {
+		return TreeListing{}, err
+	}
+
+	out, err := l.runGitBytes(ctx, dir, nil, nil, "ls-tree", "--long", "-z", "--end-of-options", commitSHA)
+	if err != nil {
+		return TreeListing{}, fmt.Errorf("%w: %q", ErrPathNotFound, "")
+	}
+
+	entries, truncated, err := parseLsTree(out, "")
+	if err != nil {
+		return TreeListing{}, err
+	}
+	if opts.IncludeLastCommit && len(entries) > 0 {
+		if err := l.addLastCommits(ctx, dir, commitSHA, "", entries); err != nil {
+			return TreeListing{}, err
+		}
+	}
+
+	return TreeListing{
+		CommitSHA: commitSHA,
+		Node:      TreeEntry{Mode: "040000", Type: "tree", SHA: treeSHA, Size: -1},
+		Entries:   entries,
+		Truncated: truncated,
+	}, nil
+}
+
+func (l *Local) lookupTreePath(ctx context.Context, dir, commitSHA, treePath string) (TreeEntry, error) {
+	out, err := l.runGitBytes(ctx, dir, nil, nil,
+		"ls-tree", "--long", "-z", "--end-of-options", commitSHA, "--", ":(top,literal)"+treePath,
+	)
+	if err != nil {
+		return TreeEntry{}, fmt.Errorf("%w: %q", ErrPathNotFound, treePath)
+	}
+
+	entries, _, err := parseLsTree(out, "")
+	if err != nil {
+		return TreeEntry{}, err
+	}
+	if len(entries) != 1 {
+		return TreeEntry{}, fmt.Errorf("%w: %q", ErrPathNotFound, treePath)
+	}
+	return entries[0], nil
 }
 
 func (l *Local) addLastCommits(ctx context.Context, dir, commitSHA, treePath string, entries []TreeEntry) error {
@@ -375,6 +444,36 @@ func (l *Local) StatBlob(ctx context.Context, storagePath, rev, treePath string)
 	}
 
 	return BlobInfo{CommitSHA: commitSHA, BlobSHA: blobSHA, Size: size}, nil
+}
+
+func (l *Local) StatObject(ctx context.Context, storagePath, sha string) (ObjectInfo, error) {
+	dir, err := l.resolve(storagePath)
+	if err != nil {
+		return ObjectInfo{}, err
+	}
+	if !isHexSHA(sha) {
+		return ObjectInfo{}, fmt.Errorf("%w: %q", ErrInvalidRev, sha)
+	}
+
+	out, err := l.runGit(ctx, dir, nil, strings.NewReader(sha+"\n"), "cat-file", "--batch-check")
+	if err != nil {
+		return ObjectInfo{}, err
+	}
+
+	fields := strings.Fields(out)
+	if len(fields) >= 2 && fields[len(fields)-1] == "missing" {
+		return ObjectInfo{}, fmt.Errorf("%w: %s", ErrUnknownBlob, sha)
+	}
+	if len(fields) != 3 {
+		return ObjectInfo{}, fmt.Errorf("malformed batch-check output: %q", out)
+	}
+
+	size, err := strconv.ParseInt(fields[2], 10, 64)
+	if err != nil {
+		return ObjectInfo{}, fmt.Errorf("malformed object size %q: %w", fields[2], err)
+	}
+
+	return ObjectInfo{SHA: fields[0], Type: fields[1], Size: size}, nil
 }
 
 func (l *Local) ReadBlob(ctx context.Context, storagePath, blobSHA string, out io.Writer) error {

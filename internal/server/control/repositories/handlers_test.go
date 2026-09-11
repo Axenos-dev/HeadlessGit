@@ -24,11 +24,11 @@ const testSHA = "aaaabbbbccccddddeeeeffff0000111122223333"
 // and override only what the endpoint under test touches
 type fakeManager struct {
 	RepositoryManager
-	contents     domain.RepositoryContents
-	contentsErr  error
-	contentsRef  string
-	contentsPath string
-	contentsOpts domain.ContentsOptions
+	tree     domain.RepositoryTree
+	treeErr  error
+	treeRef  string
+	treePath string
+	treeOpts domain.TreeOptions
 
 	diffResult domain.RepositoryDiff
 	diffErr    error
@@ -47,11 +47,9 @@ type fakeManager struct {
 	streamBody string
 	streamErr  error
 
-	blobReq domain.BlobRequest
-	blobErr error
-
-	writeSHA string
-	writeErr error
+	fileInfo domain.FileInfo
+	fileReq  domain.FileRequest
+	fileErr  error
 
 	uploadTarget       domain.UploadTarget
 	uploadRepositoryID int64
@@ -76,11 +74,11 @@ type fakeManager struct {
 	repoByPathErr error
 }
 
-func (f *fakeManager) Contents(ctx context.Context, repositoryID int64, ref, treePath string, opts domain.ContentsOptions) (domain.RepositoryContents, error) {
-	f.contentsRef = ref
-	f.contentsPath = treePath
-	f.contentsOpts = opts
-	return f.contents, f.contentsErr
+func (f *fakeManager) Tree(ctx context.Context, repositoryID int64, ref, treePath string, opts domain.TreeOptions) (domain.RepositoryTree, error) {
+	f.treeRef = ref
+	f.treePath = treePath
+	f.treeOpts = opts
+	return f.tree, f.treeErr
 }
 
 func (f *fakeManager) Diff(ctx context.Context, repositoryID int64, base, head string) (domain.RepositoryDiff, error) {
@@ -147,28 +145,21 @@ func (f fakeManager) StreamArchive(ctx context.Context, req domain.ArchiveReques
 	return f.streamErr
 }
 
-func (f fakeManager) PrepareBlob(ctx context.Context, repositoryID int64, ref, treePath string, includeLFS bool) (domain.BlobRequest, error) {
-	return f.blobReq, f.blobErr
+func (f fakeManager) GetFile(ctx context.Context, repositoryID int64, blobSHA string) (domain.FileInfo, error) {
+	return f.fileInfo, f.fileErr
 }
 
-func (f fakeManager) StreamBlob(ctx context.Context, req domain.BlobRequest, out io.Writer) error {
+func (f fakeManager) PrepareFile(ctx context.Context, repositoryID int64, blobSHA string) (domain.FileRequest, error) {
+	return f.fileReq, f.fileErr
+}
+
+func (f fakeManager) StreamFile(ctx context.Context, req domain.FileRequest, out io.Writer) error {
 	if f.streamBody != "" {
 		if _, err := io.WriteString(out, f.streamBody); err != nil {
 			return err
 		}
 	}
 	return f.streamErr
-}
-
-func (f fakeManager) WriteBlob(ctx context.Context, repositoryID int64, in io.Reader) (string, int64, error) {
-	n, err := io.Copy(io.Discard, in) // consume the stream like the real thing
-	if err != nil {
-		return "", 0, err
-	}
-	if f.writeErr != nil {
-		return "", 0, f.writeErr
-	}
-	return f.writeSHA, n, nil
 }
 
 func (f *fakeManager) CreateUpload(_ context.Context, repositoryID, userID, size int64) (domain.UploadTarget, error) {
@@ -194,56 +185,91 @@ func testArchiveRequest() domain.ArchiveRequest {
 	}
 }
 
-func TestGetContents(t *testing.T) {
+func TestGetTree(t *testing.T) {
 	committedAt := time.Date(2026, 7, 30, 18, 42, 0, 0, time.UTC)
-	svc := &fakeManager{contents: domain.RepositoryContents{
+	svc := &fakeManager{tree: domain.RepositoryTree{
 		Ref:       "main",
 		CommitSHA: testSHA,
 		Path:      "config",
-		Entries: []domain.TreeEntry{{
-			Name: "server.properties",
-			Path: "config/server.properties",
-			Type: domain.TreeEntryFile,
-			Mode: "100644",
-			SHA:  "1111222233334444555566667777888899990000",
-			Size: 192,
-			LastCommit: &domain.CommitSummary{
-				SHA:         testSHA,
-				Message:     "Change difficulty",
-				CommittedAt: committedAt,
+		Entry: domain.TreeNode{
+			TreeEntry: domain.TreeEntry{
+				Name: "config",
+				Path: "config",
+				Type: domain.TreeEntryDirectory,
+				Mode: "040000",
+				SHA:  "0000111122223333444455556666777788889999",
 			},
-		}},
+			Entries: []domain.TreeEntry{{
+				Name: "server.properties",
+				Path: "config/server.properties",
+				Type: domain.TreeEntryFile,
+				Mode: "100644",
+				SHA:  "1111222233334444555566667777888899990000",
+				LastCommit: &domain.CommitSummary{
+					SHA:         testSHA,
+					Message:     "Change difficulty",
+					CommittedAt: committedAt,
+				},
+			}},
+		},
 	}}
 
 	rec := httptest.NewRecorder()
 	newTestRouter(svc).ServeHTTP(rec, httptest.NewRequest(
 		http.MethodGet,
-		"/repositories/7/contents?ref=main&path=config&include=lastCommit",
+		"/repositories/7/tree?ref=main&path=config&include=lastCommit",
 		nil,
 	))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
 	}
-	if svc.contentsRef != "main" || svc.contentsPath != "config" || !svc.contentsOpts.IncludeLastCommit {
-		t.Errorf("Contents args = ref %q, path %q, opts %+v", svc.contentsRef, svc.contentsPath, svc.contentsOpts)
+	if svc.treeRef != "main" || svc.treePath != "config" || !svc.treeOpts.IncludeLastCommit {
+		t.Errorf("Tree args = ref %q, path %q, opts %+v", svc.treeRef, svc.treePath, svc.treeOpts)
 	}
 
 	var body struct {
-		Data Contents `json:"data"`
+		Data json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.Data.SHA != testSHA || len(body.Data.Entries) != 1 {
-		t.Fatalf("contents = %+v", body.Data)
+
+	var tree struct {
+		Ref       string `json:"ref"`
+		CommitSHA string `json:"commitSha"`
+		Path      string `json:"path"`
+		Entry     struct {
+			Type    string `json:"type"`
+			TreeSHA string `json:"treeSha"`
+			BlobSHA string `json:"blobSha"`
+			Entries []struct {
+				Type       string         `json:"type"`
+				Name       string         `json:"name"`
+				BlobSHA    string         `json:"blobSha"`
+				Size       *int64         `json:"size"`
+				LastCommit *CommitSummary `json:"lastCommit"`
+			} `json:"entries"`
+		} `json:"entry"`
 	}
-	entry := body.Data.Entries[0]
+	if err := json.Unmarshal(body.Data, &tree); err != nil {
+		t.Fatal(err)
+	}
+	if tree.Ref != "main" || tree.CommitSHA != testSHA || tree.Entry.Type != "directory" || tree.Entry.BlobSHA != "" {
+		t.Fatalf("tree = %s", body.Data)
+	}
+	if len(tree.Entry.Entries) != 1 || tree.Entry.Entries[0].BlobSHA != "1111222233334444555566667777888899990000" {
+		t.Fatalf("entries = %s", body.Data)
+	}
+	entry := tree.Entry.Entries[0]
+	if entry.Size != nil {
+		t.Errorf("tree listing included size %v", *entry.Size)
+	}
 	if entry.LastCommit == nil || entry.LastCommit.SHA != testSHA || entry.LastCommit.Message != "Change difficulty" || !entry.LastCommit.CommittedAt.Equal(committedAt) {
 		t.Errorf("lastCommit = %+v", entry.LastCommit)
 	}
 }
 
-func TestGetContentsErrors(t *testing.T) {
+func TestGetTreeErrors(t *testing.T) {
 	cases := []struct {
 		name       string
 		target     string
@@ -251,21 +277,21 @@ func TestGetContentsErrors(t *testing.T) {
 		wantStatus int
 		wantCode   string
 	}{
-		{"bad id", "/repositories/nope/contents", nil, http.StatusBadRequest, "invalid_request"},
-		{"bad include", "/repositories/7/contents?include=commits", nil, http.StatusBadRequest, "invalid_request"},
-		{"duplicate include", "/repositories/7/contents?include=lastCommit&include=lastCommit", nil, http.StatusBadRequest, "invalid_request"},
-		{"repository not found", "/repositories/7/contents", reposervice.ErrRepositoryNotFound, http.StatusNotFound, "repository_not_found"},
-		{"ref not found", "/repositories/7/contents", reposervice.ErrRefNotFound, http.StatusNotFound, "ref_not_found"},
-		{"path not found", "/repositories/7/contents", reposervice.ErrPathNotFound, http.StatusNotFound, "path_not_found"},
-		{"invalid ref", "/repositories/7/contents", reposervice.ErrInvalidRef, http.StatusBadRequest, "invalid_request"},
-		{"invalid path", "/repositories/7/contents", reposervice.ErrInvalidPath, http.StatusBadRequest, "invalid_request"},
-		{"internal", "/repositories/7/contents", io.ErrUnexpectedEOF, http.StatusInternalServerError, "internal_error"},
+		{"bad id", "/repositories/nope/tree", nil, http.StatusBadRequest, "invalid_request"},
+		{"bad include", "/repositories/7/tree?include=commits", nil, http.StatusBadRequest, "invalid_request"},
+		{"duplicate include", "/repositories/7/tree?include=lastCommit&include=lastCommit", nil, http.StatusBadRequest, "invalid_request"},
+		{"repository not found", "/repositories/7/tree", reposervice.ErrRepositoryNotFound, http.StatusNotFound, "repository_not_found"},
+		{"ref not found", "/repositories/7/tree", reposervice.ErrRefNotFound, http.StatusNotFound, "ref_not_found"},
+		{"path not found", "/repositories/7/tree", reposervice.ErrPathNotFound, http.StatusNotFound, "path_not_found"},
+		{"invalid ref", "/repositories/7/tree", reposervice.ErrInvalidRef, http.StatusBadRequest, "invalid_request"},
+		{"invalid path", "/repositories/7/tree", reposervice.ErrInvalidPath, http.StatusBadRequest, "invalid_request"},
+		{"internal", "/repositories/7/tree", io.ErrUnexpectedEOF, http.StatusInternalServerError, "internal_error"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			newTestRouter(&fakeManager{contentsErr: tc.serviceErr}).ServeHTTP(
+			newTestRouter(&fakeManager{treeErr: tc.serviceErr}).ServeHTTP(
 				rec,
 				httptest.NewRequest(http.MethodGet, tc.target, nil),
 			)
@@ -672,22 +698,42 @@ func TestGetArchiveErrors(t *testing.T) {
 	}
 }
 
-func testBlobRequest(lfsOID string) domain.BlobRequest {
-	return domain.BlobRequest{
+func testFileRequest() domain.FileRequest {
+	return domain.FileRequest{
 		Repository: domain.Repository{ID: 7, RepositoryName: "myrepo"},
-		CommitSHA:  testSHA,
 		BlobSHA:    "1111222233334444555566667777888899990000",
-		Path:       "src/main.go",
 		Size:       6,
-		LFSOID:     lfsOID,
 	}
 }
 
-func TestGetBlob(t *testing.T) {
-	router := newTestRouter(&fakeManager{blobReq: testBlobRequest(""), streamBody: "hello\n"})
+func TestGetFile(t *testing.T) {
+	router := newTestRouter(&fakeManager{fileInfo: domain.FileInfo{
+		BlobSHA: "1111222233334444555566667777888899990000",
+		Size:    2183912,
+	}})
 
 	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/repositories/7/blob?ref=main&path=src/main.go", nil))
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/repositories/7/files/1111222233334444555566667777888899990000", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Data File `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Data.BlobSHA != "1111222233334444555566667777888899990000" || body.Data.Size != 2183912 {
+		t.Errorf("file = %+v", body.Data)
+	}
+}
+
+func TestGetFileContent(t *testing.T) {
+	router := newTestRouter(&fakeManager{fileReq: testFileRequest(), streamBody: "hello\n"})
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/repositories/7/files/1111222233334444555566667777888899990000/content", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
@@ -701,35 +747,15 @@ func TestGetBlob(t *testing.T) {
 	if got := rec.Header().Get("Content-Length"); got != "6" {
 		t.Errorf("Content-Length = %q", got)
 	}
-	if got := rec.Header().Get("Content-Disposition"); got != `attachment; filename="main.go"` {
-		t.Errorf("Content-Disposition = %q", got)
-	}
-	if got := rec.Header().Get("X-HeadlessGit-Commit"); got != testSHA {
+	if got := rec.Header().Get("X-HeadlessGit-Commit"); got != "" {
 		t.Errorf("X-HeadlessGit-Commit = %q", got)
 	}
 }
 
-func TestGetBlobLFSVariantETag(t *testing.T) {
-	router := newTestRouter(&fakeManager{blobReq: testBlobRequest("deadbeef"), streamBody: "hello\n"})
+func TestGetFileContentNotModified(t *testing.T) {
+	router := newTestRouter(&fakeManager{fileReq: testFileRequest(), streamBody: "hello\n"})
 
-	// the raw etag must not satisfy a smudged request
-	req := httptest.NewRequest(http.MethodGet, "/repositories/7/blob?ref=main&path=src/main.go&lfs=true", nil)
-	req.Header.Set("If-None-Match", `"1111222233334444555566667777888899990000"`)
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("raw etag must not match lfs variant, status = %d", rec.Code)
-	}
-	if got := rec.Header().Get("ETag"); got != `"1111222233334444555566667777888899990000-lfs"` {
-		t.Errorf("ETag = %q", got)
-	}
-}
-
-func TestGetBlobNotModified(t *testing.T) {
-	router := newTestRouter(&fakeManager{blobReq: testBlobRequest(""), streamBody: "hello\n"})
-
-	req := httptest.NewRequest(http.MethodGet, "/repositories/7/blob?ref=main&path=src/main.go", nil)
+	req := httptest.NewRequest(http.MethodGet, "/repositories/7/files/1111222233334444555566667777888899990000/content", nil)
 	req.Header.Set("If-None-Match", `"1111222233334444555566667777888899990000"`)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
@@ -739,69 +765,6 @@ func TestGetBlobNotModified(t *testing.T) {
 	}
 	if rec.Body.Len() != 0 {
 		t.Errorf("304 must have no body, got %d bytes", rec.Body.Len())
-	}
-}
-
-func TestUploadBlob(t *testing.T) {
-	router := newTestRouter(&fakeManager{writeSHA: "ce013625030ba8dba906f756967f9e9ca394464a"})
-
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/repositories/7/blobs", strings.NewReader("hello\n")))
-
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
-	}
-	var body struct {
-		Data struct {
-			SHA  string `json:"sha"`
-			Size int64  `json:"size"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatal(err)
-	}
-	if body.Data.SHA != "ce013625030ba8dba906f756967f9e9ca394464a" {
-		t.Errorf("sha = %q", body.Data.SHA)
-	}
-	if body.Data.Size != 6 {
-		t.Errorf("size = %d", body.Data.Size)
-	}
-}
-
-func TestUploadBlobErrors(t *testing.T) {
-	cases := []struct {
-		name       string
-		target     string
-		writeErr   error
-		wantStatus int
-		wantCode   string
-	}{
-		{"bad id", "/repositories/abc/blobs", nil, http.StatusBadRequest, "invalid_request"},
-		{"repo not found", "/repositories/7/blobs", reposervice.ErrRepositoryNotFound, http.StatusNotFound, "repository_not_found"},
-		{"write fails", "/repositories/7/blobs", io.ErrUnexpectedEOF, http.StatusInternalServerError, "internal_error"},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			router := newTestRouter(&fakeManager{writeErr: tc.writeErr})
-			rec := httptest.NewRecorder()
-			router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, tc.target, strings.NewReader("x")))
-
-			if rec.Code != tc.wantStatus {
-				t.Fatalf("status = %d, want %d: %s", rec.Code, tc.wantStatus, rec.Body.String())
-			}
-			var body struct {
-				Error struct {
-					Code string `json:"code"`
-				} `json:"error"`
-			}
-			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-				t.Fatal(err)
-			}
-			if body.Error.Code != tc.wantCode {
-				t.Errorf("code = %q, want %q", body.Error.Code, tc.wantCode)
-			}
-		})
 	}
 }
 
@@ -837,30 +800,28 @@ func TestCreateUpload(t *testing.T) {
 	}
 }
 
-func TestGetBlobErrors(t *testing.T) {
+func TestGetFileErrors(t *testing.T) {
 	cases := []struct {
 		name       string
 		target     string
-		blobErr    error
+		fileErr    error
 		streamErr  error
 		wantStatus int
 		wantCode   string
 	}{
-		{"bad id", "/repositories/abc/blob", nil, nil, http.StatusBadRequest, "invalid_request"},
-		{"bad lfs param", "/repositories/7/blob?lfs=maybe", nil, nil, http.StatusBadRequest, "invalid_request"},
-		{"repo not found", "/repositories/7/blob", reposervice.ErrRepositoryNotFound, nil, http.StatusNotFound, "repository_not_found"},
-		{"ref not found", "/repositories/7/blob?ref=nope", reposervice.ErrRefNotFound, nil, http.StatusNotFound, "ref_not_found"},
-		{"path not found", "/repositories/7/blob?path=nope", reposervice.ErrPathNotFound, nil, http.StatusNotFound, "path_not_found"},
-		{"lfs object missing", "/repositories/7/blob?lfs=true", reposervice.ErrLFSObjectNotFound, nil, http.StatusNotFound, "lfs_object_not_found"},
-		{"path is a directory", "/repositories/7/blob?path=src", reposervice.ErrNotAFile, nil, http.StatusBadRequest, "invalid_request"},
-		{"invalid ref", "/repositories/7/blob?ref=--x", reposervice.ErrInvalidRef, nil, http.StatusBadRequest, "invalid_request"},
-		{"lfs disabled", "/repositories/7/blob?lfs=true", reposervice.ErrLFSNotEnabled, nil, http.StatusBadRequest, "invalid_request"},
-		{"stream fails before first byte", "/repositories/7/blob", nil, io.ErrUnexpectedEOF, http.StatusInternalServerError, "internal_error"},
+		{"bad id", "/repositories/abc/files/" + strings.Repeat("a", 40), nil, nil, http.StatusBadRequest, "invalid_request"},
+		{"repo not found", "/repositories/7/files/" + strings.Repeat("a", 40), reposervice.ErrRepositoryNotFound, nil, http.StatusNotFound, "repository_not_found"},
+		{"unknown blob", "/repositories/7/files/" + strings.Repeat("a", 40), reposervice.ErrUnknownBlob, nil, http.StatusNotFound, "unknown_blob"},
+		{"lfs object missing", "/repositories/7/files/" + strings.Repeat("a", 40) + "/content", reposervice.ErrLFSObjectNotFound, nil, http.StatusNotFound, "lfs_object_not_found"},
+		{"not a file", "/repositories/7/files/" + strings.Repeat("a", 40), reposervice.ErrNotAFile, nil, http.StatusBadRequest, "invalid_request"},
+		{"invalid sha", "/repositories/7/files/nope", reposervice.ErrInvalidBlobSHA, nil, http.StatusBadRequest, "invalid_request"},
+		{"lfs unavailable", "/repositories/7/files/" + strings.Repeat("a", 40) + "/content", reposervice.ErrLFSNotEnabled, nil, http.StatusServiceUnavailable, "lfs_unavailable"},
+		{"stream fails before first byte", "/repositories/7/files/" + strings.Repeat("a", 40) + "/content", nil, io.ErrUnexpectedEOF, http.StatusInternalServerError, "internal_error"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			router := newTestRouter(&fakeManager{blobReq: testBlobRequest(""), blobErr: tc.blobErr, streamErr: tc.streamErr})
+			router := newTestRouter(&fakeManager{fileReq: testFileRequest(), fileErr: tc.fileErr, streamErr: tc.streamErr})
 			rec := httptest.NewRecorder()
 			router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tc.target, nil))
 
@@ -877,9 +838,6 @@ func TestGetBlobErrors(t *testing.T) {
 			}
 			if body.Error.Code != tc.wantCode {
 				t.Errorf("code = %q, want %q", body.Error.Code, tc.wantCode)
-			}
-			if got := rec.Header().Get("Content-Disposition"); got != "" {
-				t.Errorf("error response leaked Content-Disposition %q", got)
 			}
 		})
 	}

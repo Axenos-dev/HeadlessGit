@@ -156,16 +156,16 @@ Every request requires `Authorization: Bearer <ADMIN_TOKEN>`. Responses are enve
 
 **Repository contents & commits**
 
-| Method | Path                                                        | Body             | Description                                                            |
-| ------ | ----------------------------------------------------------- | ---------------- | ---------------------------------------------------------------------- |
-| `GET`  | `/repositories/{id}/contents?ref=&path=&include=lastCommit` | —                | List one directory level, optionally with each entry's last commit.    |
-| `GET`  | `/repositories/{id}/commits/{sha}`                          | —                | Get metadata for one commit by its full SHA.                           |
-| `GET`  | `/repositories/{id}/diff?base=&head=`                       | —                | Compare two refs with per-file metadata and unified patches.           |
-| `GET`  | `/repositories/{id}/blob?ref=&path=&lfs=`                   | —                | Stream one file's raw content.                                         |
-| `GET`  | `/repositories/{id}/archive?ref=&format=&lfs=&prefix=`      | —                | Stream a `zip` (default) or `tar.gz` archive of the tree.              |
-| `POST` | `/repositories/{id}/blobs`                                  | _raw bytes_      | Upload content into the repo's object database; returns `{sha, size}`. |
-| `POST` | `/repositories/{id}/uploads`                                | `{userId, size}` | Create a signed blob or LFS upload URL.                                |
-| `POST` | `/repositories/{id}/commits`                                | JSON             | Create a commit from uploaded Git blobs.                               |
+| Method | Path                                                    | Body             | Description                                                  |
+| ------ | ------------------------------------------------------- | ---------------- | ------------------------------------------------------------ |
+| `GET`  | `/repositories/{id}/tree?ref=&path=&include=lastCommit` | —                | Resolve a path to a file or one directory level.             |
+| `GET`  | `/repositories/{id}/files/{blobSha}`                    | —                | File metadata `{blobSha, size}` with logical size.           |
+| `GET`  | `/repositories/{id}/files/{blobSha}/content`            | —                | Stream the logical file bytes.                               |
+| `GET`  | `/repositories/{id}/commits/{sha}`                      | —                | Get metadata for one commit by its full SHA.                 |
+| `GET`  | `/repositories/{id}/diff?base=&head=`                   | —                | Compare two refs with per-file metadata and unified patches. |
+| `GET`  | `/repositories/{id}/archive?ref=&format=&lfs=&prefix=`  | —                | Stream a `zip` (default) or `tar.gz` archive of the tree.    |
+| `POST` | `/repositories/{id}/uploads`                            | `{userId, size}` | Create a signed blob or LFS upload URL.                      |
+| `POST` | `/repositories/{id}/commits`                            | JSON             | Create a commit from uploaded Git blobs.                     |
 
 ### Uploading a file
 
@@ -183,41 +183,49 @@ For files below the threshold, the blob contains the uploaded bytes. For LFS fil
 
 `ref` accepts anything git can resolve to a commit — a branch, tag, sha, or expression like `main~2` — and defaults to `HEAD`. Every response is pinned to the exact commit it was answered from, so consumers can page through a repository without seeing a torn view mid-push.
 
-`GET /contents` returns the entries of one directory level:
+`GET /tree` resolves `ref + path` to a file or one directory level. Files have `blobSha`, directories have `treeSha`. Child directories are not expanded.
 
 ```json
 {
   "data": {
     "ref": "main",
-    "sha": "9fb037999f264ba9a7fc6274d15fa3ae2ab98312",
+    "commitSha": "9fb037999...",
     "path": "src",
-    "entries": [
-      {
-        "name": "main.go",
-        "path": "src/main.go",
-        "type": "file",
-        "mode": "100644",
-        "size": 1234,
-        "sha": "...",
-        "lastCommit": {
-          "sha": "7786adb...",
-          "message": "Change server difficulty",
-          "committedAt": "2026-07-30T18:42:00Z"
+    "entry": {
+      "type": "directory",
+      "name": "src",
+      "path": "src",
+      "mode": "040000",
+      "treeSha": "def456...",
+      "entries": [
+        {
+          "type": "file",
+          "name": "main.go",
+          "path": "src/main.go",
+          "mode": "100644",
+          "blobSha": "...",
+          "lastCommit": {
+            "sha": "7786adb...",
+            "message": "Change something",
+            "committedAt": "2026-07-30T18:42:00Z"
+          }
+        },
+        {
+          "type": "directory",
+          "name": "vendor",
+          "path": "src/vendor",
+          "mode": "040000",
+          "treeSha": "..."
         }
-      },
-      {
-        "name": "vendor",
-        "path": "src/vendor",
-        "type": "dir",
-        "mode": "040000",
-        "sha": "..."
-      }
-    ]
+      ]
+    }
   }
 }
 ```
 
-`type` is `file` | `dir` | `symlink` | `submodule`. Add `include=lastCommit` to populate the optional `lastCommit` object for every entry.
+`type` is `file` | `directory` | `symlink` | `submodule`. Add `include=lastCommit` to populate the optional `lastCommit` object.
+
+`GET /files/{blobSha}` returns `{blobSha, size}` using the logical file size. `GET /files/{blobSha}/content` streams those bytes. An LFS pointer blob is smudged automatically. A missing LFS object is `404 lfs_object_not_found`. Unavailable LFS storage is `503 lfs_unavailable`. The stream carries `Content-Length` and a strong `ETag` (the blob SHA).
 
 `GET /commits/{sha}` requires commit SHA and returns the complete commit message and metadata:
 
@@ -268,9 +276,7 @@ For files below the threshold, the blob contains the uploaded bytes. For LFS fil
 
 `patch` and `binary` are always present. Binary files return `null` for `patch`, `additions`, and `deletions`, with `"patchOmittedReason": "binary"`. A patch larger than 1 MiB, or one that would take the response over its 10 MiB patch budget, is omitted completely with `"patchOmittedReason": "too_large"`—the API never returns a partially cut patch. Non-UTF-8 patches use `"unsupported_encoding"`. Diffs over 10k files set `"truncated": true` and omit patches as `"too_large"`.
 
-The patch is intended for normal unified-diff renderers. Consumers that need complete old and new file bodies can fetch them through `/blob` using `base + oldPath` and `head + newPath`.
-
-`GET /blob` streams the file bytes with `Content-Length`, a strong `ETag` (the blob sha — content-addressed, so `If-None-Match` caching works perfectly), and `X-HeadlessGit-Commit` carrying the resolved commit. With `lfs=true`, an LFS pointer file is replaced by the real object; a missing object is a `404` rather than silently serving the pointer.
+The patch is intended for normal unified-diff renderers. Consumers that need complete old and new file bodies can fetch them through `/files/{blobSha}/content`.
 
 `GET /archive` streams the whole tree as an artifact, named `<repo>-<shortsha>.zip`. By default its entries are under the matching `<repo>-<shortsha>/` directory. Set `prefix=release/source` to choose another directory, or explicitly set `prefix=` to place entries at the archive root. Prefixes are relative directory paths and a trailing `/` is optional.
 
@@ -287,11 +293,9 @@ Commits follow two-step model: upload content first, then commit metadata refere
 ![commit](images/commit.png)
 
 ```sh
-# 1. upload each new/changed file's bytes (raw body, streamed)
-curl -H "Authorization: Bearer $TOKEN" \
-  --data-binary @config.yaml \
-  http://localhost:4001/repositories/7/blobs
-# -> {"data": {"sha": "44b4fc6d...", "size": 812}}
+# 1. create a signed upload, then PUT the bytes
+# POST /repositories/7/uploads  -> {uploadUrl, headers, expiresAt}
+# PUT  $uploadUrl               -> {blobSha, size}
 
 # 2. create the commit (atomic, any number of operations)
 curl -H "Authorization: Bearer $TOKEN" -X POST \

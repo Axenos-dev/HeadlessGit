@@ -26,6 +26,7 @@ var (
 	ErrLFSNotEnabled        = errors.New("lfs is not enabled")
 
 	ErrNotAFile          = errors.New("path is not a file")
+	ErrInvalidBlobSHA    = errors.New("invalid blob sha")
 	ErrLFSObjectNotFound = errors.New("lfs object not found")
 
 	// api commits

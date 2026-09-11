@@ -137,12 +137,12 @@ func TestSignedUploads(t *testing.T) {
 		}
 		head = commit.CommitSHA
 		for _, op := range ops {
-			blob, err := repoSvc.PrepareBlob(ctx, repo.ID, commit.CommitSHA, op.Path, true)
+			blob, err := repoSvc.PrepareFile(ctx, repo.ID, op.SHA)
 			if err != nil {
 				t.Fatal(err)
 			}
 			var content strings.Builder
-			err = repoSvc.StreamBlob(ctx, blob, &content)
+			err = repoSvc.StreamFile(ctx, blob, &content)
 			if err != nil || content.String() != payload {
 				t.Fatalf("round trip failed: %v", err)
 			}

@@ -442,12 +442,18 @@ func TestListTree(t *testing.T) {
 		if listing.Entries[1].Path != "src" || listing.Entries[1].Type != "tree" || listing.Entries[1].Size != -1 {
 			t.Errorf("src entry = %+v", listing.Entries[1])
 		}
+		if listing.Node.Type != "tree" || listing.Node.Mode != "040000" || listing.Node.Path != "" || !isHexSHA(listing.Node.SHA) {
+			t.Errorf("root node = %+v", listing.Node)
+		}
 	})
 
 	t.Run("subdir listing", func(t *testing.T) {
 		listing, err := l.ListTree(ctx, "1/test.git", "main", "src", ListTreeOptions{})
 		if err != nil {
 			t.Fatal(err)
+		}
+		if listing.Node.Type != "tree" || listing.Node.Path != "src" || listing.Node.Mode != "040000" {
+			t.Errorf("src node = %+v", listing.Node)
 		}
 		if len(listing.Entries) != 2 {
 			t.Fatalf("want 2 entries, got %+v", listing.Entries)
@@ -460,6 +466,22 @@ func TestListTree(t *testing.T) {
 		}
 	})
 
+	t.Run("file lookup", func(t *testing.T) {
+		listing, err := l.ListTree(ctx, "1/test.git", "main", "src/main.go", ListTreeOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if listing.Node.Type != "blob" || listing.Node.Path != "src/main.go" || listing.Node.Mode != "100644" {
+			t.Errorf("file node = %+v", listing.Node)
+		}
+		if listing.Node.Size != int64(len("package main\n")) {
+			t.Errorf("file size = %d", listing.Node.Size)
+		}
+		if len(listing.Entries) != 0 {
+			t.Errorf("file lookup must not list children, got %+v", listing.Entries)
+		}
+	})
+
 	t.Run("errors", func(t *testing.T) {
 		cases := []struct {
 			name, rev, path string
@@ -467,7 +489,6 @@ func TestListTree(t *testing.T) {
 		}{
 			{"unknown rev", "nope", "", ErrRevNotFound},
 			{"unknown path", "main", "nope", ErrPathNotFound},
-			{"path is a blob", "main", "README.md", ErrPathNotFound},
 			{"hostile rev", "--help", "", ErrInvalidRev},
 			{"traversal path", "main", "../../etc", ErrPathNotFound},
 		}
@@ -517,6 +538,14 @@ func TestListTree(t *testing.T) {
 			if entry.LastCommit == nil || entry.LastCommit.SHA != initialSHA || entry.LastCommit.Message != "init" {
 				t.Errorf("%s last commit = %+v", entry.Path, entry.LastCommit)
 			}
+		}
+
+		file, err := l.ListTree(ctx, "1/test.git", "main", "README.md", ListTreeOptions{IncludeLastCommit: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := file.Node.LastCommit; got == nil || got.SHA != headSHA || got.Message != "update readme" {
+			t.Errorf("README.md node last commit = %+v", got)
 		}
 	})
 }
@@ -917,6 +946,19 @@ func TestBlob(t *testing.T) {
 	}
 	if buf.String() != "package main\n" {
 		t.Errorf("content = %q", buf.String())
+	}
+
+	obj, err := l.StatObject(ctx, "1/test.git", info.BlobSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if obj.Type != "blob" || obj.SHA != info.BlobSHA || obj.Size != info.Size {
+		t.Errorf("StatObject = %+v", obj)
+	}
+
+	missing := strings.Repeat("a", 40)
+	if _, err := l.StatObject(ctx, "1/test.git", missing); !errors.Is(err, ErrUnknownBlob) {
+		t.Errorf("StatObject(missing) = %v, want ErrUnknownBlob", err)
 	}
 
 	t.Run("write blob", func(t *testing.T) {

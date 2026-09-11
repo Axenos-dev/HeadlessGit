@@ -6,7 +6,7 @@ type TreeEntryType string
 
 const (
 	TreeEntryFile      TreeEntryType = "file"
-	TreeEntryDir       TreeEntryType = "dir"
+	TreeEntryDirectory TreeEntryType = "directory"
 	TreeEntrySymlink   TreeEntryType = "symlink"
 	TreeEntrySubmodule TreeEntryType = "submodule"
 )
@@ -14,7 +14,7 @@ const (
 func TreeEntryTypeFromMode(mode string) TreeEntryType {
 	switch mode {
 	case "040000":
-		return TreeEntryDir
+		return TreeEntryDirectory
 	case "120000":
 		return TreeEntrySymlink
 	case "160000":
@@ -30,7 +30,6 @@ type TreeEntry struct {
 	Type       TreeEntryType
 	Mode       string
 	SHA        string
-	Size       int64 // object size in bytes, -1 for non-blobs (dirs, submodules)
 	LastCommit *CommitSummary
 }
 
@@ -40,15 +39,20 @@ type CommitSummary struct {
 	CommittedAt time.Time
 }
 
-type ContentsOptions struct {
+type TreeOptions struct {
 	IncludeLastCommit bool
 }
 
-type RepositoryContents struct {
+type TreeNode struct {
+	TreeEntry
+	Entries []TreeEntry // children of a resolved directory; nil for files
+}
+
+type RepositoryTree struct {
 	Ref       string
 	CommitSHA string
 	Path      string
-	Entries   []TreeEntry
+	Entry     TreeNode
 	Truncated bool
 }
 

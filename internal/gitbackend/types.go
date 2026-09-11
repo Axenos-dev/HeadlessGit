@@ -72,7 +72,8 @@ type ListTreeOptions struct {
 }
 
 type TreeListing struct {
-	CommitSHA string // the exact commit the listing is a snapshot of
+	CommitSHA string    // the exact commit the listing is a snapshot of
+	Node      TreeEntry // the resolved path itself
 	Entries   []TreeEntry
 	Truncated bool
 }
@@ -122,6 +123,12 @@ type BlobInfo struct {
 	CommitSHA string
 	BlobSHA   string
 	Size      int64
+}
+
+type ObjectInfo struct {
+	SHA  string
+	Type string // blob | tree | commit
+	Size int64
 }
 
 type CommitOp struct {
