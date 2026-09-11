@@ -132,6 +132,8 @@ Prefer simple Go: small interfaces at module boundaries, context-aware I/O, expl
 errors with context, table-driven tests, standard library first. Avoid large global
 state, framework-heavy abstractions, and dependencies added for small tasks.
 
+Keep distinct code blocks separated by blank lines, and split long boolean conditions into focused guard clauses.
+
 **File layout.** Do not multiply files or packages. A service is `service.go` +
 `errors.go` + `registry.go` — new service methods go into `service.go`, not new
 files. One test file per package where practical (`service_test.go`,

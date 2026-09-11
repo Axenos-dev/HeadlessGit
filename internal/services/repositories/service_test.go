@@ -195,16 +195,16 @@ func (f fakeLFS) StoreObject(ctx context.Context, repo domain.Repository, upload
 	return nil
 }
 
-func (f fakeLFS) Upload(ctx context.Context, auth domain.UploadAuthorization, r io.Reader) (domain.UploadedObject, error) {
+func (f fakeLFS) Upload(ctx context.Context, auth domain.UploadAuthorization, r io.Reader) (domain.LFSPointer, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
-		return domain.UploadedObject{}, err
+		return domain.LFSPointer{}, err
 	}
 	if int64(len(data)) != auth.Size {
-		return domain.UploadedObject{}, lfsservice.ErrObjectMismatch
+		return domain.LFSPointer{}, lfsservice.ErrObjectMismatch
 	}
 	hash := sha256.Sum256(data)
-	return domain.UploadedObject{Kind: domain.UploadLFS, OID: fmt.Sprintf("%x", hash), Size: int64(len(data))}, nil
+	return domain.LFSPointer{OID: fmt.Sprintf("%x", hash), Size: int64(len(data))}, nil
 }
 
 func TestSignedUploadRouting(t *testing.T) {
@@ -225,7 +225,7 @@ func TestSignedUploadRouting(t *testing.T) {
 		auth := domain.UploadAuthorization{Kind: target.Kind, UploadID: target.UploadID, RepositoryID: 7, UserID: 42, Size: size, ExpiresAt: target.ExpiresAt}
 		auth.Signature = auth.Sign(svc.Uploads.SigningKey)
 		object, err := svc.Upload(context.Background(), auth, strings.NewReader(strings.Repeat("x", int(size))))
-		if err != nil || object.Kind != want || object.Size != size {
+		if err != nil || object.BlobSHA != testSHA || object.Size != size {
 			t.Fatalf("object %+v: %v", object, err)
 		}
 		auth.Kind = "invalid"

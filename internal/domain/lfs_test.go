@@ -7,7 +7,11 @@ import (
 
 func TestParseLFSPointer(t *testing.T) {
 	oid := strings.Repeat("ab", 32)
+	pointer := LFSPointer{OID: oid, Size: 12345}
 	valid := "version https://git-lfs.github.com/spec/v1\noid sha256:" + oid + "\nsize 12345\n"
+	if got := string(pointer.Encode()); got != valid {
+		t.Fatalf("LFSPointer.Encode() = %q, want %q", got, valid)
+	}
 
 	cases := []struct {
 		name string

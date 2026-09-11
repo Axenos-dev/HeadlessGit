@@ -832,7 +832,7 @@ func TestCreateUpload(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.Data.UploadID != "upload-id" || body.Data.UploadURL != service.uploadTarget.Href || !body.Data.ExpiresAt.Equal(expiresAt) {
+	if body.Data.UploadURL != service.uploadTarget.Href || !body.Data.ExpiresAt.Equal(expiresAt) {
 		t.Fatalf("response = %+v", body.Data)
 	}
 }

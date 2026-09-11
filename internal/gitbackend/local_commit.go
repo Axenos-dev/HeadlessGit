@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/Axenos-dev/HeadlessGit/internal/domain"
 )
 
 type indexEntry struct {
@@ -265,13 +267,9 @@ func (l *Local) materializeLFSPointers(ctx context.Context, dir string, ops []Co
 			continue
 		}
 
-		pointer := fmt.Sprintf(
-			"version https://git-lfs.github.com/spec/v1\noid sha256:%s\nsize %d\n",
-			ops[i].Lfs.OID,
-			ops[i].Lfs.Size,
-		)
+		pointer := domain.LFSPointer{OID: ops[i].Lfs.OID, Size: ops[i].Lfs.Size}
 		// generate sha for handcrafted pointer
-		sha, err := l.runGit(ctx, dir, nil, strings.NewReader(pointer), "hash-object", "-w", "--stdin")
+		sha, err := l.runGit(ctx, dir, nil, bytes.NewReader(pointer.Encode()), "hash-object", "-w", "--stdin")
 		if err != nil {
 			return nil, fmt.Errorf("write lfs pointer for %q: %w", ops[i].Path, err)
 		}

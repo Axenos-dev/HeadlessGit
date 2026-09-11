@@ -198,8 +198,6 @@ func (r CreateUploadRequest) Validate() error {
 }
 
 type UploadTarget struct {
-	Kind      domain.UploadKind `json:"kind"`
-	UploadID  string            `json:"uploadId"`
 	UploadURL string            `json:"uploadUrl"`
 	Headers   map[string]string `json:"headers"`
 	ExpiresAt time.Time         `json:"expiresAt"`
@@ -207,8 +205,6 @@ type UploadTarget struct {
 
 func newUploadTarget(target domain.UploadTarget) UploadTarget {
 	return UploadTarget{
-		Kind:      target.Kind,
-		UploadID:  target.UploadID,
 		UploadURL: target.Href,
 		Headers:   target.Header,
 		ExpiresAt: target.ExpiresAt,

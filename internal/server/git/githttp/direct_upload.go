@@ -53,7 +53,7 @@ func (h *Server) handleDirectUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := response.Data(w, http.StatusCreated, uploadedObject{Kind: object.Kind, SHA: object.SHA, OID: object.OID, Size: object.Size}); err != nil {
+	if err := response.Data(w, http.StatusCreated, uploadedObject{BlobSHA: object.BlobSHA, Size: object.Size}); err != nil {
 		h.logger.Warn("failed to encode upload response", zap.Error(err))
 	}
 }
