@@ -239,18 +239,12 @@ func newCommitDetails(commit domain.CommitDetails) CommitDetails {
 	}
 }
 
-type CommitObjectLfs struct {
-	OID  string `json:"oid"`
-	Size int64  `json:"size"`
-}
-
 type CommitOperation struct {
-	Op         string           `json:"op"` // "put" | "delete" | "move"
-	Path       string           `json:"path"`
-	FromPath   string           `json:"fromPath,omitempty"`   // moves only
-	Lfs        *CommitObjectLfs `json:"lfs,omitempty"`        // puts only, from POST .../lfs/objects/batch
-	BlobSHA    *string          `json:"blobSha,omitempty"`    // puts only, from POST /blobs
-	Executable bool             `json:"executable,omitempty"` // puts only
+	Op         string `json:"op"` // "put" | "delete" | "move"
+	Path       string `json:"path"`
+	FromPath   string `json:"fromPath,omitempty"`   // moves only
+	SHA        string `json:"sha,omitempty"`        // puts only
+	Executable bool   `json:"executable,omitempty"` // puts only
 }
 
 type CreateCommitRequest struct {
@@ -284,30 +278,18 @@ func (r CreateCommitRequest) Validate() error {
 			if op.FromPath != "" {
 				return fmt.Errorf("operations[%d]: fromPath is only valid for move", i)
 			}
-			if (op.BlobSHA == nil) == (op.Lfs == nil) {
-				return fmt.Errorf("operations[%d]: exactly one of blobSha or lfs is required for put", i)
-			}
-			if op.BlobSHA != nil {
-				if *op.BlobSHA == "" {
-					return fmt.Errorf("operations[%d]: blobSha is required for put", i)
-				}
-			} else {
-				if op.Lfs.OID == "" {
-					return fmt.Errorf("operations[%d]: lfs.oid is required", i)
-				}
-				if op.Lfs.Size <= 0 {
-					return fmt.Errorf("operations[%d]: lfs.size must be positive", i)
-				}
+			if op.SHA == "" {
+				return fmt.Errorf("operations[%d]: sha is required for put", i)
 			}
 		case "delete":
-			if op.FromPath != "" || op.BlobSHA != nil || op.Lfs != nil || op.Executable {
+			if op.FromPath != "" || op.SHA != "" || op.Executable {
 				return fmt.Errorf("operations[%d]: delete takes only op and path", i)
 			}
 		case "move":
 			if op.FromPath == "" {
 				return fmt.Errorf("operations[%d]: fromPath is required for move", i)
 			}
-			if op.BlobSHA != nil || op.Lfs != nil || op.Executable {
+			if op.SHA != "" || op.Executable {
 				return fmt.Errorf("operations[%d]: move takes only op, fromPath, and path", i)
 			}
 		default:

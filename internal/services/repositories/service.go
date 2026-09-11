@@ -558,20 +558,8 @@ func (s *Service) Commit(ctx context.Context, repositoryID int64, req domain.Com
 			Delete:   op.Delete,
 			MoveFrom: op.MoveFrom,
 			Path:     op.Path,
+			BlobSHA:  op.SHA,
 			Mode:     mode,
-		}
-		if op.BlobSHA != nil {
-			ops[i].BlobSHA = *op.BlobSHA
-		}
-
-		if op.Lfs != nil {
-			if err := s.validateLfsObject(ctx, repo, *op.Lfs); err != nil {
-				return domain.CommitResult{}, err
-			}
-			ops[i].Lfs = &gitbackend.LfsObject{
-				OID:  op.Lfs.OID,
-				Size: op.Lfs.Size,
-			}
 		}
 	}
 
@@ -627,30 +615,6 @@ func (s *Service) Commit(ctx context.Context, repositoryID int64, req domain.Com
 		CommitSHA: change.NewSHA,
 		Before:    change.OldSHA,
 	}, nil
-}
-
-// validates the LFS objects, checks if it exists and has a right size
-func (s *Service) validateLfsObject(ctx context.Context, repo domain.Repository, lfsObject domain.CommitFileLfsObject) error {
-	if s.lfs == nil {
-		return ErrLFSNotEnabled
-	}
-
-	// verify if it exists
-	object, size, err := s.lfs.GetObject(ctx, repo, lfsObject.OID)
-	switch {
-	case errors.Is(err, lfsservice.ErrObjectNotFound):
-		return ErrLFSObjectNotFound
-	case err != nil:
-		return err
-	}
-	defer object.Close()
-
-	// verify its size
-	if size != lfsObject.Size {
-		return fmt.Errorf("%w: lfs object %s has size %d, requested %d", ErrInvalidCommitOps, lfsObject.OID, size, lfsObject.Size)
-	}
-
-	return nil
 }
 
 func (s *Service) lfsCleanFunc(ctx context.Context, repo domain.Repository, pusherID int64) gitbackend.CleanFunc {

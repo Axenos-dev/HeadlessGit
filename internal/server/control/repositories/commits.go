@@ -44,7 +44,9 @@ func (h *handlers) createCommit(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	var req CreateCommitRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
 		return response.NewError(http.StatusBadRequest, response.CodeInvalidRequest, "invalid request body")
 	}
 	if err := req.Validate(); err != nil {
@@ -57,15 +59,8 @@ func (h *handlers) createCommit(w http.ResponseWriter, r *http.Request) error {
 			Delete:     op.Op == "delete",
 			MoveFrom:   op.FromPath,
 			Path:       op.Path,
-			BlobSHA:    op.BlobSHA,
+			SHA:        op.SHA,
 			Executable: op.Executable,
-		}
-
-		if op.Lfs != nil {
-			ops[i].Lfs = &domain.CommitFileLfsObject{
-				OID:  op.Lfs.OID,
-				Size: op.Lfs.Size,
-			}
 		}
 	}
 
@@ -90,8 +85,6 @@ func (h *handlers) createCommit(w http.ResponseWriter, r *http.Request) error {
 		return response.NewError(http.StatusConflict, response.CodeHeadMismatch, "branch head does not match expectedHeadSha")
 	case errors.Is(err, reposervice.ErrUnknownBlob):
 		return response.NewError(http.StatusUnprocessableEntity, response.CodeUnknownBlob, "referenced blob not found, upload it first")
-	case errors.Is(err, reposervice.ErrLFSObjectNotFound):
-		return response.NewError(http.StatusUnprocessableEntity, response.CodeLFSObjectNotFound, "referenced lfs object not found or not verified, upload it first")
 	case errors.Is(err, reposervice.ErrNothingToCommit):
 		return response.NewError(http.StatusUnprocessableEntity, response.CodeNothingToCommit, "operations produce no change")
 	case errors.Is(err, reposervice.ErrPathBlocked):

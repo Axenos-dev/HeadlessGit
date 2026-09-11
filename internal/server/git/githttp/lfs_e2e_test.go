@@ -126,8 +126,8 @@ func TestSignedUploads(t *testing.T) {
 		}
 		// Reuse the uploaded object at two arbitrary paths, without .gitattributes.
 		ops := []domain.CommitFileOp{
-			{Path: "first.dat", BlobSHA: &object.BlobSHA},
-			{Path: "second.dat", BlobSHA: &object.BlobSHA},
+			{Path: "first.dat", SHA: object.BlobSHA},
+			{Path: "second.dat", SHA: object.BlobSHA},
 		}
 		commit, err := repoSvc.Commit(ctx, repo.ID, domain.CommitRequest{
 			Branch: "main", Message: "Upload files", ExpectedHeadSHA: head, Author: domain.CommitIdentity{Name: "test", Email: "test@test"}, Operations: ops,

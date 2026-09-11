@@ -165,7 +165,7 @@ Every request requires `Authorization: Bearer <ADMIN_TOKEN>`. Responses are enve
 | `GET`  | `/repositories/{id}/archive?ref=&format=&lfs=&prefix=`      | —                | Stream a `zip` (default) or `tar.gz` archive of the tree.              |
 | `POST` | `/repositories/{id}/blobs`                                  | _raw bytes_      | Upload content into the repo's object database; returns `{sha, size}`. |
 | `POST` | `/repositories/{id}/uploads`                                | `{userId, size}` | Create a signed blob or LFS upload URL.                                |
-| `POST` | `/repositories/{id}/commits`                                | JSON             | Create a commit from Git blobs or verified LFS objects.                |
+| `POST` | `/repositories/{id}/commits`                                | JSON             | Create a commit from uploaded Git blobs.                               |
 
 ### Uploading a file
 
@@ -301,33 +301,20 @@ curl -H "Authorization: Bearer $TOKEN" -X POST \
     "author": { "name": "deploy-bot", "email": "bot@example.com" },
     "expectedHeadSha": "9fb03799...",
     "operations": [
-      { "op": "put", "path": "config.yaml", "blobSha": "44b4fc6d..." },
+      { "op": "put", "path": "config.yaml", "sha": "44b4fc6d..." },
       { "op": "delete", "path": "config.old.yaml" }
     ]
   }'
 # -> 201 {"data": {"branch": "main", "commitSha": "...", "before": "9fb03799..."}}
 ```
 
-A `put` operation takes exactly one content source:
+A `put` operation references the Git blob returned by the upload:
 
 ```json
-{ "op": "put", "path": "README.md", "blobSha": "<sha from POST /blobs>" }
+{ "op": "put", "path": "README.md", "sha": "<uploaded blob sha>" }
 ```
 
-or a repository-scoped LFS object already uploaded and verified through the LFS Batch API or a signed upload URL:
-
-```json
-{
-  "op": "put",
-  "path": "models/model.bin",
-  "lfs": {
-    "oid": "...",
-    "size": 734003200
-  }
-}
-```
-
-`blobSha` and `lfs` are mutually exclusive. `executable` is optional for puts. A `delete` operation takes only `op` and `path`.
+The commit API does not distinguish raw files from LFS files. The upload API returns a commit-ready Git blob SHA for both. `executable` is optional for puts. A `delete` operation takes only `op` and `path`.
 
 A `move` relocates a file or a whole directory tree:
 
@@ -345,7 +332,7 @@ Operations are applied in array order. After the move, later operations in the s
 {
   "operations": [
     { "op": "move", "fromPath": "plugins", "path": "server/plugins" },
-    { "op": "put", "path": "server/plugins/config.yml", "blobSha": "<sha>" },
+    { "op": "put", "path": "server/plugins/config.yml", "sha": "<sha>" },
     { "op": "delete", "path": "server/plugins/something.yaml" }
   ]
 }

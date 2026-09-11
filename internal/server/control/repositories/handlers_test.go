@@ -893,7 +893,7 @@ func validCommitBody() string {
 		"expectedHeadSha": "` + strings.Repeat("a", 40) + `",
 		"pusherId": 42,
 		"operations": [
-			{"op": "put", "path": "run.sh", "blobSha": "` + strings.Repeat("b", 40) + `", "executable": true},
+			{"op": "put", "path": "run.sh", "sha": "` + strings.Repeat("b", 40) + `", "executable": true},
 			{"op": "delete", "path": "old.txt"}
 		]
 	}`
@@ -927,7 +927,7 @@ func TestCreateCommit(t *testing.T) {
 		t.Errorf("service request = %+v", req)
 	}
 	if len(req.Operations) != 2 ||
-		req.Operations[0].Delete || !req.Operations[0].Executable || req.Operations[0].BlobSHA == nil || *req.Operations[0].BlobSHA != strings.Repeat("b", 40) ||
+		req.Operations[0].Delete || !req.Operations[0].Executable || req.Operations[0].SHA != strings.Repeat("b", 40) ||
 		!req.Operations[1].Delete || req.Operations[1].Path != "old.txt" {
 		t.Errorf("service operations = %+v", req.Operations)
 	}
@@ -965,13 +965,12 @@ func TestCreateCommitValidation(t *testing.T) {
 		{"no operations", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[]}`},
 		{"bad op kind", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"copy","path":"a"}]}`},
 		{"move without source", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"move","path":"a"}]}`},
-		{"move with blob", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"move","fromPath":"a","path":"b","blobSha":"abc"}]}`},
-		{"put with source", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"put","fromPath":"old","path":"a","blobSha":"abc"}]}`},
+		{"move with sha", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"move","fromPath":"a","path":"b","sha":"abc"}]}`},
+		{"put with source", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"put","fromPath":"old","path":"a","sha":"abc"}]}`},
 		{"put without object", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"put","path":"a"}]}`},
-		{"put with both sources", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"put","path":"a","blobSha":"abc","lfs":{"oid":"def","size":1}}]}`},
-		{"put with zero lfs size", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"put","path":"a","lfs":{"oid":"def","size":0}}]}`},
-		{"delete with blobSha", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"delete","path":"a","blobSha":"abc"}]}`},
-		{"delete with lfs", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"delete","path":"a","lfs":{"oid":"def","size":1}}]}`},
+		{"delete with sha", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"delete","path":"a","sha":"abc"}]}`},
+		{"legacy blobSha", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"put","path":"a","blobSha":"abc"}]}`},
+		{"legacy lfs object", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"put","path":"a","lfs":{"oid":"def","size":1}}]}`},
 		{"missing path", `{"branch":"main","message":"x","author":{"name":"a","email":"e"},"operations":[{"op":"delete"}]}`},
 	}
 
@@ -1004,7 +1003,6 @@ func TestCreateCommitErrors(t *testing.T) {
 		{"move destination exists", reposervice.ErrPathConflict, http.StatusConflict, "path_conflict"},
 		{"head mismatch", reposervice.ErrHeadMismatch, http.StatusConflict, "head_mismatch"},
 		{"unknown blob", reposervice.ErrUnknownBlob, http.StatusUnprocessableEntity, "unknown_blob"},
-		{"unknown lfs object", reposervice.ErrLFSObjectNotFound, http.StatusUnprocessableEntity, "lfs_object_not_found"},
 		{"nothing to commit", reposervice.ErrNothingToCommit, http.StatusUnprocessableEntity, "nothing_to_commit"},
 		{"path blocked", reposervice.ErrPathBlocked, http.StatusUnprocessableEntity, "path_blocked"},
 		{"delete target is a dir", reposervice.ErrNotAFile, http.StatusBadRequest, "invalid_request"},

@@ -748,22 +748,6 @@ func isHexSHA(s string) bool {
 	return true
 }
 
-func isLFSOID(oid string) bool {
-	if len(oid) != 64 {
-		return false
-	}
-	for _, c := range oid {
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-			return false
-		}
-	}
-	return true
-}
-
-func isAttributesPath(treePath string) bool {
-	return treePath == ".gitattributes" || strings.HasSuffix(treePath, "/.gitattributes")
-}
-
 // just to keep track how much bytes were streamed
 type countingReader struct {
 	r io.Reader
