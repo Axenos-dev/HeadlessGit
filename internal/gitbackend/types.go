@@ -72,7 +72,8 @@ type ListTreeOptions struct {
 }
 
 type TreeListing struct {
-	CommitSHA string // the exact commit the listing is a snapshot of
+	CommitSHA string    // the exact commit the listing is a snapshot of
+	Node      TreeEntry // the resolved path itself
 	Entries   []TreeEntry
 	Truncated bool
 }
@@ -118,14 +119,9 @@ type DiffResult struct {
 	Truncated bool
 }
 
-type BlobInfo struct {
-	CommitSHA string
-	BlobSHA   string
-	Size      int64
-}
-
-type LfsObject struct {
-	OID  string
+type ObjectInfo struct {
+	SHA  string
+	Type string // blob | tree | commit
 	Size int64
 }
 
@@ -133,7 +129,6 @@ type CommitOp struct {
 	Delete   bool
 	MoveFrom string // moves only; Path is the destination
 	Path     string
-	Lfs      *LfsObject
 	BlobSHA  string // puts only; must exist as a blob in this repo's odb
 	Mode     string // puts only: "100644" (default) or "100755"
 }

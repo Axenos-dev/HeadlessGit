@@ -42,6 +42,15 @@ func gitOut(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
+func listPath(t *testing.T, l *Local, ctx context.Context, repo, rev, path string) TreeListing {
+	t.Helper()
+	listing, err := l.ListTree(ctx, repo, rev, path, ListTreeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return listing
+}
+
 func gitSupportsLastModified() bool {
 	out, err := exec.Command("git", "help", "-a").Output()
 	return err == nil && strings.Contains(string(out), "last-modified")
@@ -442,12 +451,18 @@ func TestListTree(t *testing.T) {
 		if listing.Entries[1].Path != "src" || listing.Entries[1].Type != "tree" || listing.Entries[1].Size != -1 {
 			t.Errorf("src entry = %+v", listing.Entries[1])
 		}
+		if listing.Node.Type != "tree" || listing.Node.Mode != "040000" || listing.Node.Path != "" || !isHexSHA(listing.Node.SHA) {
+			t.Errorf("root node = %+v", listing.Node)
+		}
 	})
 
 	t.Run("subdir listing", func(t *testing.T) {
 		listing, err := l.ListTree(ctx, "1/test.git", "main", "src", ListTreeOptions{})
 		if err != nil {
 			t.Fatal(err)
+		}
+		if listing.Node.Type != "tree" || listing.Node.Path != "src" || listing.Node.Mode != "040000" {
+			t.Errorf("src node = %+v", listing.Node)
 		}
 		if len(listing.Entries) != 2 {
 			t.Fatalf("want 2 entries, got %+v", listing.Entries)
@@ -460,6 +475,22 @@ func TestListTree(t *testing.T) {
 		}
 	})
 
+	t.Run("file lookup", func(t *testing.T) {
+		listing, err := l.ListTree(ctx, "1/test.git", "main", "src/main.go", ListTreeOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if listing.Node.Type != "blob" || listing.Node.Path != "src/main.go" || listing.Node.Mode != "100644" {
+			t.Errorf("file node = %+v", listing.Node)
+		}
+		if listing.Node.Size != int64(len("package main\n")) {
+			t.Errorf("file size = %d", listing.Node.Size)
+		}
+		if len(listing.Entries) != 0 {
+			t.Errorf("file lookup must not list children, got %+v", listing.Entries)
+		}
+	})
+
 	t.Run("errors", func(t *testing.T) {
 		cases := []struct {
 			name, rev, path string
@@ -467,7 +498,6 @@ func TestListTree(t *testing.T) {
 		}{
 			{"unknown rev", "nope", "", ErrRevNotFound},
 			{"unknown path", "main", "nope", ErrPathNotFound},
-			{"path is a blob", "main", "README.md", ErrPathNotFound},
 			{"hostile rev", "--help", "", ErrInvalidRev},
 			{"traversal path", "main", "../../etc", ErrPathNotFound},
 		}
@@ -517,6 +547,14 @@ func TestListTree(t *testing.T) {
 			if entry.LastCommit == nil || entry.LastCommit.SHA != initialSHA || entry.LastCommit.Message != "init" {
 				t.Errorf("%s last commit = %+v", entry.Path, entry.LastCommit)
 			}
+		}
+
+		file, err := l.ListTree(ctx, "1/test.git", "main", "README.md", ListTreeOptions{IncludeLastCommit: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := file.Node.LastCommit; got == nil || got.SHA != headSHA || got.Message != "update readme" {
+			t.Errorf("README.md node last commit = %+v", got)
 		}
 	})
 }
@@ -900,23 +938,33 @@ func TestBlob(t *testing.T) {
 	gitRun(t, wt, "commit", "-m", "init")
 	gitRun(t, wt, "push", "origin", "HEAD:refs/heads/main")
 
-	info, err := l.StatBlob(ctx, "1/test.git", "main", "src/main.go")
-	if err != nil {
-		t.Fatal(err)
+	listing := listPath(t, l, ctx, "1/test.git", "main", "src/main.go")
+	if listing.Node.Type != "blob" || listing.Node.Size != int64(len("package main\n")) {
+		t.Errorf("file node = %+v", listing.Node)
 	}
-	if info.Size != int64(len("package main\n")) {
-		t.Errorf("size = %d", info.Size)
-	}
-	if !isHexSHA(info.CommitSHA) || !isHexSHA(info.BlobSHA) {
-		t.Errorf("shas not resolved: %+v", info)
+	if !isHexSHA(listing.CommitSHA) || !isHexSHA(listing.Node.SHA) {
+		t.Errorf("shas not resolved: %+v", listing)
 	}
 
 	var buf bytes.Buffer
-	if err := l.ReadBlob(ctx, "1/test.git", info.BlobSHA, &buf); err != nil {
+	if err := l.ReadBlob(ctx, "1/test.git", listing.Node.SHA, &buf); err != nil {
 		t.Fatal(err)
 	}
 	if buf.String() != "package main\n" {
 		t.Errorf("content = %q", buf.String())
+	}
+
+	obj, err := l.StatObject(ctx, "1/test.git", listing.Node.SHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if obj.Type != "blob" || obj.SHA != listing.Node.SHA || obj.Size != listing.Node.Size {
+		t.Errorf("StatObject = %+v", obj)
+	}
+
+	missing := strings.Repeat("a", 40)
+	if _, err := l.StatObject(ctx, "1/test.git", missing); !errors.Is(err, ErrUnknownBlob) {
+		t.Errorf("StatObject(missing) = %v, want ErrUnknownBlob", err)
 	}
 
 	t.Run("write blob", func(t *testing.T) {
@@ -961,24 +1009,6 @@ func TestBlob(t *testing.T) {
 	})
 
 	t.Run("errors", func(t *testing.T) {
-		cases := []struct {
-			name, rev, path string
-			want            error
-		}{
-			{"root is a tree", "main", "", ErrNotABlob},
-			{"dir is a tree", "main", "src", ErrNotABlob},
-			{"missing path", "main", "nope.txt", ErrPathNotFound},
-			{"unknown rev", "nope", "src/main.go", ErrRevNotFound},
-			{"hostile rev", "--help", "src/main.go", ErrInvalidRev},
-		}
-		for _, tc := range cases {
-			t.Run(tc.name, func(t *testing.T) {
-				if _, err := l.StatBlob(ctx, "1/test.git", tc.rev, tc.path); !errors.Is(err, tc.want) {
-					t.Errorf("StatBlob(%q, %q) = %v, want %v", tc.rev, tc.path, err, tc.want)
-				}
-			})
-		}
-
 		// ReadBlob refuses anything that is not a plain object id
 		for _, sha := range []string{"main", "--help", "HEAD", strings.Repeat("a", 39), strings.Repeat("A", 40)} {
 			if err := l.ReadBlob(ctx, "1/test.git", sha, io.Discard); !errors.Is(err, ErrInvalidRev) {
@@ -1099,17 +1129,14 @@ func TestApplyCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := l.StatBlob(ctx, repo, fourth.NewSHA, "plugins/config.yml"); !errors.Is(err, ErrPathNotFound) {
+	if _, err := l.ListTree(ctx, repo, fourth.NewSHA, "plugins/config.yml", ListTreeOptions{}); !errors.Is(err, ErrPathNotFound) {
 		t.Errorf("old path still exists: %v", err)
 	}
-	config, err := l.StatBlob(ctx, repo, fourth.NewSHA, "server/plugins/config.yml")
-	if err != nil {
-		t.Fatal(err)
+	config := listPath(t, l, ctx, repo, fourth.NewSHA, "server/plugins/config.yml")
+	if config.Node.SHA != v2 {
+		t.Errorf("moved config blob = %s, want %s", config.Node.SHA, v2)
 	}
-	if config.BlobSHA != v2 {
-		t.Errorf("moved config blob = %s, want %s", config.BlobSHA, v2)
-	}
-	if _, err := l.StatBlob(ctx, repo, fourth.NewSHA, "server/plugins/obsolete.yml"); !errors.Is(err, ErrPathNotFound) {
+	if _, err := l.ListTree(ctx, repo, fourth.NewSHA, "server/plugins/obsolete.yml", ListTreeOptions{}); !errors.Is(err, ErrPathNotFound) {
 		t.Errorf("deleted moved path still exists: %v", err)
 	}
 	listing, err := l.ListTree(ctx, repo, fourth.NewSHA, "server/plugins/bin", ListTreeOptions{})
@@ -1142,10 +1169,6 @@ func TestApplyCommit(t *testing.T) {
 			{"duplicate path", spec("", "x"), []CommitOp{{Path: "a", BlobSHA: hello}, {Path: "a", Delete: true}}, ErrInvalidOps},
 			{"overlapping paths", spec("", "x"), []CommitOp{{Path: "README.md", Delete: true}, {Path: "README.md/child", BlobSHA: hello}}, ErrInvalidOps},
 			{"put without object", spec("", "x"), []CommitOp{{Path: "a"}}, ErrInvalidOps},
-			{"put with both objects", spec("", "x"), []CommitOp{{Path: "a", BlobSHA: hello, Lfs: &LfsObject{OID: strings.Repeat("a", 64), Size: 1}}}, ErrInvalidOps},
-			{"invalid lfs oid", spec("", "x"), []CommitOp{{Path: "a", Lfs: &LfsObject{OID: "nope", Size: 1}}}, ErrInvalidOps},
-			{"invalid lfs size", spec("", "x"), []CommitOp{{Path: "a", Lfs: &LfsObject{OID: strings.Repeat("a", 64), Size: -1}}}, ErrInvalidOps},
-			{"lfs attributes file", spec("", "x"), []CommitOp{{Path: ".gitattributes", Lfs: &LfsObject{OID: strings.Repeat("a", 64), Size: 1}}}, ErrInvalidOps},
 			{"bad mode", spec("", "x"), []CommitOp{{Path: "a", BlobSHA: hello, Mode: "120000"}}, ErrInvalidOps},
 			{"missing author", CommitSpec{Branch: "main", Author: Identity{}, Message: "x"}, []CommitOp{{Path: "a", BlobSHA: hello}}, ErrInvalidOps},
 			{"missing message", CommitSpec{Branch: "main", Author: author}, []CommitOp{{Path: "a", BlobSHA: hello}}, ErrInvalidOps},
@@ -1212,63 +1235,26 @@ func TestApplyCommit(t *testing.T) {
 		}
 
 		// the committed tree holds the pointer, not the payload
-		committed, err := l.StatBlob(ctx, repo, change.NewSHA, "big.bin")
-		if err != nil {
-			t.Fatal(err)
+		committed := listPath(t, l, ctx, repo, change.NewSHA, "big.bin")
+		if committed.Node.SHA != pointer {
+			t.Errorf("big.bin blob = %s, want pointer %s", committed.Node.SHA, pointer)
 		}
-		if committed.BlobSHA != pointer {
-			t.Errorf("big.bin blob = %s, want pointer %s", committed.BlobSHA, pointer)
-		}
-		notes, err := l.StatBlob(ctx, repo, change.NewSHA, "notes.txt")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if notes.BlobSHA != hello {
+		notes := listPath(t, l, ctx, repo, change.NewSHA, "notes.txt")
+		if notes.Node.SHA != hello {
 			t.Errorf("notes.txt was cleaned but is not lfs-tracked")
 		}
 
-		// An explicit LFS object needs no clean callback: the backend writes its
-		// canonical pointer blob and still enforces the effective attributes.
-		explicitOID := strings.Repeat("cd", 32)
-		explicit, err := l.ApplyCommit(ctx, repo, spec(change.NewSHA, "explicit lfs"), []CommitOp{
-			{Path: "direct.bin", Lfs: &LfsObject{OID: explicitOID, Size: 23}},
-		}, nil, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		direct, err := l.StatBlob(ctx, repo, explicit.NewSHA, "direct.bin")
-		if err != nil {
-			t.Fatal(err)
-		}
-		var directPointer bytes.Buffer
-		if err := l.ReadBlob(ctx, repo, direct.BlobSHA, &directPointer); err != nil {
-			t.Fatal(err)
-		}
-		wantPointer := "version https://git-lfs.github.com/spec/v1\noid sha256:" + explicitOID + "\nsize 23\n"
-		if directPointer.String() != wantPointer {
-			t.Errorf("direct.bin pointer = %q, want %q", directPointer.String(), wantPointer)
-		}
-
-		if _, err := l.ApplyCommit(ctx, repo, spec("", "untracked lfs"), []CommitOp{
-			{Path: "direct.dat", Lfs: &LfsObject{OID: explicitOID, Size: 23}},
-		}, nil, nil); err != nil {
-			t.Fatalf("untracked explicit lfs: %v", err)
-		}
-
 		moved, err := l.ApplyCommit(ctx, repo, spec("", "move lfs pointer"), []CommitOp{
-			{MoveFrom: "direct.bin", Path: "assets/direct.bin"},
+			{MoveFrom: "big.bin", Path: "assets/big.bin"},
 		}, func(string, string, int64) (string, error) {
 			return "", errors.New("move must not invoke lfs clean")
 		}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		movedDirect, err := l.StatBlob(ctx, repo, moved.NewSHA, "assets/direct.bin")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if movedDirect.BlobSHA != direct.BlobSHA {
-			t.Errorf("moved lfs pointer blob = %s, want %s", movedDirect.BlobSHA, direct.BlobSHA)
+		movedPointer := listPath(t, l, ctx, repo, moved.NewSHA, "assets/big.bin")
+		if movedPointer.Node.SHA != committed.Node.SHA {
+			t.Errorf("moved lfs pointer blob = %s, want %s", movedPointer.Node.SHA, committed.Node.SHA)
 		}
 
 		var cleanedPath string

@@ -61,43 +61,43 @@ func (s *Service) LFSEndpoint(namespace, name string) string {
 	return s.lfsBase(namespace, name)
 }
 
-func (s *Service) Upload(ctx context.Context, auth domain.UploadAuthorization, r io.Reader) (domain.UploadedObject, error) {
+func (s *Service) Upload(ctx context.Context, auth domain.UploadAuthorization, r io.Reader) (domain.LFSPointer, error) {
 	if auth.Kind != domain.UploadLFS || !validUploadID(auth.UploadID) || auth.RepositoryID <= 0 || auth.UserID <= 0 || auth.Size <= 0 || auth.Signature == "" {
-		return domain.UploadedObject{}, ErrInvalidUpload
+		return domain.LFSPointer{}, ErrInvalidUpload
 	}
 	if !auth.ValidSignature(s.uploadKey) {
-		return domain.UploadedObject{}, ErrInvalidUpload
+		return domain.LFSPointer{}, ErrInvalidUpload
 	}
 	if time.Now().After(auth.ExpiresAt) {
-		return domain.UploadedObject{}, ErrUploadExpired
+		return domain.LFSPointer{}, ErrUploadExpired
 	}
 
 	objectID, err := randomHex(32)
 	if err != nil {
-		return domain.UploadedObject{}, err
+		return domain.LFSPointer{}, err
 	}
 	key := uploadedObjectKey(auth.RepositoryID, objectID)
 	hasher := sha256.New()
 	counter := &countingReader{r: io.TeeReader(r, hasher)}
 	if err := s.storage.Put(ctx, key, auth.Size, counter); err != nil {
 		s.deleteObject(ctx, key)
-		return domain.UploadedObject{}, err
+		return domain.LFSPointer{}, err
 	}
 	if counter.n != auth.Size {
 		s.deleteObject(ctx, key)
-		return domain.UploadedObject{}, ErrObjectMismatch
+		return domain.LFSPointer{}, ErrObjectMismatch
 	}
 
 	oid := hex.EncodeToString(hasher.Sum(nil))
-	object := domain.UploadedObject{Kind: domain.UploadLFS, OID: oid, Size: counter.n}
+	object := domain.LFSPointer{OID: oid, Size: counter.n}
 	if err := s.registerUpload(ctx, auth, object, key); err != nil {
 		s.deleteObject(ctx, key)
-		return domain.UploadedObject{}, err
+		return domain.LFSPointer{}, err
 	}
 	return object, nil
 }
 
-func (s *Service) registerUpload(ctx context.Context, auth domain.UploadAuthorization, object domain.UploadedObject, key string) error {
+func (s *Service) registerUpload(ctx context.Context, auth domain.UploadAuthorization, object domain.LFSPointer, key string) error {
 	_, err := s.registry.CreateVerifiedLFSObject(ctx, auth.UserID, auth.RepositoryID, object.OID, object.Size, key)
 	if err == nil {
 		return nil

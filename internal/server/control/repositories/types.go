@@ -1,6 +1,7 @@
 package repositories
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -55,51 +56,53 @@ func newRepositories(repos []domain.Repository) []Repository {
 	return out
 }
 
-type Contents struct {
-	Ref       string         `json:"ref"`
-	SHA       string         `json:"sha"`
-	Path      string         `json:"path"`
-	Entries   []ContentEntry `json:"entries"`
-	Truncated bool           `json:"truncated,omitempty"`
-}
-
-type ContentEntry struct {
-	Name       string         `json:"name"`
-	Path       string         `json:"path"`
-	Type       string         `json:"type"` // file | dir | symlink | submodule
-	Mode       string         `json:"mode"`
-	Size       *int64         `json:"size,omitempty"` // blobs only; note: LFS pointers report pointer size
-	SHA        string         `json:"sha"`
-	LastCommit *CommitSummary `json:"lastCommit,omitempty"`
-}
-
 type CommitSummary struct {
 	SHA         string    `json:"sha"`
 	Message     string    `json:"message"`
 	CommittedAt time.Time `json:"committedAt"`
 }
 
-func newContents(c domain.RepositoryContents) Contents {
-	entries := make([]ContentEntry, len(c.Entries))
-	for i, e := range c.Entries {
-		entries[i] = newContentEntry(e)
-	}
-	return Contents{
-		Ref:       c.Ref,
-		SHA:       c.CommitSHA,
-		Path:      c.Path,
-		Entries:   entries,
-		Truncated: c.Truncated,
-	}
+type Tree struct {
+	Ref       string    `json:"ref"`
+	CommitSHA string    `json:"commitSha"`
+	Path      string    `json:"path"`
+	Entry     treeEntry `json:"entry"`
+	Truncated bool      `json:"truncated,omitempty"`
 }
 
-func newContentEntry(e domain.TreeEntry) ContentEntry {
-	entry := ContentEntry{
-		Name: e.Name,
-		Path: e.Path,
-		Type: string(e.Type),
-		Mode: e.Mode,
-		SHA:  e.SHA,
+type treeEntry struct {
+	Type       string
+	Name       string
+	Path       string
+	Mode       string
+	SHA        string
+	Entries    []treeEntry
+	expand     bool
+	LastCommit *CommitSummary
+}
+
+func newTree(t domain.RepositoryTree) (Tree, error) {
+	entry, err := newTreeEntry(t.Entry.TreeEntry, t.Entry.Entries, t.Entry.Type == domain.TreeEntryDirectory)
+	if err != nil {
+		return Tree{}, err
+	}
+	return Tree{
+		Ref:       t.Ref,
+		CommitSHA: t.CommitSHA,
+		Path:      t.Path,
+		Entry:     entry,
+		Truncated: t.Truncated,
+	}, nil
+}
+
+func newTreeEntry(e domain.TreeEntry, children []domain.TreeEntry, expand bool) (treeEntry, error) {
+	entry := treeEntry{
+		Type:   string(e.Type),
+		Name:   e.Name,
+		Path:   e.Path,
+		Mode:   e.Mode,
+		SHA:    e.SHA,
+		expand: expand,
 	}
 	if e.LastCommit != nil {
 		entry.LastCommit = &CommitSummary{
@@ -108,11 +111,109 @@ func newContentEntry(e domain.TreeEntry) ContentEntry {
 			CommittedAt: e.LastCommit.CommittedAt,
 		}
 	}
-	if e.Size >= 0 {
-		size := e.Size
-		entry.Size = &size
+	if !expand {
+		return entry, nil
 	}
-	return entry
+
+	entry.Entries = make([]treeEntry, len(children))
+	for i, child := range children {
+		converted, err := newTreeEntry(child, nil, false)
+		if err != nil {
+			return treeEntry{}, err
+		}
+		entry.Entries[i] = converted
+	}
+	return entry, nil
+}
+
+func (e treeEntry) MarshalJSON() ([]byte, error) {
+	switch e.Type {
+	case string(domain.TreeEntryFile), string(domain.TreeEntrySymlink):
+		out := struct {
+			Type       string         `json:"type"`
+			Name       string         `json:"name"`
+			Path       string         `json:"path"`
+			Mode       string         `json:"mode"`
+			BlobSHA    string         `json:"blobSha"`
+			LastCommit *CommitSummary `json:"lastCommit,omitempty"`
+		}{
+			Type:       e.Type,
+			Name:       e.Name,
+			Path:       e.Path,
+			Mode:       e.Mode,
+			BlobSHA:    e.SHA,
+			LastCommit: e.LastCommit,
+		}
+		return json.Marshal(out)
+
+	case string(domain.TreeEntryDirectory):
+		if e.expand {
+			out := struct {
+				Type       string         `json:"type"`
+				Name       string         `json:"name,omitempty"`
+				Path       string         `json:"path,omitempty"`
+				Mode       string         `json:"mode"`
+				TreeSHA    string         `json:"treeSha"`
+				Entries    []treeEntry    `json:"entries"`
+				LastCommit *CommitSummary `json:"lastCommit,omitempty"`
+			}{
+				Type:       e.Type,
+				Name:       e.Name,
+				Path:       e.Path,
+				Mode:       e.Mode,
+				TreeSHA:    e.SHA,
+				Entries:    e.Entries,
+				LastCommit: e.LastCommit,
+			}
+			if out.Entries == nil {
+				out.Entries = []treeEntry{}
+			}
+			return json.Marshal(out)
+		}
+
+		out := struct {
+			Type       string         `json:"type"`
+			Name       string         `json:"name"`
+			Path       string         `json:"path"`
+			Mode       string         `json:"mode"`
+			TreeSHA    string         `json:"treeSha"`
+			LastCommit *CommitSummary `json:"lastCommit,omitempty"`
+		}{
+			Type:       e.Type,
+			Name:       e.Name,
+			Path:       e.Path,
+			Mode:       e.Mode,
+			TreeSHA:    e.SHA,
+			LastCommit: e.LastCommit,
+		}
+		return json.Marshal(out)
+
+	case string(domain.TreeEntrySubmodule):
+		out := struct {
+			Type       string         `json:"type"`
+			Name       string         `json:"name"`
+			Path       string         `json:"path"`
+			Mode       string         `json:"mode"`
+			SHA        string         `json:"sha"`
+			LastCommit *CommitSummary `json:"lastCommit,omitempty"`
+		}{
+			Type:       e.Type,
+			Name:       e.Name,
+			Path:       e.Path,
+			Mode:       e.Mode,
+			SHA:        e.SHA,
+			LastCommit: e.LastCommit,
+		}
+		return json.Marshal(out)
+
+	default:
+		return nil, errors.New("unknown tree entry type")
+	}
+}
+
+type File struct {
+	BlobSHA string `json:"blobSha"`
+	Size    int64  `json:"size"`
 }
 
 type Diff struct {
@@ -177,11 +278,6 @@ func (r UpdateVisibilityRequest) Validate() error {
 	return nil
 }
 
-type UploadBlobResponse struct {
-	SHA  string `json:"sha"`
-	Size int64  `json:"size"`
-}
-
 type CreateUploadRequest struct {
 	UserID int64 `json:"userId"`
 	Size   int64 `json:"size"`
@@ -198,8 +294,6 @@ func (r CreateUploadRequest) Validate() error {
 }
 
 type UploadTarget struct {
-	Kind      domain.UploadKind `json:"kind"`
-	UploadID  string            `json:"uploadId"`
 	UploadURL string            `json:"uploadUrl"`
 	Headers   map[string]string `json:"headers"`
 	ExpiresAt time.Time         `json:"expiresAt"`
@@ -207,8 +301,6 @@ type UploadTarget struct {
 
 func newUploadTarget(target domain.UploadTarget) UploadTarget {
 	return UploadTarget{
-		Kind:      target.Kind,
-		UploadID:  target.UploadID,
 		UploadURL: target.Href,
 		Headers:   target.Header,
 		ExpiresAt: target.ExpiresAt,
@@ -243,18 +335,12 @@ func newCommitDetails(commit domain.CommitDetails) CommitDetails {
 	}
 }
 
-type CommitObjectLfs struct {
-	OID  string `json:"oid"`
-	Size int64  `json:"size"`
-}
-
 type CommitOperation struct {
-	Op         string           `json:"op"` // "put" | "delete" | "move"
-	Path       string           `json:"path"`
-	FromPath   string           `json:"fromPath,omitempty"`   // moves only
-	Lfs        *CommitObjectLfs `json:"lfs,omitempty"`        // puts only, from POST .../lfs/objects/batch
-	BlobSHA    *string          `json:"blobSha,omitempty"`    // puts only, from POST /blobs
-	Executable bool             `json:"executable,omitempty"` // puts only
+	Op         string `json:"op"` // "put" | "delete" | "move"
+	Path       string `json:"path"`
+	FromPath   string `json:"fromPath,omitempty"`   // moves only
+	SHA        string `json:"sha,omitempty"`        // puts only
+	Executable bool   `json:"executable,omitempty"` // puts only
 }
 
 type CreateCommitRequest struct {
@@ -288,30 +374,18 @@ func (r CreateCommitRequest) Validate() error {
 			if op.FromPath != "" {
 				return fmt.Errorf("operations[%d]: fromPath is only valid for move", i)
 			}
-			if (op.BlobSHA == nil) == (op.Lfs == nil) {
-				return fmt.Errorf("operations[%d]: exactly one of blobSha or lfs is required for put", i)
-			}
-			if op.BlobSHA != nil {
-				if *op.BlobSHA == "" {
-					return fmt.Errorf("operations[%d]: blobSha is required for put", i)
-				}
-			} else {
-				if op.Lfs.OID == "" {
-					return fmt.Errorf("operations[%d]: lfs.oid is required", i)
-				}
-				if op.Lfs.Size <= 0 {
-					return fmt.Errorf("operations[%d]: lfs.size must be positive", i)
-				}
+			if op.SHA == "" {
+				return fmt.Errorf("operations[%d]: sha is required for put", i)
 			}
 		case "delete":
-			if op.FromPath != "" || op.BlobSHA != nil || op.Lfs != nil || op.Executable {
+			if op.FromPath != "" || op.SHA != "" || op.Executable {
 				return fmt.Errorf("operations[%d]: delete takes only op and path", i)
 			}
 		case "move":
 			if op.FromPath == "" {
 				return fmt.Errorf("operations[%d]: fromPath is required for move", i)
 			}
-			if op.BlobSHA != nil || op.Lfs != nil || op.Executable {
+			if op.SHA != "" || op.Executable {
 				return fmt.Errorf("operations[%d]: move takes only op, fromPath, and path", i)
 			}
 		default:

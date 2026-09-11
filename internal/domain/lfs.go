@@ -25,6 +25,10 @@ type LFSPointer struct {
 	Size int64
 }
 
+func (p LFSPointer) Encode() []byte {
+	return fmt.Appendf(nil, "%s\noid sha256:%s\nsize %d\n", lfsVersionLine, p.OID, p.Size)
+}
+
 type LFSAction struct {
 	Href      string
 	Header    map[string]string
@@ -89,10 +93,8 @@ func (a UploadAuthorization) ValidSignature(key []byte) bool {
 }
 
 type UploadedObject struct {
-	Kind UploadKind
-	SHA  string
-	OID  string
-	Size int64
+	BlobSHA string
+	Size    int64
 }
 
 func ParseLFSPointer(data []byte) (LFSPointer, bool) {

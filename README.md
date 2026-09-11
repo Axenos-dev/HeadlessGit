@@ -99,21 +99,21 @@ The control API creates signed upload URLs without a destination path or client-
 
 The size limit also applies to raw blob uploads, API commits, and new blobs introduced by Git pushes. Oversized raw blobs are rejected even if `.gitattributes` is absent or modified. Existing attribute-based cleaning remains available for smaller tracked files. Explicit verified LFS objects can be committed at any allowed path.
 
-| Variable                   | Default                 | Description                                                                           |
-| -------------------------- | ----------------------- | ------------------------------------------------------------------------------------- |
-| `LFS_ENABLED`              | `false`                 | Enable Git LFS.                                                                       |
-| `LFS_THRESHOLD_BYTES`      | `1048576`               | Files at or above this size use LFS. Minimum: 1024 bytes. Applies even when LFS is disabled. |
-| `LFS_STORAGE_TYPE`         | `disk`                  | `disk` or `s3`.                                                                       |
-| `LFS_PUBLIC_URL`           | _(empty)_               | Externally-reachable Git HTTP base URL. Required for signed uploads and Git LFS.     |
-| `LFS_ROOT`                 | `data/lfs`              | Object directory when `LFS_STORAGE_TYPE=disk`.                                        |
-| `LFS_S3_BUCKET`            | _(required for s3)_     | Bucket name.                                                                          |
-| `LFS_S3_ENDPOINT`          | _(required for s3)_     | Host without scheme, e.g. `<account>.r2.cloudflarestorage.com`.                       |
-| `LFS_S3_ACCESS_KEY_ID`     | _(required for s3)_     | Access key ID.                                                                        |
-| `LFS_S3_SECRET_ACCESS_KEY` | _(required for s3)_     | Secret access key.                                                                    |
-| `LFS_S3_REGION`            | _(empty)_               | Region; use `auto` for Cloudflare R2.                                                 |
-| `LFS_S3_USE_SSL`           | `true`                  | Reach the endpoint over HTTPS.                                                        |
-| `LFS_S3_USE_PATH_STYLE`    | `false`                 | Force path-style addressing (needed by some S3-compatible providers).                 |
-| `LFS_S3_KEY_PREFIX`        | _(empty)_               | Optional prefix prepended to every object key.                                        |
+| Variable                   | Default             | Description                                                                                  |
+| -------------------------- | ------------------- | -------------------------------------------------------------------------------------------- |
+| `LFS_ENABLED`              | `false`             | Enable Git LFS.                                                                              |
+| `LFS_THRESHOLD_BYTES`      | `1048576`           | Files at or above this size use LFS. Minimum: 1024 bytes. Applies even when LFS is disabled. |
+| `LFS_STORAGE_TYPE`         | `disk`              | `disk` or `s3`.                                                                              |
+| `LFS_PUBLIC_URL`           | _(empty)_           | Externally-reachable Git HTTP base URL. Required for signed uploads and Git LFS.             |
+| `LFS_ROOT`                 | `data/lfs`          | Object directory when `LFS_STORAGE_TYPE=disk`.                                               |
+| `LFS_S3_BUCKET`            | _(required for s3)_ | Bucket name.                                                                                 |
+| `LFS_S3_ENDPOINT`          | _(required for s3)_ | Host without scheme, e.g. `<account>.r2.cloudflarestorage.com`.                              |
+| `LFS_S3_ACCESS_KEY_ID`     | _(required for s3)_ | Access key ID.                                                                               |
+| `LFS_S3_SECRET_ACCESS_KEY` | _(required for s3)_ | Secret access key.                                                                           |
+| `LFS_S3_REGION`            | _(empty)_           | Region; use `auto` for Cloudflare R2.                                                        |
+| `LFS_S3_USE_SSL`           | `true`              | Reach the endpoint over HTTPS.                                                               |
+| `LFS_S3_USE_PATH_STYLE`    | `false`             | Force path-style addressing (needed by some S3-compatible providers).                        |
+| `LFS_S3_KEY_PREFIX`        | _(empty)_           | Optional prefix prepended to every object key.                                               |
 
 ## Control API
 
@@ -156,71 +156,76 @@ Every request requires `Authorization: Bearer <ADMIN_TOKEN>`. Responses are enve
 
 **Repository contents & commits**
 
-| Method | Path                                                        | Body        | Description                                                            |
-| ------ | ----------------------------------------------------------- | ----------- | ---------------------------------------------------------------------- |
-| `GET`  | `/repositories/{id}/contents?ref=&path=&include=lastCommit` | —           | List one directory level, optionally with each entry's last commit.    |
-| `GET`  | `/repositories/{id}/commits/{sha}`                          | —           | Get metadata for one commit by its full SHA.                           |
-| `GET`  | `/repositories/{id}/diff?base=&head=`                       | —           | Compare two refs with per-file metadata and unified patches.           |
-| `GET`  | `/repositories/{id}/blob?ref=&path=&lfs=`                   | —           | Stream one file's raw content.                                         |
-| `GET`  | `/repositories/{id}/archive?ref=&format=&lfs=&prefix=`      | —           | Stream a `zip` (default) or `tar.gz` archive of the tree.              |
-| `POST` | `/repositories/{id}/blobs`                                  | _raw bytes_ | Upload content into the repo's object database; returns `{sha, size}`. |
-| `POST` | `/repositories/{id}/uploads`                                | `{userId, size}` | Create a signed blob or LFS upload URL.                            |
-| `POST` | `/repositories/{id}/commits`                                | JSON        | Create a commit from Git blobs or verified LFS objects.                |
+| Method | Path                                                    | Body             | Description                                                  |
+| ------ | ------------------------------------------------------- | ---------------- | ------------------------------------------------------------ |
+| `GET`  | `/repositories/{id}/tree?ref=&path=&include=lastCommit` | —                | Resolve a path to a file or one directory level.             |
+| `GET`  | `/repositories/{id}/files/{blobSha}`                    | —                | File metadata `{blobSha, size}` with logical size.           |
+| `GET`  | `/repositories/{id}/files/{blobSha}/content`            | —                | Stream the logical file bytes.                               |
+| `GET`  | `/repositories/{id}/commits/{sha}`                      | —                | Get metadata for one commit by its full SHA.                 |
+| `GET`  | `/repositories/{id}/diff?base=&head=`                   | —                | Compare two refs with per-file metadata and unified patches. |
+| `GET`  | `/repositories/{id}/archive?ref=&format=&lfs=&prefix=`  | —                | Stream a `zip` (default) or `tar.gz` archive of the tree.    |
+| `POST` | `/repositories/{id}/uploads`                            | `{userId, size}` | Create a signed blob or LFS upload URL.                      |
+| `POST` | `/repositories/{id}/commits`                            | JSON             | Create a commit from uploaded Git blobs.                     |
 
 ### Uploading a file
 
-`POST /repositories/{id}/uploads` accepts a positive `userId` and a nonnegative `size`. It returns `{kind, uploadId, uploadUrl, headers, expiresAt}` in the data envelope. The URL expires after 15 minutes. Signed uploads require `ADMIN_TOKEN` and `LFS_PUBLIC_URL`; small blob uploads work with LFS disabled.
+`POST /repositories/{id}/uploads` accepts a positive `userId` and a nonnegative `size`. It returns `{uploadUrl, headers, expiresAt}` in the data envelope. The URL expires after 15 minutes. Signed uploads require `ADMIN_TOKEN` and `LFS_PUBLIC_URL`. Small blob uploads work with LFS disabled.
 
-Send a `PUT` to `uploadUrl` with the returned headers and raw bytes. The byte count must match the signed size. HeadlessGit returns one of:
+Send a `PUT` to `uploadUrl` with the returned headers and raw bytes. The byte count must match the signed size. Server always returns a commit-ready Git blob:
 
 ```json
-{"data":{"kind":"blob","sha":"...","size":123}}
-{"data":{"kind":"lfs","oid":"...","size":1048576}}
+{ "data": { "blobSha": "...", "size": 1048576 } }
 ```
 
-The successful PUT completes the upload. There is no completion request. Use `sha` as `blobSha` or `{oid, size}` as `lfs` in a commit operation. Objects are reusable at multiple destinations within their repository. Path policies apply when committing.
-
-Git clients still use `.gitattributes` to select their LFS clean and smudge filters. The API can resolve LFS content independently through `lfs=true` on blob and archive reads.
+For files below the threshold, the blob contains the uploaded bytes. For LFS files, HeadlessGit stores the uploaded bytes in LFS and writes the canonical pointer as the returned Git blob. `size` always reports the uploaded byte count.
 
 ### Reading a repository
 
 `ref` accepts anything git can resolve to a commit — a branch, tag, sha, or expression like `main~2` — and defaults to `HEAD`. Every response is pinned to the exact commit it was answered from, so consumers can page through a repository without seeing a torn view mid-push.
 
-`GET /contents` returns the entries of one directory level:
+`GET /tree` resolves `ref + path` to a file or one directory level. Files have `blobSha`, directories have `treeSha`. Child directories are not expanded.
 
 ```json
 {
   "data": {
     "ref": "main",
-    "sha": "9fb037999f264ba9a7fc6274d15fa3ae2ab98312",
+    "commitSha": "9fb037999...",
     "path": "src",
-    "entries": [
-      {
-        "name": "main.go",
-        "path": "src/main.go",
-        "type": "file",
-        "mode": "100644",
-        "size": 1234,
-        "sha": "...",
-        "lastCommit": {
-          "sha": "7786adb...",
-          "message": "Change server difficulty",
-          "committedAt": "2026-07-30T18:42:00Z"
+    "entry": {
+      "type": "directory",
+      "name": "src",
+      "path": "src",
+      "mode": "040000",
+      "treeSha": "def456...",
+      "entries": [
+        {
+          "type": "file",
+          "name": "main.go",
+          "path": "src/main.go",
+          "mode": "100644",
+          "blobSha": "...",
+          "lastCommit": {
+            "sha": "7786adb...",
+            "message": "Change something",
+            "committedAt": "2026-07-30T18:42:00Z"
+          }
+        },
+        {
+          "type": "directory",
+          "name": "vendor",
+          "path": "src/vendor",
+          "mode": "040000",
+          "treeSha": "..."
         }
-      },
-      {
-        "name": "vendor",
-        "path": "src/vendor",
-        "type": "dir",
-        "mode": "040000",
-        "sha": "..."
-      }
-    ]
+      ]
+    }
   }
 }
 ```
 
-`type` is `file` | `dir` | `symlink` | `submodule`. Add `include=lastCommit` to populate the optional `lastCommit` object for every entry.
+`type` is `file` | `directory` | `symlink` | `submodule`. Add `include=lastCommit` to populate the optional `lastCommit` object.
+
+`GET /files/{blobSha}` returns `{blobSha, size}` using the logical file size. `GET /files/{blobSha}/content` streams those bytes. An LFS pointer blob is smudged automatically. A missing LFS object is `404 lfs_object_not_found`. Unavailable LFS storage is `503 lfs_unavailable`. The stream carries `Content-Length` and a strong `ETag` (the blob SHA).
 
 `GET /commits/{sha}` requires commit SHA and returns the complete commit message and metadata:
 
@@ -271,9 +276,7 @@ Git clients still use `.gitattributes` to select their LFS clean and smudge filt
 
 `patch` and `binary` are always present. Binary files return `null` for `patch`, `additions`, and `deletions`, with `"patchOmittedReason": "binary"`. A patch larger than 1 MiB, or one that would take the response over its 10 MiB patch budget, is omitted completely with `"patchOmittedReason": "too_large"`—the API never returns a partially cut patch. Non-UTF-8 patches use `"unsupported_encoding"`. Diffs over 10k files set `"truncated": true` and omit patches as `"too_large"`.
 
-The patch is intended for normal unified-diff renderers. Consumers that need complete old and new file bodies can fetch them through `/blob` using `base + oldPath` and `head + newPath`.
-
-`GET /blob` streams the file bytes with `Content-Length`, a strong `ETag` (the blob sha — content-addressed, so `If-None-Match` caching works perfectly), and `X-HeadlessGit-Commit` carrying the resolved commit. With `lfs=true`, an LFS pointer file is replaced by the real object; a missing object is a `404` rather than silently serving the pointer.
+The patch is intended for normal unified-diff renderers. Consumers that need complete old and new file bodies can fetch them through `/files/{blobSha}/content`.
 
 `GET /archive` streams the whole tree as an artifact, named `<repo>-<shortsha>.zip`. By default its entries are under the matching `<repo>-<shortsha>/` directory. Set `prefix=release/source` to choose another directory, or explicitly set `prefix=` to place entries at the archive root. Prefixes are relative directory paths and a trailing `/` is optional.
 
@@ -290,11 +293,9 @@ Commits follow two-step model: upload content first, then commit metadata refere
 ![commit](images/commit.png)
 
 ```sh
-# 1. upload each new/changed file's bytes (raw body, streamed)
-curl -H "Authorization: Bearer $TOKEN" \
-  --data-binary @config.yaml \
-  http://localhost:4001/repositories/7/blobs
-# -> {"data": {"sha": "44b4fc6d...", "size": 812}}
+# 1. create a signed upload, then PUT the bytes
+# POST /repositories/7/uploads  -> {uploadUrl, headers, expiresAt}
+# PUT  $uploadUrl               -> {blobSha, size}
 
 # 2. create the commit (atomic, any number of operations)
 curl -H "Authorization: Bearer $TOKEN" -X POST \
@@ -304,33 +305,20 @@ curl -H "Authorization: Bearer $TOKEN" -X POST \
     "author": { "name": "deploy-bot", "email": "bot@example.com" },
     "expectedHeadSha": "9fb03799...",
     "operations": [
-      { "op": "put", "path": "config.yaml", "blobSha": "44b4fc6d..." },
+      { "op": "put", "path": "config.yaml", "sha": "44b4fc6d..." },
       { "op": "delete", "path": "config.old.yaml" }
     ]
   }'
 # -> 201 {"data": {"branch": "main", "commitSha": "...", "before": "9fb03799..."}}
 ```
 
-A `put` operation takes exactly one content source:
+A `put` operation references the Git blob returned by the upload:
 
 ```json
-{ "op": "put", "path": "README.md", "blobSha": "<sha from POST /blobs>" }
+{ "op": "put", "path": "README.md", "sha": "<uploaded blob sha>" }
 ```
 
-or a repository-scoped LFS object already uploaded and verified through the LFS Batch API or a signed upload URL:
-
-```json
-{
-  "op": "put",
-  "path": "models/model.bin",
-  "lfs": {
-    "oid": "...",
-    "size": 734003200
-  }
-}
-```
-
-`blobSha` and `lfs` are mutually exclusive. `executable` is optional for puts. A `delete` operation takes only `op` and `path`.
+The commit API does not distinguish raw files from LFS files. The upload API returns a commit-ready Git blob SHA for both. `executable` is optional for puts. A `delete` operation takes only `op` and `path`.
 
 A `move` relocates a file or a whole directory tree:
 
@@ -348,7 +336,7 @@ Operations are applied in array order. After the move, later operations in the s
 {
   "operations": [
     { "op": "move", "fromPath": "plugins", "path": "server/plugins" },
-    { "op": "put", "path": "server/plugins/config.yml", "blobSha": "<sha>" },
+    { "op": "put", "path": "server/plugins/config.yml", "sha": "<sha>" },
     { "op": "delete", "path": "server/plugins/something.yaml" }
   ]
 }

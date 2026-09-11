@@ -82,7 +82,7 @@ type fakeStorage struct {
 	commitErr     error
 	commitFn      func(storagePath, sha string)
 
-	blobInfo    gitbackend.BlobInfo
+	blobInfo    gitbackend.ObjectInfo
 	blobStatErr error
 	blobContent string
 
@@ -130,11 +130,14 @@ func (f fakeStorage) ArchiveTar(ctx context.Context, storagePath, rev string, ou
 	return f.sha, nil
 }
 
-func (f fakeStorage) StatBlob(ctx context.Context, storagePath, rev, treePath string) (gitbackend.BlobInfo, error) {
+func (f fakeStorage) StatObject(ctx context.Context, storagePath, sha string) (gitbackend.ObjectInfo, error) {
 	if f.blobStatErr != nil {
-		return gitbackend.BlobInfo{}, f.blobStatErr
+		return gitbackend.ObjectInfo{}, f.blobStatErr
 	}
-	return f.blobInfo, nil
+	if f.blobInfo.SHA != "" {
+		return f.blobInfo, nil
+	}
+	return gitbackend.ObjectInfo{SHA: sha, Type: "blob", Size: int64(len(f.blobContent))}, nil
 }
 
 func (f fakeStorage) ReadBlob(ctx context.Context, storagePath, blobSHA string, out io.Writer) error {
@@ -174,8 +177,6 @@ type fakeLFS struct {
 	stored  map[string]string // oid -> content received via StoreObject
 }
 
-func stringPtr(value string) *string { return &value }
-
 func (f fakeLFS) GetObject(ctx context.Context, repo domain.Repository, oid string) (io.ReadCloser, int64, error) {
 	content, ok := f.objects[oid]
 	if !ok {
@@ -195,16 +196,16 @@ func (f fakeLFS) StoreObject(ctx context.Context, repo domain.Repository, upload
 	return nil
 }
 
-func (f fakeLFS) Upload(ctx context.Context, auth domain.UploadAuthorization, r io.Reader) (domain.UploadedObject, error) {
+func (f fakeLFS) Upload(ctx context.Context, auth domain.UploadAuthorization, r io.Reader) (domain.LFSPointer, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
-		return domain.UploadedObject{}, err
+		return domain.LFSPointer{}, err
 	}
 	if int64(len(data)) != auth.Size {
-		return domain.UploadedObject{}, lfsservice.ErrObjectMismatch
+		return domain.LFSPointer{}, lfsservice.ErrObjectMismatch
 	}
 	hash := sha256.Sum256(data)
-	return domain.UploadedObject{Kind: domain.UploadLFS, OID: fmt.Sprintf("%x", hash), Size: int64(len(data))}, nil
+	return domain.LFSPointer{OID: fmt.Sprintf("%x", hash), Size: int64(len(data))}, nil
 }
 
 func TestSignedUploadRouting(t *testing.T) {
@@ -225,7 +226,7 @@ func TestSignedUploadRouting(t *testing.T) {
 		auth := domain.UploadAuthorization{Kind: target.Kind, UploadID: target.UploadID, RepositoryID: 7, UserID: 42, Size: size, ExpiresAt: target.ExpiresAt}
 		auth.Signature = auth.Sign(svc.Uploads.SigningKey)
 		object, err := svc.Upload(context.Background(), auth, strings.NewReader(strings.Repeat("x", int(size))))
-		if err != nil || object.Kind != want || object.Size != size {
+		if err != nil || object.BlobSHA != testSHA || object.Size != size {
 			t.Fatalf("object %+v: %v", object, err)
 		}
 		auth.Kind = "invalid"
@@ -287,7 +288,7 @@ func TestCreateRepository(t *testing.T) {
 	})
 }
 
-func TestContents(t *testing.T) {
+func TestTree(t *testing.T) {
 	row := gen.Repository{ID: 7, RepositoryName: "myrepo", StoragePath: "7/myrepo.git", Visibility: "private"}
 	committedAt := time.Date(2026, 7, 30, 18, 42, 0, 0, time.UTC)
 	lastCommit := gitbackend.CommitSummary{
@@ -297,6 +298,13 @@ func TestContents(t *testing.T) {
 	}
 	listing := gitbackend.TreeListing{
 		CommitSHA: testSHA,
+		Node: gitbackend.TreeEntry{
+			Mode: "040000",
+			Type: "tree",
+			SHA:  "0000111122223333444455556666777788889999",
+			Size: -1,
+			Path: "config",
+		},
 		Entries: []gitbackend.TreeEntry{{
 			Mode:       "100644",
 			Type:       "blob",
@@ -318,18 +326,24 @@ func TestContents(t *testing.T) {
 		},
 	}
 	svc := NewService(zap.NewNop(), fakeRegistry{repo: row}, storage, nil, nil)
-	got, err := svc.Contents(context.Background(), row.ID, "main", "config", domain.ContentsOptions{IncludeLastCommit: true})
+	got, err := svc.Tree(context.Background(), row.ID, "main", "config", domain.TreeOptions{IncludeLastCommit: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !called {
 		t.Fatal("ListTree was not called")
 	}
-	if got.Ref != "main" || got.CommitSHA != testSHA || got.Path != "config" || len(got.Entries) != 1 {
-		t.Fatalf("Contents = %+v", got)
+	if got.Ref != "main" || got.CommitSHA != testSHA || got.Path != "config" {
+		t.Fatalf("Tree = %+v", got)
 	}
-	entry := got.Entries[0]
-	if entry.Name != "server.properties" || entry.Type != domain.TreeEntryFile || entry.Size != 192 {
+	if got.Entry.Type != domain.TreeEntryDirectory || got.Entry.SHA != listing.Node.SHA {
+		t.Fatalf("directory node = %+v", got.Entry)
+	}
+	if len(got.Entry.Entries) != 1 {
+		t.Fatalf("entries = %+v", got.Entry.Entries)
+	}
+	entry := got.Entry.Entries[0]
+	if entry.Name != "server.properties" || entry.Type != domain.TreeEntryFile || entry.SHA != listing.Entries[0].SHA {
 		t.Errorf("entry = %+v", entry)
 	}
 	if entry.LastCommit == nil || entry.LastCommit.SHA != testSHA || entry.LastCommit.Message != "Change difficulty" || !entry.LastCommit.CommittedAt.Equal(committedAt) {
@@ -356,8 +370,8 @@ func TestContents(t *testing.T) {
 				nil,
 				nil,
 			)
-			if _, err := svc.Contents(context.Background(), row.ID, "main", "", domain.ContentsOptions{}); !errors.Is(err, tc.want) {
-				t.Errorf("Contents error = %v, want %v", err, tc.want)
+			if _, err := svc.Tree(context.Background(), row.ID, "main", "", domain.TreeOptions{}); !errors.Is(err, tc.want) {
+				t.Errorf("Tree error = %v, want %v", err, tc.want)
 			}
 		})
 	}
@@ -610,12 +624,12 @@ const blobSHA = "1111222233334444555566667777888899990000"
 
 func blobStorage(content string) fakeStorage {
 	return fakeStorage{
-		blobInfo:    gitbackend.BlobInfo{CommitSHA: testSHA, BlobSHA: blobSHA, Size: int64(len(content))},
+		blobInfo:    gitbackend.ObjectInfo{SHA: blobSHA, Type: "blob", Size: int64(len(content))},
 		blobContent: content,
 	}
 }
 
-func TestPrepareBlob(t *testing.T) {
+func TestGetFile(t *testing.T) {
 	row := gen.Repository{ID: 7, RepositoryName: "myrepo", StoragePath: "7/myrepo.git", Visibility: "private"}
 	oid := strings.Repeat("cd", 32)
 	content := "REAL LFS CONTENT"
@@ -623,18 +637,47 @@ func TestPrepareBlob(t *testing.T) {
 
 	t.Run("raw file", func(t *testing.T) {
 		svc := NewService(zap.NewNop(), fakeRegistry{repo: row}, blobStorage("hello\n"), nil, nil)
-		req, err := svc.PrepareBlob(context.Background(), row.ID, "main", "README.md", false)
+		info, err := svc.GetFile(context.Background(), row.ID, blobSHA)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if req.BlobSHA != blobSHA || req.CommitSHA != testSHA || req.Size != 6 || req.LFSOID != "" {
-			t.Errorf("PrepareBlob = %+v", req)
+		if info.BlobSHA != blobSHA || info.Size != 6 {
+			t.Errorf("GetFile = %+v", info)
+		}
+	})
+
+	t.Run("pointer reports logical size without lfs storage", func(t *testing.T) {
+		svc := NewService(zap.NewNop(), fakeRegistry{repo: row}, blobStorage(pointer), nil, nil)
+		info, err := svc.GetFile(context.Background(), row.ID, blobSHA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Size != int64(len(content)) {
+			t.Errorf("GetFile size = %d, want %d", info.Size, len(content))
+		}
+	})
+}
+
+func TestPrepareFile(t *testing.T) {
+	row := gen.Repository{ID: 7, RepositoryName: "myrepo", StoragePath: "7/myrepo.git", Visibility: "private"}
+	oid := strings.Repeat("cd", 32)
+	content := "REAL LFS CONTENT"
+	pointer := fmt.Sprintf("version https://git-lfs.github.com/spec/v1\noid sha256:%s\nsize %d\n", oid, len(content))
+
+	t.Run("raw file", func(t *testing.T) {
+		svc := NewService(zap.NewNop(), fakeRegistry{repo: row}, blobStorage("hello\n"), nil, nil)
+		req, err := svc.PrepareFile(context.Background(), row.ID, blobSHA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if req.BlobSHA != blobSHA || req.Size != 6 || req.LFSOID != "" {
+			t.Errorf("PrepareFile = %+v", req)
 		}
 	})
 
 	t.Run("pointer smudged", func(t *testing.T) {
 		svc := NewService(zap.NewNop(), fakeRegistry{repo: row}, blobStorage(pointer), fakeLFS{objects: map[string]string{oid: content}}, nil)
-		req, err := svc.PrepareBlob(context.Background(), row.ID, "main", "big.bin", true)
+		req, err := svc.PrepareFile(context.Background(), row.ID, blobSHA)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -646,63 +689,50 @@ func TestPrepareBlob(t *testing.T) {
 		}
 	})
 
-	t.Run("pointer without lfs flag stays raw", func(t *testing.T) {
-		svc := NewService(zap.NewNop(), fakeRegistry{repo: row}, blobStorage(pointer), fakeLFS{objects: map[string]string{oid: content}}, nil)
-		req, err := svc.PrepareBlob(context.Background(), row.ID, "main", "big.bin", false)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if req.LFSOID != "" || req.Size != int64(len(pointer)) {
-			t.Errorf("PrepareBlob = %+v", req)
-		}
-	})
-
 	t.Run("large blob is never sniffed", func(t *testing.T) {
 		st := blobStorage(pointer)
-		st.blobInfo.Size = 5000 // over the pointer cap, content must not be read
+		st.blobInfo.Size = 5000
 		svc := NewService(zap.NewNop(), fakeRegistry{repo: row}, st, fakeLFS{}, nil)
-		req, err := svc.PrepareBlob(context.Background(), row.ID, "main", "big.bin", true)
+		req, err := svc.PrepareFile(context.Background(), row.ID, blobSHA)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if req.LFSOID != "" || req.Size != 5000 {
-			t.Errorf("PrepareBlob = %+v", req)
+			t.Errorf("PrepareFile = %+v", req)
 		}
 	})
 
 	t.Run("missing lfs object fails loudly", func(t *testing.T) {
 		svc := NewService(zap.NewNop(), fakeRegistry{repo: row}, blobStorage(pointer), fakeLFS{}, nil)
-		if _, err := svc.PrepareBlob(context.Background(), row.ID, "main", "big.bin", true); !errors.Is(err, ErrLFSObjectNotFound) {
+		if _, err := svc.PrepareFile(context.Background(), row.ID, blobSHA); !errors.Is(err, ErrLFSObjectNotFound) {
 			t.Errorf("want ErrLFSObjectNotFound, got %v", err)
 		}
 	})
 
 	t.Run("errors", func(t *testing.T) {
 		cases := []struct {
-			name       string
-			storage    RepositoryStorage
-			lfs        LFSObjects
-			includeLFS bool
-			wantErr    error
+			name    string
+			storage RepositoryStorage
+			lfs     LFSObjects
+			wantErr error
 		}{
-			{"lfs disabled", blobStorage(""), nil, true, ErrLFSNotEnabled},
-			{"not a file", fakeStorage{blobStatErr: gitbackend.ErrNotABlob}, nil, false, ErrNotAFile},
-			{"path not found", fakeStorage{blobStatErr: gitbackend.ErrPathNotFound}, nil, false, ErrPathNotFound},
-			{"ref not found", fakeStorage{blobStatErr: gitbackend.ErrRevNotFound}, nil, false, ErrRefNotFound},
-			{"invalid ref", fakeStorage{blobStatErr: gitbackend.ErrInvalidRev}, nil, false, ErrInvalidRef},
+			{"lfs disabled", blobStorage(pointer), nil, ErrLFSNotEnabled},
+			{"not a file", fakeStorage{blobInfo: gitbackend.ObjectInfo{SHA: blobSHA, Type: "tree", Size: 0}}, nil, ErrNotAFile},
+			{"unknown blob", fakeStorage{blobStatErr: gitbackend.ErrUnknownBlob}, nil, ErrUnknownBlob},
+			{"invalid sha", fakeStorage{blobStatErr: gitbackend.ErrInvalidRev}, nil, ErrInvalidBlobSHA},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
 				svc := NewService(zap.NewNop(), fakeRegistry{repo: row}, tc.storage, tc.lfs, nil)
-				if _, err := svc.PrepareBlob(context.Background(), row.ID, "main", "x", tc.includeLFS); !errors.Is(err, tc.wantErr) {
-					t.Errorf("PrepareBlob error = %v, want %v", err, tc.wantErr)
+				if _, err := svc.PrepareFile(context.Background(), row.ID, blobSHA); !errors.Is(err, tc.wantErr) {
+					t.Errorf("PrepareFile error = %v, want %v", err, tc.wantErr)
 				}
 			})
 		}
 	})
 }
 
-func TestStreamBlob(t *testing.T) {
+func TestStreamFile(t *testing.T) {
 	oid := strings.Repeat("cd", 32)
 	content := "REAL LFS CONTENT"
 	repo := domain.Repository{ID: 7, RepositoryName: "myrepo", StoragePath: "7/myrepo.git"}
@@ -710,7 +740,7 @@ func TestStreamBlob(t *testing.T) {
 	t.Run("raw", func(t *testing.T) {
 		svc := NewService(zap.NewNop(), fakeRegistry{}, blobStorage("hello\n"), nil, nil)
 		var out bytes.Buffer
-		if err := svc.StreamBlob(context.Background(), domain.BlobRequest{Repository: repo, BlobSHA: blobSHA}, &out); err != nil {
+		if err := svc.StreamFile(context.Background(), domain.FileRequest{Repository: repo, BlobSHA: blobSHA}, &out); err != nil {
 			t.Fatal(err)
 		}
 		if out.String() != "hello\n" {
@@ -721,7 +751,7 @@ func TestStreamBlob(t *testing.T) {
 	t.Run("smudged", func(t *testing.T) {
 		svc := NewService(zap.NewNop(), fakeRegistry{}, blobStorage(""), fakeLFS{objects: map[string]string{oid: content}}, nil)
 		var out bytes.Buffer
-		if err := svc.StreamBlob(context.Background(), domain.BlobRequest{Repository: repo, BlobSHA: blobSHA, LFSOID: oid}, &out); err != nil {
+		if err := svc.StreamFile(context.Background(), domain.FileRequest{Repository: repo, BlobSHA: blobSHA, LFSOID: oid}, &out); err != nil {
 			t.Fatal(err)
 		}
 		if out.String() != content {
@@ -740,7 +770,7 @@ func TestCommit(t *testing.T) {
 		ExpectedHeadSHA: strings.Repeat("a", 40),
 		PusherID:        42,
 		Operations: []domain.CommitFileOp{
-			{Path: "run.sh", BlobSHA: stringPtr(blobSHA), Executable: true},
+			{Path: "run.sh", SHA: blobSHA, Executable: true},
 			{Path: "old.txt", Delete: true},
 			{MoveFrom: "plugins", Path: "server/plugins"},
 		},
@@ -799,56 +829,6 @@ func TestCommit(t *testing.T) {
 		}
 	})
 
-	t.Run("explicit lfs object requires lfs service", func(t *testing.T) {
-		lfsReq := req
-		lfsReq.Operations = []domain.CommitFileOp{{
-			Path: "model.bin",
-			Lfs:  &domain.CommitFileLfsObject{OID: strings.Repeat("a", 64), Size: 42},
-		}}
-		svc := NewService(zap.NewNop(), fakeRegistry{repo: row}, fakeStorage{}, nil, nil)
-		if _, err := svc.Commit(context.Background(), row.ID, lfsReq); !errors.Is(err, ErrLFSNotEnabled) {
-			t.Fatalf("want ErrLFSNotEnabled, got %v", err)
-		}
-	})
-
-	t.Run("maps a verified explicit lfs object", func(t *testing.T) {
-		oid := strings.Repeat("a", 64)
-		lfsReq := req
-		lfsReq.Operations = []domain.CommitFileOp{{
-			Path: "model.bin",
-			Lfs:  &domain.CommitFileLfsObject{OID: oid, Size: 42},
-		}}
-		st := fakeStorage{applyChange: change, applyFn: func(_ gitbackend.CommitSpec, ops []gitbackend.CommitOp, _ gitbackend.CleanFunc) error {
-			if len(ops) != 1 || ops[0].BlobSHA != "" || ops[0].Lfs == nil || ops[0].Lfs.OID != oid || ops[0].Lfs.Size != 42 {
-				t.Errorf("backend ops = %+v", ops)
-			}
-			return nil
-		}}
-		svc := NewService(zap.NewNop(), fakeRegistry{repo: row}, st, fakeLFS{objects: map[string]string{oid: strings.Repeat("x", 42)}}, nil)
-		if _, err := svc.Commit(context.Background(), row.ID, lfsReq); err != nil {
-			t.Fatal(err)
-		}
-	})
-
-	t.Run("rejects unavailable or mismatched lfs object", func(t *testing.T) {
-		oid := strings.Repeat("a", 64)
-		lfsReq := req
-		lfsReq.Operations = []domain.CommitFileOp{{
-			Path: "model.bin",
-			Lfs:  &domain.CommitFileLfsObject{OID: oid, Size: 42},
-		}}
-
-		missing := NewService(zap.NewNop(), fakeRegistry{repo: row}, fakeStorage{}, fakeLFS{}, nil)
-		if _, err := missing.Commit(context.Background(), row.ID, lfsReq); !errors.Is(err, ErrLFSObjectNotFound) {
-			t.Fatalf("missing object: want ErrLFSObjectNotFound, got %v", err)
-		}
-
-		mismatch := NewService(zap.NewNop(), fakeRegistry{repo: row}, fakeStorage{}, fakeLFS{objects: map[string]string{oid: "short"}}, nil)
-		if _, err := mismatch.Commit(context.Background(), row.ID, lfsReq); !errors.Is(err, ErrInvalidCommitOps) {
-			t.Fatalf("size mismatch: want ErrInvalidCommitOps, got %v", err)
-		}
-	})
-
 	t.Run("error mapping and no event on failure", func(t *testing.T) {
 		cases := []struct {
 			backend error
@@ -859,7 +839,6 @@ func TestCommit(t *testing.T) {
 			{gitbackend.ErrRevNotFound, ErrRefNotFound},
 			{gitbackend.ErrPathNotFound, ErrPathNotFound},
 			{gitbackend.ErrPathExists, ErrPathConflict},
-			{gitbackend.ErrNotABlob, ErrNotAFile},
 			{gitbackend.ErrHeadMismatch, ErrHeadMismatch},
 			{gitbackend.ErrUnknownBlob, ErrUnknownBlob},
 			{gitbackend.ErrNothingToCommit, ErrNothingToCommit},
@@ -886,7 +865,7 @@ func TestCommitCleanClosure(t *testing.T) {
 		Message: "x",
 		Author:  domain.CommitIdentity{Name: "t", Email: "t@t"},
 		Operations: []domain.CommitFileOp{
-			{Path: "big.bin", BlobSHA: stringPtr(blobSHA)},
+			{Path: "big.bin", SHA: blobSHA},
 		},
 	}
 
@@ -1001,12 +980,12 @@ func TestCommitPathPolicies(t *testing.T) {
 		ops     []domain.CommitFileOp
 		blocked bool
 	}{
-		{"put inside blocked dir", []domain.CommitFileOp{{Path: "runtime/state.json", BlobSHA: stringPtr(blobSHA)}}, true},
-		{"put blocked file", []domain.CommitFileOp{{Path: "config.lock", BlobSHA: stringPtr(blobSHA)}}, true},
-		{"dot-segment evasion", []domain.CommitFileOp{{Path: "./runtime/state.json", BlobSHA: stringPtr(blobSHA)}}, true},
+		{"put inside blocked dir", []domain.CommitFileOp{{Path: "runtime/state.json", SHA: blobSHA}}, true},
+		{"put blocked file", []domain.CommitFileOp{{Path: "config.lock", SHA: blobSHA}}, true},
+		{"dot-segment evasion", []domain.CommitFileOp{{Path: "./runtime/state.json", SHA: blobSHA}}, true},
 		{"delete of blocked path allowed", []domain.CommitFileOp{{Path: "runtime/state.json", Delete: true}}, false},
-		{"unrelated put", []domain.CommitFileOp{{Path: "src/main.go", BlobSHA: stringPtr(blobSHA)}}, false},
-		{"sibling prefix not blocked", []domain.CommitFileOp{{Path: "runtimes/x", BlobSHA: stringPtr(blobSHA)}}, false},
+		{"unrelated put", []domain.CommitFileOp{{Path: "src/main.go", SHA: blobSHA}}, false},
+		{"sibling prefix not blocked", []domain.CommitFileOp{{Path: "runtimes/x", SHA: blobSHA}}, false},
 	}
 
 	for _, tc := range cases {
@@ -1043,7 +1022,7 @@ func TestCommitPathPolicies(t *testing.T) {
 	t.Run("reason is echoed", func(t *testing.T) {
 		svc := NewService(zap.NewNop(), fakeRegistry{repo: row, policies: policies}, fakeStorage{}, nil, nil)
 		req := base
-		req.Operations = []domain.CommitFileOp{{Path: "runtime/x", BlobSHA: stringPtr(blobSHA)}}
+		req.Operations = []domain.CommitFileOp{{Path: "runtime/x", SHA: blobSHA}}
 		_, err := svc.Commit(context.Background(), row.ID, req)
 		if err == nil || !strings.Contains(err.Error(), "deploy-managed state") {
 			t.Errorf("reason missing from error: %v", err)

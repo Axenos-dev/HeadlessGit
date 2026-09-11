@@ -50,11 +50,6 @@ func (l *Local) ApplyCommit(ctx context.Context, storagePath string, spec Commit
 		oldSHA = zeroSHA
 	}
 
-	ops, err = l.materializeLFSPointers(ctx, dir, ops)
-	if err != nil {
-		return RefChange{}, err
-	}
-
 	sizes, err := l.verifyPutInputs(ctx, dir, ops)
 	if err != nil {
 		return RefChange{}, err
@@ -204,7 +199,7 @@ func validateCommitOps(ops []CommitOp) ([]CommitOp, error) {
 					return nil, fmt.Errorf("%w: control character in source path", ErrInvalidOps)
 				}
 			}
-			if op.Delete || op.BlobSHA != "" || op.Lfs != nil || op.Mode != "" {
+			if op.Delete || op.BlobSHA != "" || op.Mode != "" {
 				return nil, fmt.Errorf("%w: move %q takes no object or mode", ErrInvalidOps, from)
 			}
 			if from == p || strings.HasPrefix(p, from+"/") {
@@ -226,24 +221,15 @@ func validateCommitOps(ops []CommitOp) ([]CommitOp, error) {
 		seen[p] = true
 
 		if op.Delete {
-			if op.BlobSHA != "" || op.Lfs != nil {
+			if op.BlobSHA != "" {
 				return nil, fmt.Errorf("%w: delete %q takes no object", ErrInvalidOps, p)
 			}
 		} else {
-			hasBlob := op.BlobSHA != ""
-			hasLFS := op.Lfs != nil
-
-			if hasBlob == hasLFS {
-				return nil, fmt.Errorf("%w: put %q requires exactly one of blob sha or lfs object", ErrInvalidOps, p)
+			if op.BlobSHA == "" {
+				return nil, fmt.Errorf("%w: put %q requires a blob sha", ErrInvalidOps, p)
 			}
-			if hasBlob && !isHexSHA(op.BlobSHA) {
+			if !isHexSHA(op.BlobSHA) {
 				return nil, fmt.Errorf("%w: blob sha %q", ErrInvalidOps, op.BlobSHA)
-			}
-			if hasLFS && (!isLFSOID(op.Lfs.OID) || op.Lfs.Size < 0) {
-				return nil, fmt.Errorf("%w: invalid lfs object for %q", ErrInvalidOps, p)
-			}
-			if hasLFS && isAttributesPath(p) {
-				return nil, fmt.Errorf("%w: attributes file %q cannot be an lfs object", ErrInvalidOps, p)
 			}
 			switch op.Mode {
 			case "":
@@ -256,33 +242,6 @@ func validateCommitOps(ops []CommitOp) ([]CommitOp, error) {
 		out[i] = op
 	}
 	return out, nil
-}
-
-// transforms lfs objects to its pointers
-func (l *Local) materializeLFSPointers(ctx context.Context, dir string, ops []CommitOp) ([]CommitOp, error) {
-	for i := range ops {
-		if ops[i].Lfs == nil {
-			continue
-		}
-
-		pointer := fmt.Sprintf(
-			"version https://git-lfs.github.com/spec/v1\noid sha256:%s\nsize %d\n",
-			ops[i].Lfs.OID,
-			ops[i].Lfs.Size,
-		)
-		// generate sha for handcrafted pointer
-		sha, err := l.runGit(ctx, dir, nil, strings.NewReader(pointer), "hash-object", "-w", "--stdin")
-		if err != nil {
-			return nil, fmt.Errorf("write lfs pointer for %q: %w", ops[i].Path, err)
-		}
-
-		if !isHexSHA(sha) {
-			return nil, fmt.Errorf("write lfs pointer for %q returned invalid sha %q", ops[i].Path, sha)
-		}
-
-		ops[i].BlobSHA = sha
-	}
-	return ops, nil
 }
 
 // runs one cat-file --batch-check over every put blob sha (returning their sizes)
@@ -522,15 +481,11 @@ func movePendingPuts(pending map[string]CommitOp, from, destination string) {
 func (l *Local) cleanLFSTracked(ctx context.Context, dir string, env []string, ops []CommitOp, sizes map[string]int64, clean CleanFunc) ([]CommitOp, error) {
 	var paths []string
 	byPath := make(map[string]int)
-	pendingLFS := make(map[string]struct{})
 
 	for i, op := range ops {
 		if !op.Delete {
 			paths = append(paths, op.Path)
 			byPath[op.Path] = i
-			if op.Lfs != nil {
-				pendingLFS[op.Path] = struct{}{}
-			}
 		}
 	}
 	if len(paths) == 0 {
@@ -552,11 +507,6 @@ func (l *Local) cleanLFSTracked(ctx context.Context, dir string, env []string, o
 			continue
 		}
 
-		if ops[idx].Lfs != nil {
-			delete(pendingLFS, path)
-			continue
-		}
-
 		if value != "lfs" {
 			continue
 		}
@@ -572,10 +522,6 @@ func (l *Local) cleanLFSTracked(ctx context.Context, dir string, env []string, o
 			return nil, fmt.Errorf("lfs clean %q returned invalid sha %q", path, pointerSHA)
 		}
 		ops[idx].BlobSHA = pointerSHA
-	}
-
-	if len(pendingLFS) != 0 {
-		return nil, fmt.Errorf("check-attr omitted explicit lfs paths")
 	}
 
 	return ops, nil

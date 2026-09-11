@@ -108,10 +108,8 @@ func TestSignedUploads(t *testing.T) {
 		}
 		var envelope struct {
 			Data struct {
-				Kind domain.UploadKind
-				SHA  string
-				OID  string
-				Size int64
+				BlobSHA string
+				Size    int64
 			}
 		}
 		data, err := io.ReadAll(res.Body)
@@ -123,17 +121,13 @@ func TestSignedUploads(t *testing.T) {
 			t.Fatal(err)
 		}
 		object := envelope.Data
-		if object.Kind != target.Kind || object.Size != int64(len(payload)) {
+		if object.BlobSHA == "" || object.Size != int64(len(payload)) {
 			t.Fatalf("object %+v", object)
 		}
 		// Reuse the uploaded object at two arbitrary paths, without .gitattributes.
-		ops := []domain.CommitFileOp{{Path: "first.dat"}, {Path: "second.dat"}}
-		for i := range ops {
-			if object.Kind == domain.UploadBlob {
-				ops[i].BlobSHA = &object.SHA
-			} else {
-				ops[i].Lfs = &domain.CommitFileLfsObject{OID: object.OID, Size: object.Size}
-			}
+		ops := []domain.CommitFileOp{
+			{Path: "first.dat", SHA: object.BlobSHA},
+			{Path: "second.dat", SHA: object.BlobSHA},
 		}
 		commit, err := repoSvc.Commit(ctx, repo.ID, domain.CommitRequest{
 			Branch: "main", Message: "Upload files", ExpectedHeadSHA: head, Author: domain.CommitIdentity{Name: "test", Email: "test@test"}, Operations: ops,
@@ -143,21 +137,12 @@ func TestSignedUploads(t *testing.T) {
 		}
 		head = commit.CommitSHA
 		for _, op := range ops {
-			info, err := backend.StatBlob(ctx, repo.StoragePath, commit.CommitSHA, op.Path)
+			blob, err := repoSvc.PrepareFile(ctx, repo.ID, op.SHA)
 			if err != nil {
 				t.Fatal(err)
 			}
 			var content strings.Builder
-			if object.Kind == domain.UploadBlob {
-				err = backend.ReadBlob(ctx, repo.StoragePath, info.BlobSHA, &content)
-			} else {
-				stream, _, readErr := lfsSvc.GetObject(ctx, repo, object.OID)
-				if readErr != nil {
-					t.Fatal(readErr)
-				}
-				_, err = io.Copy(&content, stream)
-				stream.Close()
-			}
+			err = repoSvc.StreamFile(ctx, blob, &content)
 			if err != nil || content.String() != payload {
 				t.Fatalf("round trip failed: %v", err)
 			}
