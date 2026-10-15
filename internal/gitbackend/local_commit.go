@@ -138,17 +138,8 @@ func (l *Local) ApplyCommit(ctx context.Context, storagePath string, spec Commit
 
 // validateCommitSpec checks the branch name and identities
 func (l *Local) validateCommitSpec(ctx context.Context, dir string, spec CommitSpec) (CommitSpec, error) {
-	if spec.Branch == "" || strings.HasPrefix(spec.Branch, "-") {
-		return spec, fmt.Errorf("%w: %q", ErrInvalidBranch, spec.Branch)
-	}
-	for _, r := range spec.Branch {
-		if r < 0x20 || r == 0x7f {
-			return spec, fmt.Errorf("%w: control character", ErrInvalidBranch)
-		}
-	}
-	// git itself is the authority on ref name rules
-	if _, err := l.runGit(ctx, dir, nil, nil, "check-ref-format", "--branch", spec.Branch); err != nil {
-		return spec, fmt.Errorf("%w: %q", ErrInvalidBranch, spec.Branch)
+	if err := l.validateBranchName(ctx, dir, spec.Branch); err != nil {
+		return spec, err
 	}
 
 	if spec.ExpectedOld != "" && !isHexSHA(spec.ExpectedOld) {

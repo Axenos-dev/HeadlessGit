@@ -22,6 +22,9 @@ const (
 // hard cap on operations per commit
 const maxCommitOps = 1000
 
+// hard cap on branches returned by one listing
+const maxBranches = 10_000
+
 type Service int
 
 const (
@@ -41,6 +44,17 @@ type RefChange struct {
 	Ref    string
 	OldSHA string
 	NewSHA string
+}
+
+type Branch struct {
+	Name      string // short name, without refs/heads/
+	CommitSHA string
+}
+
+type BranchListing struct {
+	Default   string // the branch HEAD points at, which clones check out; it may not exist yet
+	Branches  []Branch
+	Truncated bool
 }
 
 type CommitSummary struct {

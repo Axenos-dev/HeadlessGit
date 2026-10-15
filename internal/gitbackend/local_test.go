@@ -266,6 +266,46 @@ func TestParseCommitDetails(t *testing.T) {
 	}
 }
 
+func TestParseBranches(t *testing.T) {
+	sha := strings.Repeat("a", 40)
+
+	branches, truncated, err := parseBranches(sha + " refs/heads/feature/x\n" + sha + " refs/heads/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if truncated {
+		t.Error("unexpected truncation")
+	}
+	want := []Branch{{Name: "feature/x", CommitSHA: sha}, {Name: "main", CommitSHA: sha}}
+	if len(branches) != len(want) || branches[0] != want[0] || branches[1] != want[1] {
+		t.Errorf("branches = %+v, want %+v", branches, want)
+	}
+
+	for _, line := range []string{"refs/heads/main", "abc refs/heads/main", sha + " refs/tags/v1", sha + " refs/heads/"} {
+		if _, _, err := parseBranches(line); err == nil {
+			t.Errorf("parseBranches(%q) accepted a malformed line", line)
+		}
+	}
+}
+
+func TestParseBranchesTruncates(t *testing.T) {
+	var sb strings.Builder
+	for i := 0; i < maxBranches+1; i++ {
+		fmt.Fprintf(&sb, "%s refs/heads/b%d\n", strings.Repeat("a", 40), i)
+	}
+
+	branches, truncated, err := parseBranches(sb.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !truncated {
+		t.Error("want truncated listing")
+	}
+	if len(branches) != maxBranches {
+		t.Errorf("got %d branches, want cap %d", len(branches), maxBranches)
+	}
+}
+
 func TestParseDiffOutput(t *testing.T) {
 	oldSHA := strings.Repeat("a", 40)
 	newSHA := strings.Repeat("b", 40)
@@ -1165,6 +1205,7 @@ func TestApplyCommit(t *testing.T) {
 			{"move into itself", spec("", "x"), []CommitOp{{MoveFrom: "server", Path: "server/nested"}}, ErrInvalidOps},
 			{"bad branch", CommitSpec{Branch: "a..b", ExpectedOld: "", Author: author, Message: "x"}, []CommitOp{{Path: "a", BlobSHA: hello}}, ErrInvalidBranch},
 			{"hostile branch", CommitSpec{Branch: "--help", Author: author, Message: "x"}, []CommitOp{{Path: "a", BlobSHA: hello}}, ErrInvalidBranch},
+			{"full ref as branch", CommitSpec{Branch: "refs/heads/main", Author: author, Message: "x"}, []CommitOp{{Path: "a", BlobSHA: hello}}, ErrInvalidBranch},
 			{"no ops", spec("", "x"), nil, ErrInvalidOps},
 			{"duplicate path", spec("", "x"), []CommitOp{{Path: "a", BlobSHA: hello}, {Path: "a", Delete: true}}, ErrInvalidOps},
 			{"overlapping paths", spec("", "x"), []CommitOp{{Path: "README.md", Delete: true}, {Path: "README.md/child", BlobSHA: hello}}, ErrInvalidOps},
@@ -1272,6 +1313,159 @@ func TestApplyCommit(t *testing.T) {
 			t.Errorf("moved attributes cleaned %q, want assets/new.bin", cleanedPath)
 		}
 	})
+}
+
+func TestBranches(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	root := t.TempDir()
+	l, err := NewLocal(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	const repo = "1/test.git"
+	dir := filepath.Join(root, repo)
+
+	if err := l.InitBare(ctx, repo); err != nil {
+		t.Fatal(err)
+	}
+	// pin HEAD so the test does not depend on the machine's init.defaultBranch
+	gitRun(t, dir, "symbolic-ref", "HEAD", "refs/heads/main")
+
+	// an empty repository already has a default branch, it just does not exist yet
+	empty, err := l.ListBranches(ctx, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if empty.Default != "main" || len(empty.Branches) != 0 || empty.Truncated {
+		t.Fatalf("empty listing = %+v", empty)
+	}
+
+	hello, _, err := l.WriteBlob(ctx, repo, strings.NewReader("hello\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial, err := l.ApplyCommit(ctx, repo, CommitSpec{
+		Branch:      "main",
+		ExpectedOld: zeroSHA,
+		Author:      Identity{Name: "api-user", Email: "api@test"},
+		Message:     "init",
+	}, []CommitOp{{Path: "README.md", BlobSHA: hello}}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := initial.NewSHA
+
+	created, err := l.CreateBranch(ctx, repo, "feature/x", head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (RefChange{Ref: "refs/heads/feature/x", OldSHA: zeroSHA, NewSHA: head}); created != want {
+		t.Errorf("created = %+v, want %+v", created, want)
+	}
+
+	// an annotated tag is peeled, so the branch points at the commit and not the tag object
+	gitRun(t, dir, "tag", "-a", "v1", "-m", "release", head)
+	fromTag, err := l.CreateBranch(ctx, repo, "release", gitOut(t, dir, "rev-parse", "refs/tags/v1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fromTag.NewSHA != head {
+		t.Errorf("branch from tag points at %s, want commit %s", fromTag.NewSHA, head)
+	}
+
+	listing, err := l.ListBranches(ctx, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Branch{{Name: "feature/x", CommitSHA: head}, {Name: "main", CommitSHA: head}, {Name: "release", CommitSHA: head}}
+	if listing.Default != "main" || listing.Truncated || len(listing.Branches) != len(want) {
+		t.Fatalf("listing = %+v", listing)
+	}
+	for i := range want {
+		if listing.Branches[i] != want[i] {
+			t.Errorf("branch %d = %+v, want %+v", i, listing.Branches[i], want[i])
+		}
+	}
+
+	t.Run("create errors", func(t *testing.T) {
+		cases := []struct {
+			name, branch, sha string
+			want              error
+		}{
+			{"existing branch", "main", head, ErrBranchExists},
+			{"name collides with a nested branch", "feature", head, ErrBranchExists},
+			{"unknown commit", "new", strings.Repeat("d", 40), ErrRevNotFound},
+			{"blob instead of a commit", "new", hello, ErrRevNotFound},
+			{"ref name instead of a sha", "new", "main", ErrInvalidRev},
+			{"full ref as name", "refs/heads/new", head, ErrInvalidBranch},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				if _, err := l.CreateBranch(ctx, repo, tc.branch, tc.sha); !errors.Is(err, tc.want) {
+					t.Errorf("CreateBranch = %v, want %v", err, tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("delete errors leave the branch in place", func(t *testing.T) {
+		cases := []struct {
+			name, branch, expectedOld string
+			want                      error
+		}{
+			{"default branch", "main", "", ErrDefaultBranch},
+			{"missing branch", "nope", "", ErrRevNotFound},
+			{"stale expected head", "feature/x", strings.Repeat("a", 40), ErrHeadMismatch},
+			{"malformed expected head", "feature/x", "abc", ErrInvalidRev},
+			{"full ref as name", "refs/heads/feature/x", "", ErrInvalidBranch},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				if _, err := l.DeleteBranch(ctx, repo, tc.branch, tc.expectedOld); !errors.Is(err, tc.want) {
+					t.Errorf("DeleteBranch = %v, want %v", err, tc.want)
+				}
+			})
+		}
+		if got := gitOut(t, dir, "rev-parse", "refs/heads/feature/x"); got != head {
+			t.Errorf("feature/x = %s after rejected deletes, want %s", got, head)
+		}
+	})
+
+	t.Run("a symbolic ref is deleted, never its target", func(t *testing.T) {
+		gitRun(t, dir, "symbolic-ref", "refs/heads/alias", "refs/heads/release")
+		if _, err := l.DeleteBranch(ctx, repo, "alias", ""); err != nil {
+			t.Fatal(err)
+		}
+		if got := gitOut(t, dir, "rev-parse", "refs/heads/release"); got != head {
+			t.Errorf("release = %s, want %s", got, head)
+		}
+	})
+
+	pinned, err := l.DeleteBranch(ctx, repo, "feature/x", head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (RefChange{Ref: "refs/heads/feature/x", OldSHA: head, NewSHA: zeroSHA}); pinned != want {
+		t.Errorf("pinned delete = %+v, want %+v", pinned, want)
+	}
+
+	// without an expected head the change still reports what was deleted
+	unpinned, err := l.DeleteBranch(ctx, repo, "release", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unpinned.OldSHA != head || unpinned.NewSHA != zeroSHA {
+		t.Errorf("unpinned delete = %+v", unpinned)
+	}
+
+	// a real git client sees only the default branch left
+	if remote := gitOut(t, ".", "ls-remote", "--heads", dir); remote != head+"\trefs/heads/main" {
+		t.Errorf("ls-remote = %q", remote)
+	}
 }
 
 func TestRawBlobSizeLimit(t *testing.T) {

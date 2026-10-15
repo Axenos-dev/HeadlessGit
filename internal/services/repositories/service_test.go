@@ -92,6 +92,12 @@ type fakeStorage struct {
 	// optional hook to inspect (and exercise) what ApplyCommit received
 	applyFn        func(spec gitbackend.CommitSpec, ops []gitbackend.CommitOp, clean gitbackend.CleanFunc) error
 	checkWritePath []string
+
+	branchListing gitbackend.BranchListing
+	branchChange  gitbackend.RefChange
+	branchErr     error
+	// receives the name and sha (create) or expected old sha (delete)
+	branchFn func(name, sha string)
 }
 
 func (f fakeStorage) InitBare(ctx context.Context, storagePath string) error {
@@ -170,6 +176,24 @@ func (f fakeStorage) ApplyCommit(ctx context.Context, storagePath string, spec g
 		return gitbackend.RefChange{}, f.applyErr
 	}
 	return f.applyChange, nil
+}
+
+func (f fakeStorage) ListBranches(ctx context.Context, storagePath string) (gitbackend.BranchListing, error) {
+	return f.branchListing, f.branchErr
+}
+
+func (f fakeStorage) CreateBranch(ctx context.Context, storagePath, name, sha string) (gitbackend.RefChange, error) {
+	if f.branchFn != nil {
+		f.branchFn(name, sha)
+	}
+	return f.branchChange, f.branchErr
+}
+
+func (f fakeStorage) DeleteBranch(ctx context.Context, storagePath, name, expectedOld string) (gitbackend.RefChange, error) {
+	if f.branchFn != nil {
+		f.branchFn(name, expectedOld)
+	}
+	return f.branchChange, f.branchErr
 }
 
 type fakeLFS struct {
@@ -922,6 +946,129 @@ func TestCommitCleanClosure(t *testing.T) {
 		}
 		if len(stored) != 0 {
 			t.Errorf("pointer passthrough must not store objects, got %v", stored)
+		}
+	})
+}
+
+func TestBranches(t *testing.T) {
+	row := gen.Repository{ID: 7, OwnerID: 3, RepositoryName: "myrepo", StoragePath: "7/myrepo.git", Visibility: "private"}
+	zero := strings.Repeat("0", 40)
+	ctx := context.Background()
+
+	t.Run("list", func(t *testing.T) {
+		st := fakeStorage{branchListing: gitbackend.BranchListing{
+			Default:   "main",
+			Branches:  []gitbackend.Branch{{Name: "main", CommitSHA: testSHA}},
+			Truncated: true,
+		}}
+		svc := NewService(zap.NewNop(), fakeRegistry{repo: row}, st, nil, nil)
+
+		listing, err := svc.ListBranches(ctx, row.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if listing.DefaultBranch != "main" || !listing.Truncated || len(listing.Branches) != 1 ||
+			listing.Branches[0] != (domain.Branch{Name: "main", CommitSHA: testSHA}) {
+			t.Errorf("listing = %+v", listing)
+		}
+	})
+
+	t.Run("create dispatches a branch-created push event", func(t *testing.T) {
+		var events []domain.RepositoryEvent
+		var gotName, gotSHA string
+		st := fakeStorage{
+			branchChange: gitbackend.RefChange{Ref: "refs/heads/feature/x", OldSHA: zero, NewSHA: testSHA},
+			branchFn:     func(name, sha string) { gotName, gotSHA = name, sha },
+		}
+		svc := NewService(zap.NewNop(), fakeRegistry{repo: row}, st, nil, fakeDispatcher{events: &events})
+
+		branch, err := svc.CreateBranch(ctx, row.ID, domain.CreateBranchRequest{Name: "feature/x", SHA: testSHA, PusherID: 42})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if branch != (domain.Branch{Name: "feature/x", CommitSHA: testSHA}) {
+			t.Errorf("branch = %+v", branch)
+		}
+		if gotName != "feature/x" || gotSHA != testSHA {
+			t.Errorf("storage got (%q, %q)", gotName, gotSHA)
+		}
+
+		if len(events) != 1 {
+			t.Fatalf("events = %+v", events)
+		}
+		e := events[0]
+		if e.Event != "push" || e.RepositoryFullName != "3/myrepo" || e.PusherID != 42 ||
+			e.Ref != "refs/heads/feature/x" || e.OldSHA != zero || e.NewSHA != testSHA {
+			t.Errorf("event = %+v", e)
+		}
+	})
+
+	t.Run("delete dispatches a branch-deleted push event", func(t *testing.T) {
+		var events []domain.RepositoryEvent
+		var gotName, gotExpected string
+		st := fakeStorage{
+			branchChange: gitbackend.RefChange{Ref: "refs/heads/feature/x", OldSHA: testSHA, NewSHA: zero},
+			branchFn:     func(name, expected string) { gotName, gotExpected = name, expected },
+		}
+		svc := NewService(zap.NewNop(), fakeRegistry{repo: row}, st, nil, fakeDispatcher{events: &events})
+
+		err := svc.DeleteBranch(ctx, row.ID, domain.DeleteBranchRequest{Name: "feature/x", ExpectedSHA: testSHA, PusherID: 42})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if gotName != "feature/x" || gotExpected != testSHA {
+			t.Errorf("storage got (%q, %q)", gotName, gotExpected)
+		}
+
+		if len(events) != 1 {
+			t.Fatalf("events = %+v", events)
+		}
+		e := events[0]
+		if e.PusherID != 42 || e.Ref != "refs/heads/feature/x" || e.OldSHA != testSHA || e.NewSHA != zero {
+			t.Errorf("event = %+v", e)
+		}
+	})
+
+	t.Run("error mapping and no event on failure", func(t *testing.T) {
+		create := []struct {
+			backend error
+			want    error
+		}{
+			{gitbackend.ErrInvalidBranch, ErrInvalidBranch},
+			{gitbackend.ErrInvalidRev, ErrInvalidCommitSHA},
+			{gitbackend.ErrRevNotFound, ErrCommitNotFound},
+			{gitbackend.ErrBranchExists, ErrBranchExists},
+		}
+		for _, tc := range create {
+			var events []domain.RepositoryEvent
+			svc := NewService(zap.NewNop(), fakeRegistry{repo: row}, fakeStorage{branchErr: tc.backend}, nil, fakeDispatcher{events: &events})
+			if _, err := svc.CreateBranch(ctx, row.ID, domain.CreateBranchRequest{Name: "x", SHA: testSHA}); !errors.Is(err, tc.want) {
+				t.Errorf("create, backend %v: got %v, want %v", tc.backend, err, tc.want)
+			}
+			if len(events) != 0 {
+				t.Errorf("create, backend %v: event dispatched on failure", tc.backend)
+			}
+		}
+
+		del := []struct {
+			backend error
+			want    error
+		}{
+			{gitbackend.ErrInvalidBranch, ErrInvalidBranch},
+			{gitbackend.ErrInvalidRev, ErrInvalidCommitSHA},
+			{gitbackend.ErrRevNotFound, ErrRefNotFound},
+			{gitbackend.ErrDefaultBranch, ErrDefaultBranch},
+			{gitbackend.ErrHeadMismatch, ErrHeadMismatch},
+		}
+		for _, tc := range del {
+			var events []domain.RepositoryEvent
+			svc := NewService(zap.NewNop(), fakeRegistry{repo: row}, fakeStorage{branchErr: tc.backend}, nil, fakeDispatcher{events: &events})
+			if err := svc.DeleteBranch(ctx, row.ID, domain.DeleteBranchRequest{Name: "x"}); !errors.Is(err, tc.want) {
+				t.Errorf("delete, backend %v: got %v, want %v", tc.backend, err, tc.want)
+			}
+			if len(events) != 0 {
+				t.Errorf("delete, backend %v: event dispatched on failure", tc.backend)
+			}
 		}
 	})
 }

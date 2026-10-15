@@ -27,6 +27,9 @@ type RepositoryManager interface {
 	StreamFile(ctx context.Context, req domain.FileRequest, out io.Writer) error
 	CreateUpload(ctx context.Context, repositoryID, userID, size int64) (domain.UploadTarget, error)
 	Commit(ctx context.Context, repositoryID int64, req domain.CommitRequest) (domain.CommitResult, error)
+	ListBranches(ctx context.Context, repositoryID int64) (domain.BranchListing, error)
+	CreateBranch(ctx context.Context, repositoryID int64, req domain.CreateBranchRequest) (domain.Branch, error)
+	DeleteBranch(ctx context.Context, repositoryID int64, req domain.DeleteBranchRequest) error
 	ListPathPolicies(ctx context.Context, repositoryID int64) ([]domain.PathPolicy, error)
 	AddPathPolicy(ctx context.Context, repositoryID int64, pattern, reason string) (domain.PathPolicy, error)
 	RemovePathPolicy(ctx context.Context, repositoryID, policyID int64) error
@@ -51,6 +54,10 @@ func (h *handlers) RegisterRoutes(parent chi.Router) {
 		r.Post("/{repositoryID}/uploads", response.Handler(h.logger, h.createUpload))
 		r.Post("/{repositoryID}/commits", response.Handler(h.logger, h.createCommit))
 		r.Get("/{repositoryID}/commits/{sha}", response.Handler(h.logger, h.getCommit))
+		r.Get("/{repositoryID}/branches", response.Handler(h.logger, h.listBranches))
+		r.Post("/{repositoryID}/branches", response.Handler(h.logger, h.createBranch))
+		// catch-all, since branch names keep their slashes (feature/x)
+		r.Delete("/{repositoryID}/branches/*", response.Handler(h.logger, h.deleteBranch))
 		r.Get("/{repositoryID}", response.Handler(h.logger, h.getRepository))
 		r.Get("/{repositoryID}/tree", response.Handler(h.logger, h.getTree))
 		r.Get("/{repositoryID}/diff", response.Handler(h.logger, h.getDiff))

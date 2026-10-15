@@ -72,6 +72,29 @@ type fakeManager struct {
 
 	repoByPath    domain.Repository
 	repoByPathErr error
+
+	branchList      domain.BranchListing
+	branch          domain.Branch
+	branchErr       error
+	createBranchReq domain.CreateBranchRequest
+	deleteBranchReq domain.DeleteBranchRequest
+	branchCalled    bool
+}
+
+func (f *fakeManager) ListBranches(ctx context.Context, repositoryID int64) (domain.BranchListing, error) {
+	return f.branchList, f.branchErr
+}
+
+func (f *fakeManager) CreateBranch(ctx context.Context, repositoryID int64, req domain.CreateBranchRequest) (domain.Branch, error) {
+	f.branchCalled = true
+	f.createBranchReq = req
+	return f.branch, f.branchErr
+}
+
+func (f *fakeManager) DeleteBranch(ctx context.Context, repositoryID int64, req domain.DeleteBranchRequest) error {
+	f.branchCalled = true
+	f.deleteBranchReq = req
+	return f.branchErr
 }
 
 func (f *fakeManager) Tree(ctx context.Context, repositoryID int64, ref, treePath string, opts domain.TreeOptions) (domain.RepositoryTree, error) {
@@ -1188,4 +1211,209 @@ func TestPathPolicies(t *testing.T) {
 			})
 		}
 	})
+}
+
+func TestListBranches(t *testing.T) {
+	fake := &fakeManager{branchList: domain.BranchListing{
+		DefaultBranch: "main",
+		Branches:      []domain.Branch{{Name: "feature/x", CommitSHA: testSHA}, {Name: "main", CommitSHA: testSHA}},
+	}}
+	rec := httptest.NewRecorder()
+	newTestRouter(fake).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/repositories/7/branches", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Data BranchList `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Data.DefaultBranch != "main" || body.Data.Truncated || len(body.Data.Branches) != 2 ||
+		body.Data.Branches[0] != (Branch{Name: "feature/x", CommitSHA: testSHA}) {
+		t.Errorf("body = %+v", body.Data)
+	}
+}
+
+func TestListBranchesEmptyIsArray(t *testing.T) {
+	rec := httptest.NewRecorder()
+	newTestRouter(&fakeManager{branchList: domain.BranchListing{DefaultBranch: "main"}}).
+		ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/repositories/7/branches", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"branches":[]`) {
+		t.Errorf("empty repository must list branches as [], got %s", rec.Body.String())
+	}
+}
+
+func TestCreateBranch(t *testing.T) {
+	fake := &fakeManager{branch: domain.Branch{Name: "feature/x", CommitSHA: testSHA}}
+	body := `{"name": "feature/x", "sha": "` + testSHA + `", "pusherId": 42}`
+	rec := httptest.NewRecorder()
+	newTestRouter(fake).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/repositories/7/branches", strings.NewReader(body)))
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Data Branch `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Data != (Branch{Name: "feature/x", CommitSHA: testSHA}) {
+		t.Errorf("body = %+v", resp.Data)
+	}
+	if fake.createBranchReq != (domain.CreateBranchRequest{Name: "feature/x", SHA: testSHA, PusherID: 42}) {
+		t.Errorf("service request = %+v", fake.createBranchReq)
+	}
+}
+
+func TestCreateBranchValidation(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"not json", "nope"},
+		{"missing name", `{"sha":"` + testSHA + `"}`},
+		{"missing sha", `{"name":"feature/x"}`},
+		{"start point by ref", `{"name":"feature/x","from":"main"}`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeManager{}
+			rec := httptest.NewRecorder()
+			newTestRouter(fake).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/repositories/7/branches", strings.NewReader(tc.body)))
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+			}
+			if fake.branchCalled {
+				t.Error("service must not be called on validation failure")
+			}
+		})
+	}
+}
+
+func TestCreateBranchErrors(t *testing.T) {
+	cases := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCode   string
+	}{
+		{"repo not found", reposervice.ErrRepositoryNotFound, http.StatusNotFound, "repository_not_found"},
+		{"commit not found", reposervice.ErrCommitNotFound, http.StatusNotFound, "commit_not_found"},
+		{"branch exists", reposervice.ErrBranchExists, http.StatusConflict, "branch_exists"},
+		{"invalid branch", reposervice.ErrInvalidBranch, http.StatusBadRequest, "invalid_request"},
+		{"invalid sha", reposervice.ErrInvalidCommitSHA, http.StatusBadRequest, "invalid_request"},
+		{"internal", io.ErrUnexpectedEOF, http.StatusInternalServerError, "internal_error"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{"name":"feature/x","sha":"` + testSHA + `"}`
+			rec := httptest.NewRecorder()
+			newTestRouter(&fakeManager{branchErr: tc.err}).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/repositories/7/branches", strings.NewReader(body)))
+
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			var resp struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+				t.Fatal(err)
+			}
+			if resp.Error.Code != tc.wantCode {
+				t.Errorf("code = %q, want %q", resp.Error.Code, tc.wantCode)
+			}
+		})
+	}
+}
+
+func TestDeleteBranch(t *testing.T) {
+	cases := []struct {
+		name   string
+		target string
+		want   domain.DeleteBranchRequest
+	}{
+		{"plain name", "/repositories/7/branches/main", domain.DeleteBranchRequest{Name: "main"}},
+		{"slashes in the name", "/repositories/7/branches/feature/x", domain.DeleteBranchRequest{Name: "feature/x"}},
+		{"escaped slash", "/repositories/7/branches/feature%2Fx", domain.DeleteBranchRequest{Name: "feature/x"}},
+		// with nothing else escaped, chi matches the decoded path, which must not be decoded twice
+		{"literal percent", "/repositories/7/branches/100%25", domain.DeleteBranchRequest{Name: "100%"}},
+		{
+			"expected head and pusher",
+			"/repositories/7/branches/feature/x?expectedSha=" + testSHA + "&pusherId=42",
+			domain.DeleteBranchRequest{Name: "feature/x", ExpectedSHA: testSHA, PusherID: 42},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeManager{}
+			rec := httptest.NewRecorder()
+			newTestRouter(fake).ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, tc.target, nil))
+
+			if rec.Code != http.StatusNoContent {
+				t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+			}
+			if fake.deleteBranchReq != tc.want {
+				t.Errorf("service request = %+v, want %+v", fake.deleteBranchReq, tc.want)
+			}
+		})
+	}
+}
+
+func TestDeleteBranchErrors(t *testing.T) {
+	cases := []struct {
+		name       string
+		target     string
+		err        error
+		wantStatus int
+		wantCode   string
+	}{
+		{"missing name", "/repositories/7/branches/", nil, http.StatusBadRequest, "invalid_request"},
+		{"invalid pusher id", "/repositories/7/branches/main?pusherId=bot", nil, http.StatusBadRequest, "invalid_request"},
+		{"repo not found", "/repositories/7/branches/main", reposervice.ErrRepositoryNotFound, http.StatusNotFound, "repository_not_found"},
+		{"branch not found", "/repositories/7/branches/main", reposervice.ErrRefNotFound, http.StatusNotFound, "ref_not_found"},
+		{"head mismatch", "/repositories/7/branches/main", reposervice.ErrHeadMismatch, http.StatusConflict, "head_mismatch"},
+		{"default branch", "/repositories/7/branches/main", reposervice.ErrDefaultBranch, http.StatusUnprocessableEntity, "default_branch"},
+		{"invalid branch", "/repositories/7/branches/main", reposervice.ErrInvalidBranch, http.StatusBadRequest, "invalid_request"},
+		{"invalid expected sha", "/repositories/7/branches/main", reposervice.ErrInvalidCommitSHA, http.StatusBadRequest, "invalid_request"},
+		{"internal", "/repositories/7/branches/main", io.ErrUnexpectedEOF, http.StatusInternalServerError, "internal_error"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeManager{branchErr: tc.err}
+			rec := httptest.NewRecorder()
+			newTestRouter(fake).ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, tc.target, nil))
+
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			var resp struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+				t.Fatal(err)
+			}
+			if resp.Error.Code != tc.wantCode {
+				t.Errorf("code = %q, want %q", resp.Error.Code, tc.wantCode)
+			}
+			if tc.err == nil && fake.branchCalled {
+				t.Error("service must not be called on request validation failure")
+			}
+		})
+	}
 }

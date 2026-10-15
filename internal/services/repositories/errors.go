@@ -36,6 +36,10 @@ var (
 	ErrUnknownBlob      = errors.New("blob not found in repository")
 	ErrNothingToCommit  = errors.New("nothing to commit")
 
+	// branch management
+	ErrBranchExists  = errors.New("branch already exists")
+	ErrDefaultBranch = errors.New("default branch cannot be deleted")
+
 	// path policies
 	ErrInvalidPathPattern = errors.New("invalid path pattern")
 	ErrPathPolicyExists   = errors.New("path policy already exists")

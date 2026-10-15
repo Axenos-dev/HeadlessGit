@@ -14,7 +14,7 @@ Basically, this is a Git layer of infrastructure you'd put _underneath_ a projec
 - A **repo content API** — list trees, read files, download zip/tar.gz archives, and create commits over REST, so your backend never needs a local clone.
 - Simple **permission model** (`read` / `write` / `admin`) enforced before every Git operation.
 - **Path policies** — block chosen paths from ever being committed, enforced identically on API commits and `git push` (via a pre-receive hook).
-- **Push webhooks** — signed deliveries on every ref change, pushed or committed via the API.
+- **Push webhooks** — signed deliveries on every ref change, pushed or made via the API.
 - Bare-repository storage on a filesystem, with SQLite for metadata.
 
 ## Example
@@ -156,16 +156,19 @@ Every request requires `Authorization: Bearer <ADMIN_TOKEN>`. Responses are enve
 
 **Repository contents & commits**
 
-| Method | Path                                                    | Body             | Description                                                  |
-| ------ | ------------------------------------------------------- | ---------------- | ------------------------------------------------------------ |
-| `GET`  | `/repositories/{id}/tree?ref=&path=&include=lastCommit` | —                | Resolve a path to a file or one directory level.             |
-| `GET`  | `/repositories/{id}/files/{blobSha}`                    | —                | File metadata `{blobSha, size}` with logical size.           |
-| `GET`  | `/repositories/{id}/files/{blobSha}/content`            | —                | Stream the logical file bytes.                               |
-| `GET`  | `/repositories/{id}/commits/{sha}`                      | —                | Get metadata for one commit by its full SHA.                 |
-| `GET`  | `/repositories/{id}/diff?base=&head=`                   | —                | Compare two refs with per-file metadata and unified patches. |
-| `GET`  | `/repositories/{id}/archive?ref=&format=&lfs=&prefix=`  | —                | Stream a `zip` (default) or `tar.gz` archive of the tree.    |
-| `POST` | `/repositories/{id}/uploads`                            | `{userId, size}` | Create a signed blob or LFS upload URL.                      |
-| `POST` | `/repositories/{id}/commits`                            | JSON             | Create a commit from uploaded Git blobs.                     |
+| Method   | Path                                                        | Body                     | Description                                                  |
+| -------- | ----------------------------------------------------------- | ------------------------ | ------------------------------------------------------------ |
+| `GET`    | `/repositories/{id}/tree?ref=&path=&include=lastCommit`     | —                        | Resolve a path to a file or one directory level.             |
+| `GET`    | `/repositories/{id}/files/{blobSha}`                        | —                        | File metadata `{blobSha, size}` with logical size.           |
+| `GET`    | `/repositories/{id}/files/{blobSha}/content`                | —                        | Stream the logical file bytes.                               |
+| `GET`    | `/repositories/{id}/commits/{sha}`                          | —                        | Get metadata for one commit by its full SHA.                 |
+| `GET`    | `/repositories/{id}/diff?base=&head=`                       | —                        | Compare two refs with per-file metadata and unified patches. |
+| `GET`    | `/repositories/{id}/archive?ref=&format=&lfs=&prefix=`      | —                        | Stream a `zip` (default) or `tar.gz` archive of the tree.    |
+| `POST`   | `/repositories/{id}/uploads`                                | `{userId, size}`         | Create a signed blob or LFS upload URL.                      |
+| `POST`   | `/repositories/{id}/commits`                                | JSON                     | Create a commit from uploaded Git blobs.                     |
+| `GET`    | `/repositories/{id}/branches`                               | —                        | List branches and the default branch.                        |
+| `POST`   | `/repositories/{id}/branches`                               | `{name, sha, pusherId?}` | Create a branch at an existing commit.                       |
+| `DELETE` | `/repositories/{id}/branches/{name}?expectedSha=&pusherId=` | —                        | Delete a branch.                                             |
 
 ### Uploading a file
 
@@ -354,6 +357,30 @@ Content is deduplicated by sha, so retrying an upload is free and a lost `409` r
 
 API commits dispatch the same signed [webhooks](#webhooks) as a `git push` — consumers can't tell them apart.
 
+### Managing branches
+
+An all-zero `expectedHeadSha` starts a branch with no history. To branch off existing history, create the branch at a commit first, then commit to it.
+
+```sh
+# list branches; defaultBranch is where HEAD points, i.e. what clones check out
+# GET /repositories/7/branches
+# -> 200 {"data": {"defaultBranch": "main", "branches": [{"name": "main", "commitSha": "9fb03799..."}], "truncated": false}}
+
+# create a branch at a full commit sha, e.g. main's commitSha from the listing
+curl -H "Authorization: Bearer $TOKEN" -X POST \
+  http://localhost:4001/repositories/7/branches -d '{"name": "feature/login", "sha": "9fb03799..."}'
+# -> 201 {"data": {"name": "feature/login", "commitSha": "9fb03799..."}}
+
+# delete it; the name keeps its slashes in the path
+curl -H "Authorization: Bearer $TOKEN" -X DELETE \
+  "http://localhost:4001/repositories/7/branches/feature/login?expectedSha=9fb03799..."
+# -> 204
+```
+
+Names are short branch names (`feature/login`, not `refs/heads/feature/login`). Creating returns `409 branch_exists` when the branch exists or its name collides with one (`feature` vs `feature/login`), and `404 commit_not_found` for an unknown sha. On delete, `expectedSha` is an optional compare-and-swap like `expectedHeadSha` (`409 head_mismatch`). The default branch can't be deleted through the API (`422 default_branch`). A `git push --delete` is not stopped by this check.
+
+Both dispatch the same push [webhook](#webhooks) as a `git push` of that ref (`created` / `deleted`); pass `pusherId` to attribute it.
+
 ### Health
 
 The control port also serves an unauthenticated `GET /healthz` readiness probe. It returns `200 {"status":"ok"}` when the database is reachable and `503 {"status":"unavailable"}` otherwise, and backs the container `HEALTHCHECK`.
@@ -382,7 +409,7 @@ remote: push rejected: "runtime/state.json" is blocked by policy (.....)
 
 ## Webhooks
 
-Register a webhook on a repository and `headlessgit` will `POST` to it after every ref change — a `git push` or a commit created through the [content API](#writing-without-a-clone) produce identical events. A repository can have multiple webhooks, but each URL only once (`409 webhook_exists` on duplicates); to rotate a secret, delete the webhook and re-register it.
+Register a webhook on a repository and `headlessgit` will `POST` to it after every ref change — a `git push`, a commit created through the [content API](#writing-without-a-clone), or a branch created or deleted through the [branch API](#managing-branches) produce identical events. A repository can have multiple webhooks, but each URL only once (`409 webhook_exists` on duplicates); to rotate a secret, delete the webhook and re-register it.
 
 One delivery is sent **per changed ref** (a branch/tag create, update, or delete — not per file or commit). The JSON body:
 

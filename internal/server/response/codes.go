@@ -20,10 +20,12 @@ const (
 	CodeHeadMismatch    = "head_mismatch"
 	CodeUnknownBlob     = "unknown_blob"
 	CodeNothingToCommit = "nothing_to_commit"
+	CodeDefaultBranch   = "default_branch"
 
 	CodePathBlocked      = "path_blocked"
 	CodePathPolicyExists = "path_policy_exists"
 	CodeUserExists       = "user_exists"
 	CodeRepositoryExists = "repository_exists"
 	CodeWebhookExists    = "webhook_exists"
+	CodeBranchExists     = "branch_exists"
 )

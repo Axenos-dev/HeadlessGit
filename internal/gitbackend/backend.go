@@ -21,5 +21,8 @@ type Backend interface {
 	ReadBlob(ctx context.Context, storagePath, blobSHA string, out io.Writer) error
 	WriteBlob(ctx context.Context, storagePath string, r io.Reader) (string, int64, error)
 	ApplyCommit(ctx context.Context, storagePath string, spec CommitSpec, ops []CommitOp, clean CleanFunc, checkWrite CheckWriteFunc) (RefChange, error)
+	ListBranches(ctx context.Context, storagePath string) (BranchListing, error)
+	CreateBranch(ctx context.Context, storagePath, name, sha string) (RefChange, error)
+	DeleteBranch(ctx context.Context, storagePath, name, expectedOld string) (RefChange, error)
 	GC(ctx context.Context, storagePath string) error
 }

@@ -49,6 +49,9 @@ type RepositoryStorage interface {
 	ReadBlob(ctx context.Context, storagePath, blobSHA string, out io.Writer) error
 	WriteBlob(ctx context.Context, storagePath string, r io.Reader) (string, int64, error)
 	ApplyCommit(ctx context.Context, storagePath string, spec gitbackend.CommitSpec, ops []gitbackend.CommitOp, clean gitbackend.CleanFunc, checkWrite gitbackend.CheckWriteFunc) (gitbackend.RefChange, error)
+	ListBranches(ctx context.Context, storagePath string) (gitbackend.BranchListing, error)
+	CreateBranch(ctx context.Context, storagePath, name, sha string) (gitbackend.RefChange, error)
+	DeleteBranch(ctx context.Context, storagePath, name, expectedOld string) (gitbackend.RefChange, error)
 	GC(ctx context.Context, storagePath string) error
 }
 
@@ -606,7 +609,7 @@ func (s *Service) Commit(ctx context.Context, repositoryID int64, req domain.Com
 		return domain.CommitResult{}, err
 	}
 
-	s.dispatchPush(ctx, repo, req, change)
+	s.dispatchPush(ctx, repo, req.PusherID, req.Author.Name, change)
 
 	return domain.CommitResult{
 		Branch:    req.Branch,
@@ -658,7 +661,7 @@ func (s *Service) lfsCleanFunc(ctx context.Context, repo domain.Repository, push
 }
 
 // dispatch webhook event
-func (s *Service) dispatchPush(ctx context.Context, repo domain.Repository, req domain.CommitRequest, change gitbackend.RefChange) {
+func (s *Service) dispatchPush(ctx context.Context, repo domain.Repository, pusherID int64, pusherUsername string, change gitbackend.RefChange) {
 	if s.events == nil {
 		return
 	}
@@ -668,8 +671,8 @@ func (s *Service) dispatchPush(ctx context.Context, repo domain.Repository, req 
 		RepositoryID:       repo.ID,
 		RepositoryName:     repo.RepositoryName,
 		RepositoryFullName: fmt.Sprintf("%d/%s", repo.OwnerID, repo.RepositoryName),
-		PusherID:           req.PusherID,
-		PusherUsername:     req.Author.Name,
+		PusherID:           pusherID,
+		PusherUsername:     pusherUsername,
 		Ref:                change.Ref,
 		OldSHA:             change.OldSHA,
 		NewSHA:             change.NewSHA,
@@ -708,6 +711,80 @@ func (s *Service) pathPolicyChecker(ctx context.Context, repositoryID int64) (gi
 		}
 		return nil
 	}, nil
+}
+
+func (s *Service) ListBranches(ctx context.Context, repositoryID int64) (domain.BranchListing, error) {
+	repo, err := s.Get(ctx, repositoryID)
+	if err != nil {
+		return domain.BranchListing{}, err
+	}
+
+	listing, err := s.storage.ListBranches(ctx, repo.StoragePath)
+	if err != nil {
+		return domain.BranchListing{}, err
+	}
+
+	branches := make([]domain.Branch, len(listing.Branches))
+	for i, b := range listing.Branches {
+		branches[i] = domain.Branch{Name: b.Name, CommitSHA: b.CommitSHA}
+	}
+	return domain.BranchListing{
+		DefaultBranch: listing.Default,
+		Branches:      branches,
+		Truncated:     listing.Truncated,
+	}, nil
+}
+
+func (s *Service) CreateBranch(ctx context.Context, repositoryID int64, req domain.CreateBranchRequest) (domain.Branch, error) {
+	repo, err := s.Get(ctx, repositoryID)
+	if err != nil {
+		return domain.Branch{}, err
+	}
+
+	change, err := s.storage.CreateBranch(ctx, repo.StoragePath, req.Name, req.SHA)
+	switch {
+	case errors.Is(err, gitbackend.ErrInvalidBranch):
+		return domain.Branch{}, ErrInvalidBranch
+	case errors.Is(err, gitbackend.ErrInvalidRev):
+		return domain.Branch{}, ErrInvalidCommitSHA
+	case errors.Is(err, gitbackend.ErrRevNotFound):
+		return domain.Branch{}, ErrCommitNotFound
+	case errors.Is(err, gitbackend.ErrBranchExists):
+		return domain.Branch{}, ErrBranchExists
+	case err != nil:
+		return domain.Branch{}, err
+	}
+
+	// branch api calls carry no author, so the event has only the pusher id
+	s.dispatchPush(ctx, repo, req.PusherID, "", change)
+
+	return domain.Branch{Name: req.Name, CommitSHA: change.NewSHA}, nil
+}
+
+func (s *Service) DeleteBranch(ctx context.Context, repositoryID int64, req domain.DeleteBranchRequest) error {
+	repo, err := s.Get(ctx, repositoryID)
+	if err != nil {
+		return err
+	}
+
+	change, err := s.storage.DeleteBranch(ctx, repo.StoragePath, req.Name, req.ExpectedSHA)
+	switch {
+	case errors.Is(err, gitbackend.ErrInvalidBranch):
+		return ErrInvalidBranch
+	case errors.Is(err, gitbackend.ErrInvalidRev):
+		return ErrInvalidCommitSHA
+	case errors.Is(err, gitbackend.ErrRevNotFound):
+		return ErrRefNotFound
+	case errors.Is(err, gitbackend.ErrDefaultBranch):
+		return ErrDefaultBranch
+	case errors.Is(err, gitbackend.ErrHeadMismatch):
+		return ErrHeadMismatch
+	case err != nil:
+		return err
+	}
+
+	s.dispatchPush(ctx, repo, req.PusherID, "", change)
+	return nil
 }
 
 func (s *Service) CreateUpload(ctx context.Context, repositoryID, userID, size int64) (domain.UploadTarget, error) {
