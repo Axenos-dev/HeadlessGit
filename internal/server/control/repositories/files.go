@@ -1,13 +1,11 @@
 package repositories
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/server/response"
-	reposervice "github.com/Axenos-dev/HeadlessGit/internal/services/repositories"
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 )
@@ -19,11 +17,8 @@ func (h *handlers) getFile(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	info, err := h.service.GetFile(r.Context(), id, chi.URLParam(r, "blobSHA"))
-	if mapped := fileError(err); mapped != nil {
-		if mapped.Code == response.CodeInternalError {
-			h.logger.Error("failed to read file metadata", zap.Error(err))
-		}
-		return mapped
+	if err != nil {
+		return h.repositoriesError(err, "failed to read file metadata")
 	}
 
 	return response.Data(w, http.StatusOK, File{BlobSHA: info.BlobSHA, Size: info.Size})
@@ -36,11 +31,8 @@ func (h *handlers) getFileContent(w http.ResponseWriter, r *http.Request) error 
 	}
 
 	req, err := h.service.PrepareFile(r.Context(), id, chi.URLParam(r, "blobSHA"))
-	if mapped := fileError(err); mapped != nil {
-		if mapped.Code == response.CodeInternalError {
-			h.logger.Error("failed to prepare file", zap.Error(err))
-		}
-		return mapped
+	if err != nil {
+		return h.repositoriesError(err, "failed to prepare file")
 	}
 
 	etag := fmt.Sprintf(`"%s"`, req.BlobSHA)
@@ -71,23 +63,4 @@ func (h *handlers) getFileContent(w http.ResponseWriter, r *http.Request) error 
 		)
 	}
 	return nil
-}
-
-func fileError(err error) *response.APIError {
-	switch {
-	case err == nil:
-		return nil
-	case errors.Is(err, reposervice.ErrRepositoryNotFound):
-		return response.NewError(http.StatusNotFound, response.CodeRepositoryNotFound, "repository not found")
-	case errors.Is(err, reposervice.ErrUnknownBlob):
-		return response.NewError(http.StatusNotFound, response.CodeUnknownBlob, "blob not found")
-	case errors.Is(err, reposervice.ErrLFSObjectNotFound):
-		return response.NewError(http.StatusNotFound, response.CodeLFSObjectNotFound, "lfs object not found")
-	case errors.Is(err, reposervice.ErrNotAFile), errors.Is(err, reposervice.ErrInvalidBlobSHA):
-		return response.NewError(http.StatusBadRequest, response.CodeInvalidRequest, err.Error())
-	case errors.Is(err, reposervice.ErrLFSNotEnabled):
-		return response.NewError(http.StatusServiceUnavailable, response.CodeLFSUnavailable, "lfs storage is unavailable")
-	default:
-		return response.NewError(http.StatusInternalServerError, response.CodeInternalError, "failed to read file")
-	}
 }

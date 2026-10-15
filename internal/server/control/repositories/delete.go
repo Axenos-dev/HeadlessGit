@@ -1,14 +1,11 @@
 package repositories
 
 import (
-	"errors"
 	"net/http"
 	"strconv"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/server/response"
-	reposervice "github.com/Axenos-dev/HeadlessGit/internal/services/repositories"
 	"github.com/go-chi/chi/v5"
-	"go.uber.org/zap"
 )
 
 func (h *handlers) deleteRepository(w http.ResponseWriter, r *http.Request) error {
@@ -17,12 +14,8 @@ func (h *handlers) deleteRepository(w http.ResponseWriter, r *http.Request) erro
 		return response.NewError(http.StatusBadRequest, response.CodeInvalidRequest, "invalid repository id")
 	}
 
-	switch err := h.service.Delete(r.Context(), id); {
-	case errors.Is(err, reposervice.ErrRepositoryNotFound):
-		return response.NewError(http.StatusNotFound, response.CodeRepositoryNotFound, "repository not found")
-	case err != nil:
-		h.logger.Error("failed to delete repository", zap.Error(err))
-		return response.NewError(http.StatusInternalServerError, response.CodeInternalError, "failed to delete repository")
+	if err := h.service.Delete(r.Context(), id); err != nil {
+		return h.repositoriesError(err, "failed to delete repository")
 	}
 
 	w.WriteHeader(http.StatusNoContent)

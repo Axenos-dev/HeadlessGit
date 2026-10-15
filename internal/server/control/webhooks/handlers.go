@@ -2,9 +2,12 @@ package webhooks
 
 import (
 	"context"
+	"errors"
+	"net/http"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/domain"
 	"github.com/Axenos-dev/HeadlessGit/internal/server/response"
+	webhookservice "github.com/Axenos-dev/HeadlessGit/internal/services/webhooks"
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 )
@@ -33,4 +36,15 @@ func (h *handlers) RegisterRoutes(parent chi.Router) {
 		r.Get("/", response.Handler(h.logger, h.listWebhooks))
 		r.Delete("/{webhookID}", response.Handler(h.logger, h.deleteWebhook))
 	})
+}
+
+// maps service errors for every route in this group, so one error always gets one response
+func (h *handlers) webhooksError(err error, logMessage string) *response.APIError {
+	switch {
+	case errors.Is(err, webhookservice.ErrWebhookExists):
+		return response.NewError(http.StatusConflict, response.CodeWebhookExists, "webhook already exists")
+	default:
+		h.logger.Error(logMessage, zap.Error(err))
+		return response.NewError(http.StatusInternalServerError, response.CodeInternalError, logMessage)
+	}
 }

@@ -2,15 +2,12 @@ package repositories
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strconv"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/domain"
 	"github.com/Axenos-dev/HeadlessGit/internal/server/response"
-	reposervice "github.com/Axenos-dev/HeadlessGit/internal/services/repositories"
 	"github.com/go-chi/chi/v5"
-	"go.uber.org/zap"
 )
 
 func (h *handlers) setVisibility(w http.ResponseWriter, r *http.Request) error {
@@ -28,14 +25,8 @@ func (h *handlers) setVisibility(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	repo, err := h.service.SetVisibility(r.Context(), id, domain.RepoVisibility(req.Visibility))
-	switch {
-	case errors.Is(err, reposervice.ErrRepositoryNotFound):
-		return response.NewError(http.StatusNotFound, response.CodeRepositoryNotFound, "repository not found")
-	case errors.Is(err, reposervice.ErrInvalidVisibility):
-		return response.NewError(http.StatusBadRequest, response.CodeInvalidRequest, "invalid visibility")
-	case err != nil:
-		h.logger.Error("failed to update repository visibility", zap.Error(err))
-		return response.NewError(http.StatusInternalServerError, response.CodeInternalError, "failed to update repository visibility")
+	if err != nil {
+		return h.repositoriesError(err, "failed to update repository visibility")
 	}
 
 	return response.Data(w, http.StatusOK, newRepository(repo))

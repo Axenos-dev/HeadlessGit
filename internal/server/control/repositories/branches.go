@@ -2,16 +2,13 @@ package repositories
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/url"
 	"strconv"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/domain"
 	"github.com/Axenos-dev/HeadlessGit/internal/server/response"
-	reposervice "github.com/Axenos-dev/HeadlessGit/internal/services/repositories"
 	"github.com/go-chi/chi/v5"
-	"go.uber.org/zap"
 )
 
 func (h *handlers) listBranches(w http.ResponseWriter, r *http.Request) error {
@@ -21,12 +18,8 @@ func (h *handlers) listBranches(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	listing, err := h.service.ListBranches(r.Context(), id)
-	switch {
-	case errors.Is(err, reposervice.ErrRepositoryNotFound):
-		return response.NewError(http.StatusNotFound, response.CodeRepositoryNotFound, "repository not found")
-	case err != nil:
-		h.logger.Error("failed to list branches", zap.Error(err))
-		return response.NewError(http.StatusInternalServerError, response.CodeInternalError, "failed to list branches")
+	if err != nil {
+		return h.repositoriesError(err, "failed to list branches")
 	}
 
 	return response.Data(w, http.StatusOK, newBranchList(listing))
@@ -53,20 +46,8 @@ func (h *handlers) createBranch(w http.ResponseWriter, r *http.Request) error {
 		SHA:      req.SHA,
 		PusherID: req.PusherID,
 	})
-	switch {
-	case errors.Is(err, reposervice.ErrRepositoryNotFound):
-		return response.NewError(http.StatusNotFound, response.CodeRepositoryNotFound, "repository not found")
-	case errors.Is(err, reposervice.ErrCommitNotFound):
-		return response.NewError(http.StatusNotFound, response.CodeCommitNotFound, "commit not found")
-	case errors.Is(err, reposervice.ErrBranchExists):
-		return response.NewError(http.StatusConflict, response.CodeBranchExists, "branch already exists or its name conflicts with an existing branch")
-	case errors.Is(err, reposervice.ErrInvalidBranch):
-		return response.NewError(http.StatusBadRequest, response.CodeInvalidRequest, "invalid branch name")
-	case errors.Is(err, reposervice.ErrInvalidCommitSHA):
-		return response.NewError(http.StatusBadRequest, response.CodeInvalidRequest, "invalid commit sha")
-	case err != nil:
-		h.logger.Error("failed to create branch", zap.Error(err))
-		return response.NewError(http.StatusInternalServerError, response.CodeInternalError, "failed to create branch")
+	if err != nil {
+		return h.repositoriesError(err, "failed to create branch")
 	}
 
 	return response.Data(w, http.StatusCreated, newBranch(branch))
@@ -97,22 +78,8 @@ func (h *handlers) deleteBranch(w http.ResponseWriter, r *http.Request) error {
 		ExpectedSHA: query.Get("expectedSha"),
 		PusherID:    pusherID,
 	})
-	switch {
-	case errors.Is(err, reposervice.ErrRepositoryNotFound):
-		return response.NewError(http.StatusNotFound, response.CodeRepositoryNotFound, "repository not found")
-	case errors.Is(err, reposervice.ErrRefNotFound):
-		return response.NewError(http.StatusNotFound, response.CodeRefNotFound, "branch not found")
-	case errors.Is(err, reposervice.ErrHeadMismatch):
-		return response.NewError(http.StatusConflict, response.CodeHeadMismatch, "branch head does not match expectedSha")
-	case errors.Is(err, reposervice.ErrDefaultBranch):
-		return response.NewError(http.StatusUnprocessableEntity, response.CodeDefaultBranch, "the default branch cannot be deleted")
-	case errors.Is(err, reposervice.ErrInvalidBranch):
-		return response.NewError(http.StatusBadRequest, response.CodeInvalidRequest, "invalid branch name")
-	case errors.Is(err, reposervice.ErrInvalidCommitSHA):
-		return response.NewError(http.StatusBadRequest, response.CodeInvalidRequest, "invalid expectedSha")
-	case err != nil:
-		h.logger.Error("failed to delete branch", zap.Error(err))
-		return response.NewError(http.StatusInternalServerError, response.CodeInternalError, "failed to delete branch")
+	if err != nil {
+		return h.repositoriesError(err, "failed to delete branch")
 	}
 
 	w.WriteHeader(http.StatusNoContent)
