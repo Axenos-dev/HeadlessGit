@@ -7,7 +7,6 @@ import (
 
 	"github.com/Axenos-dev/HeadlessGit/internal/server/response"
 	"github.com/go-chi/chi/v5"
-	"go.uber.org/zap"
 )
 
 func (h *handlers) mintToken(w http.ResponseWriter, r *http.Request) error {
@@ -27,8 +26,7 @@ func (h *handlers) mintToken(w http.ResponseWriter, r *http.Request) error {
 	// no expiry for now
 	raw, token, err := h.creds.MintToken(r.Context(), userID, req.Title, nil)
 	if err != nil {
-		h.logger.Error("failed to mint token", zap.Error(err))
-		return response.NewError(http.StatusInternalServerError, response.CodeInternalError, "failed to mint token")
+		return h.usersError(err, "failed to mint token")
 	}
 
 	return response.Data(w, http.StatusCreated, newMintTokenResponse(raw, token))

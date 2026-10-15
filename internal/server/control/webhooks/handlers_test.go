@@ -3,6 +3,8 @@ package webhooks
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -92,8 +94,7 @@ func TestCreateWebhook(t *testing.T) {
 		wantCode   string
 	}{
 		{"created", `{"url":"https://example.com/hook"}`, nil, http.StatusCreated, ""},
-		{"duplicate", `{"url":"https://example.com/hook"}`, webhookservice.ErrWebhookExists, http.StatusConflict, "webhook_exists"},
-		{"internal", `{"url":"https://example.com/hook"}`, io.ErrUnexpectedEOF, http.StatusInternalServerError, "internal_error"},
+		{"service error", `{"url":"https://example.com/hook"}`, webhookservice.ErrWebhookExists, http.StatusConflict, "webhook_exists"},
 		{"invalid body", `not json`, nil, http.StatusBadRequest, "invalid_request"},
 		{"missing url", `{}`, nil, http.StatusBadRequest, "invalid_request"},
 		{"non-http url", `{"url":"ftp://example.com/hook"}`, nil, http.StatusBadRequest, "invalid_request"},
@@ -125,5 +126,19 @@ func TestCreateWebhook(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestWebhooksError(t *testing.T) {
+	h := NewHandlers(zap.NewNop(), nil)
+
+	exists := h.webhooksError(fmt.Errorf("detail: %w", webhookservice.ErrWebhookExists), "failed to register webhook")
+	if exists.Status != http.StatusConflict || exists.Code != "webhook_exists" {
+		t.Errorf("webhook exists = %d %s", exists.Status, exists.Code)
+	}
+
+	internal := h.webhooksError(errors.New("database is locked"), "failed to register webhook")
+	if internal.Status != http.StatusInternalServerError || internal.Message != "failed to register webhook" {
+		t.Errorf("internal = %d %q", internal.Status, internal.Message)
 	}
 }

@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -72,6 +74,29 @@ type fakeManager struct {
 
 	repoByPath    domain.Repository
 	repoByPathErr error
+
+	branchList      domain.BranchListing
+	branch          domain.Branch
+	branchErr       error
+	createBranchReq domain.CreateBranchRequest
+	deleteBranchReq domain.DeleteBranchRequest
+	branchCalled    bool
+}
+
+func (f *fakeManager) ListBranches(ctx context.Context, repositoryID int64) (domain.BranchListing, error) {
+	return f.branchList, f.branchErr
+}
+
+func (f *fakeManager) CreateBranch(ctx context.Context, repositoryID int64, req domain.CreateBranchRequest) (domain.Branch, error) {
+	f.branchCalled = true
+	f.createBranchReq = req
+	return f.branch, f.branchErr
+}
+
+func (f *fakeManager) DeleteBranch(ctx context.Context, repositoryID int64, req domain.DeleteBranchRequest) error {
+	f.branchCalled = true
+	f.deleteBranchReq = req
+	return f.branchErr
 }
 
 func (f *fakeManager) Tree(ctx context.Context, repositoryID int64, ref, treePath string, opts domain.TreeOptions) (domain.RepositoryTree, error) {
@@ -174,6 +199,89 @@ func newTestRouter(svc RepositoryManager) http.Handler {
 	r := chi.NewRouter()
 	NewHandlers(zap.NewNop(), svc).RegisterRoutes(r)
 	return r
+}
+
+// asserts an error envelope with the given status and code
+func assertAPIError(t *testing.T, rec *httptest.ResponseRecorder, wantStatus int, wantCode string) {
+	t.Helper()
+	if rec.Code != wantStatus {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, wantStatus, rec.Body.String())
+	}
+
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Error.Code != wantCode {
+		t.Errorf("code = %q, want %q", body.Error.Code, wantCode)
+	}
+}
+
+func TestRepositoriesError(t *testing.T) {
+	cases := []struct {
+		err        error
+		wantStatus int
+		wantCode   string
+	}{
+		{reposervice.ErrRepositoryNotFound, http.StatusNotFound, "repository_not_found"},
+		{reposervice.ErrRepositoryExists, http.StatusConflict, "repository_exists"},
+		{reposervice.ErrInvalidRepositoryName, http.StatusBadRequest, "invalid_request"},
+		{reposervice.ErrInvalidVisibility, http.StatusBadRequest, "invalid_request"},
+		{reposervice.ErrRefNotFound, http.StatusNotFound, "ref_not_found"},
+		{reposervice.ErrInvalidRef, http.StatusBadRequest, "invalid_request"},
+		{reposervice.ErrCommitNotFound, http.StatusNotFound, "commit_not_found"},
+		{reposervice.ErrInvalidCommitSHA, http.StatusBadRequest, "invalid_request"},
+		{reposervice.ErrPathNotFound, http.StatusNotFound, "path_not_found"},
+		{reposervice.ErrInvalidPath, http.StatusBadRequest, "invalid_request"},
+		{reposervice.ErrPathConflict, http.StatusConflict, "path_conflict"},
+		{reposervice.ErrUnknownBlob, http.StatusNotFound, "unknown_blob"},
+		{reposervice.ErrNotAFile, http.StatusBadRequest, "invalid_request"},
+		{reposervice.ErrInvalidBlobSHA, http.StatusBadRequest, "invalid_request"},
+		{reposervice.ErrBlobTooLarge, http.StatusRequestEntityTooLarge, "invalid_request"},
+		{reposervice.ErrInvalidUpload, http.StatusBadRequest, "invalid_request"},
+		{reposervice.ErrUploadUnavailable, http.StatusServiceUnavailable, "lfs_unavailable"},
+		{reposervice.ErrLFSNotEnabled, http.StatusServiceUnavailable, "lfs_unavailable"},
+		{reposervice.ErrLFSObjectNotFound, http.StatusNotFound, "lfs_object_not_found"},
+		{reposervice.ErrUnsupportedFormat, http.StatusBadRequest, "invalid_request"},
+		{reposervice.ErrInvalidArchivePrefix, http.StatusBadRequest, "invalid_request"},
+		{reposervice.ErrInvalidBranch, http.StatusBadRequest, "invalid_request"},
+		{reposervice.ErrInvalidCommitOps, http.StatusBadRequest, "invalid_request"},
+		{reposervice.ErrHeadMismatch, http.StatusConflict, "head_mismatch"},
+		{reposervice.ErrNothingToCommit, http.StatusUnprocessableEntity, "nothing_to_commit"},
+		{reposervice.ErrPathBlocked, http.StatusUnprocessableEntity, "path_blocked"},
+		{reposervice.ErrBranchExists, http.StatusConflict, "branch_exists"},
+		{reposervice.ErrDefaultBranch, http.StatusUnprocessableEntity, "default_branch"},
+		{reposervice.ErrInvalidPathPattern, http.StatusBadRequest, "invalid_request"},
+		{reposervice.ErrPathPolicyExists, http.StatusConflict, "path_policy_exists"},
+		{io.ErrUnexpectedEOF, http.StatusInternalServerError, "internal_error"},
+	}
+
+	h := NewHandlers(zap.NewNop(), nil)
+	for _, tc := range cases {
+		t.Run(tc.err.Error(), func(t *testing.T) {
+			// services wrap their errors with detail, which must not change the mapping
+			got := h.repositoriesError(fmt.Errorf("detail: %w", tc.err), "failed to do it")
+			if got.Status != tc.wantStatus || got.Code != tc.wantCode {
+				t.Errorf("got %d %s, want %d %s", got.Status, got.Code, tc.wantStatus, tc.wantCode)
+			}
+		})
+	}
+
+	t.Run("only meant detail reaches the client", func(t *testing.T) {
+		blocked := h.repositoriesError(fmt.Errorf(`%w: "runtime/x" (deploy state)`, reposervice.ErrPathBlocked), "failed to commit")
+		if !strings.Contains(blocked.Message, "(deploy state)") {
+			t.Errorf("path policy reason dropped: %q", blocked.Message)
+		}
+
+		internal := h.repositoriesError(errors.New("open /srv/repos/7.git: permission denied"), "failed to do it")
+		if internal.Message != "failed to do it" {
+			t.Errorf("internal error leaked: %q", internal.Message)
+		}
+	})
 }
 
 func testArchiveRequest() domain.ArchiveRequest {
@@ -280,35 +388,14 @@ func TestGetTreeErrors(t *testing.T) {
 		{"bad id", "/repositories/nope/tree", nil, http.StatusBadRequest, "invalid_request"},
 		{"bad include", "/repositories/7/tree?include=commits", nil, http.StatusBadRequest, "invalid_request"},
 		{"duplicate include", "/repositories/7/tree?include=lastCommit&include=lastCommit", nil, http.StatusBadRequest, "invalid_request"},
-		{"repository not found", "/repositories/7/tree", reposervice.ErrRepositoryNotFound, http.StatusNotFound, "repository_not_found"},
-		{"ref not found", "/repositories/7/tree", reposervice.ErrRefNotFound, http.StatusNotFound, "ref_not_found"},
-		{"path not found", "/repositories/7/tree", reposervice.ErrPathNotFound, http.StatusNotFound, "path_not_found"},
-		{"invalid ref", "/repositories/7/tree", reposervice.ErrInvalidRef, http.StatusBadRequest, "invalid_request"},
-		{"invalid path", "/repositories/7/tree", reposervice.ErrInvalidPath, http.StatusBadRequest, "invalid_request"},
-		{"internal", "/repositories/7/tree", io.ErrUnexpectedEOF, http.StatusInternalServerError, "internal_error"},
+		{"service error", "/repositories/7/tree", reposervice.ErrPathNotFound, http.StatusNotFound, "path_not_found"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			newTestRouter(&fakeManager{treeErr: tc.serviceErr}).ServeHTTP(
-				rec,
-				httptest.NewRequest(http.MethodGet, tc.target, nil),
-			)
-			if rec.Code != tc.wantStatus {
-				t.Fatalf("status = %d, want %d: %s", rec.Code, tc.wantStatus, rec.Body.String())
-			}
-			var body struct {
-				Error struct {
-					Code string `json:"code"`
-				} `json:"error"`
-			}
-			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-				t.Fatal(err)
-			}
-			if body.Error.Code != tc.wantCode {
-				t.Errorf("code = %q, want %q", body.Error.Code, tc.wantCode)
-			}
+			newTestRouter(&fakeManager{treeErr: tc.serviceErr}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tc.target, nil))
+			assertAPIError(t, rec, tc.wantStatus, tc.wantCode)
 		})
 	}
 }
@@ -440,33 +527,14 @@ func TestGetDiffErrors(t *testing.T) {
 		{"bad id", "/repositories/nope/diff?base=a&head=b", nil, http.StatusBadRequest, "invalid_request"},
 		{"missing base", "/repositories/7/diff?head=main", nil, http.StatusBadRequest, "invalid_request"},
 		{"missing head", "/repositories/7/diff?base=main~1", nil, http.StatusBadRequest, "invalid_request"},
-		{"repository not found", "/repositories/7/diff?base=a&head=b", reposervice.ErrRepositoryNotFound, http.StatusNotFound, "repository_not_found"},
-		{"ref not found", "/repositories/7/diff?base=a&head=b", reposervice.ErrRefNotFound, http.StatusNotFound, "ref_not_found"},
-		{"invalid ref", "/repositories/7/diff?base=a&head=b", reposervice.ErrInvalidRef, http.StatusBadRequest, "invalid_request"},
-		{"internal", "/repositories/7/diff?base=a&head=b", io.ErrUnexpectedEOF, http.StatusInternalServerError, "internal_error"},
+		{"service error", "/repositories/7/diff?base=a&head=b", reposervice.ErrRefNotFound, http.StatusNotFound, "ref_not_found"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			newTestRouter(&fakeManager{diffErr: tc.serviceErr}).ServeHTTP(
-				rec,
-				httptest.NewRequest(http.MethodGet, tc.target, nil),
-			)
-			if rec.Code != tc.wantStatus {
-				t.Fatalf("status = %d, want %d: %s", rec.Code, tc.wantStatus, rec.Body.String())
-			}
-			var body struct {
-				Error struct {
-					Code string `json:"code"`
-				} `json:"error"`
-			}
-			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-				t.Fatal(err)
-			}
-			if body.Error.Code != tc.wantCode {
-				t.Errorf("code = %q, want %q", body.Error.Code, tc.wantCode)
-			}
+			newTestRouter(&fakeManager{diffErr: tc.serviceErr}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tc.target, nil))
+			assertAPIError(t, rec, tc.wantStatus, tc.wantCode)
 		})
 	}
 }
@@ -535,33 +603,14 @@ func TestGetCommitErrors(t *testing.T) {
 		wantCode   string
 	}{
 		{"bad id", "/repositories/nope/commits/" + testSHA, nil, http.StatusBadRequest, "invalid_request"},
-		{"invalid sha", "/repositories/7/commits/nope", reposervice.ErrInvalidCommitSHA, http.StatusBadRequest, "invalid_request"},
-		{"repository not found", "/repositories/7/commits/" + testSHA, reposervice.ErrRepositoryNotFound, http.StatusNotFound, "repository_not_found"},
-		{"commit not found", "/repositories/7/commits/" + testSHA, reposervice.ErrCommitNotFound, http.StatusNotFound, "commit_not_found"},
-		{"internal", "/repositories/7/commits/" + testSHA, io.ErrUnexpectedEOF, http.StatusInternalServerError, "internal_error"},
+		{"service error", "/repositories/7/commits/" + testSHA, reposervice.ErrCommitNotFound, http.StatusNotFound, "commit_not_found"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			newTestRouter(&fakeManager{getCommitErr: tc.serviceErr}).ServeHTTP(
-				rec,
-				httptest.NewRequest(http.MethodGet, tc.target, nil),
-			)
-			if rec.Code != tc.wantStatus {
-				t.Fatalf("status = %d, want %d: %s", rec.Code, tc.wantStatus, rec.Body.String())
-			}
-			var body struct {
-				Error struct {
-					Code string `json:"code"`
-				} `json:"error"`
-			}
-			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-				t.Fatal(err)
-			}
-			if body.Error.Code != tc.wantCode {
-				t.Errorf("code = %q, want %q", body.Error.Code, tc.wantCode)
-			}
+			newTestRouter(&fakeManager{getCommitErr: tc.serviceErr}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tc.target, nil))
+			assertAPIError(t, rec, tc.wantStatus, tc.wantCode)
 		})
 	}
 }
@@ -662,12 +711,7 @@ func TestGetArchiveErrors(t *testing.T) {
 		{"bad id", "/repositories/abc/archive", nil, nil, http.StatusBadRequest, "invalid_request"},
 		{"bad lfs param", "/repositories/7/archive?lfs=maybe", nil, nil, http.StatusBadRequest, "invalid_request"},
 		{"duplicate prefix", "/repositories/7/archive?prefix=a&prefix=b", nil, nil, http.StatusBadRequest, "invalid_request"},
-		{"repo not found", "/repositories/7/archive", reposervice.ErrRepositoryNotFound, nil, http.StatusNotFound, "repository_not_found"},
-		{"ref not found", "/repositories/7/archive?ref=nope", reposervice.ErrRefNotFound, nil, http.StatusNotFound, "ref_not_found"},
-		{"invalid ref", "/repositories/7/archive?ref=--x", reposervice.ErrInvalidRef, nil, http.StatusBadRequest, "invalid_request"},
-		{"bad format", "/repositories/7/archive?format=rar", reposervice.ErrUnsupportedFormat, nil, http.StatusBadRequest, "invalid_request"},
-		{"bad prefix", "/repositories/7/archive?prefix=..", reposervice.ErrInvalidArchivePrefix, nil, http.StatusBadRequest, "invalid_request"},
-		{"lfs disabled", "/repositories/7/archive?lfs=true", reposervice.ErrLFSNotEnabled, nil, http.StatusBadRequest, "invalid_request"},
+		{"service error", "/repositories/7/archive?format=rar", reposervice.ErrUnsupportedFormat, nil, http.StatusBadRequest, "invalid_request"},
 		{"stream fails before first byte", "/repositories/7/archive", nil, io.ErrUnexpectedEOF, http.StatusInternalServerError, "internal_error"},
 	}
 
@@ -677,20 +721,7 @@ func TestGetArchiveErrors(t *testing.T) {
 			rec := httptest.NewRecorder()
 			router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tc.target, nil))
 
-			if rec.Code != tc.wantStatus {
-				t.Fatalf("status = %d, want %d: %s", rec.Code, tc.wantStatus, rec.Body.String())
-			}
-			var body struct {
-				Error struct {
-					Code string `json:"code"`
-				} `json:"error"`
-			}
-			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-				t.Fatal(err)
-			}
-			if body.Error.Code != tc.wantCode {
-				t.Errorf("code = %q, want %q", body.Error.Code, tc.wantCode)
-			}
+			assertAPIError(t, rec, tc.wantStatus, tc.wantCode)
 			if got := rec.Header().Get("Content-Disposition"); got != "" {
 				t.Errorf("error response leaked Content-Disposition %q", got)
 			}
@@ -801,6 +832,7 @@ func TestCreateUpload(t *testing.T) {
 }
 
 func TestGetFileErrors(t *testing.T) {
+	blobPath := "/repositories/7/files/" + strings.Repeat("a", 40)
 	cases := []struct {
 		name       string
 		target     string
@@ -810,13 +842,9 @@ func TestGetFileErrors(t *testing.T) {
 		wantCode   string
 	}{
 		{"bad id", "/repositories/abc/files/" + strings.Repeat("a", 40), nil, nil, http.StatusBadRequest, "invalid_request"},
-		{"repo not found", "/repositories/7/files/" + strings.Repeat("a", 40), reposervice.ErrRepositoryNotFound, nil, http.StatusNotFound, "repository_not_found"},
-		{"unknown blob", "/repositories/7/files/" + strings.Repeat("a", 40), reposervice.ErrUnknownBlob, nil, http.StatusNotFound, "unknown_blob"},
-		{"lfs object missing", "/repositories/7/files/" + strings.Repeat("a", 40) + "/content", reposervice.ErrLFSObjectNotFound, nil, http.StatusNotFound, "lfs_object_not_found"},
-		{"not a file", "/repositories/7/files/" + strings.Repeat("a", 40), reposervice.ErrNotAFile, nil, http.StatusBadRequest, "invalid_request"},
-		{"invalid sha", "/repositories/7/files/nope", reposervice.ErrInvalidBlobSHA, nil, http.StatusBadRequest, "invalid_request"},
-		{"lfs unavailable", "/repositories/7/files/" + strings.Repeat("a", 40) + "/content", reposervice.ErrLFSNotEnabled, nil, http.StatusServiceUnavailable, "lfs_unavailable"},
-		{"stream fails before first byte", "/repositories/7/files/" + strings.Repeat("a", 40) + "/content", nil, io.ErrUnexpectedEOF, http.StatusInternalServerError, "internal_error"},
+		{"metadata service error", blobPath, reposervice.ErrUnknownBlob, nil, http.StatusNotFound, "unknown_blob"},
+		{"content service error", blobPath + "/content", reposervice.ErrLFSObjectNotFound, nil, http.StatusNotFound, "lfs_object_not_found"},
+		{"stream fails before first byte", blobPath + "/content", nil, io.ErrUnexpectedEOF, http.StatusInternalServerError, "internal_error"},
 	}
 
 	for _, tc := range cases {
@@ -824,21 +852,7 @@ func TestGetFileErrors(t *testing.T) {
 			router := newTestRouter(&fakeManager{fileReq: testFileRequest(), fileErr: tc.fileErr, streamErr: tc.streamErr})
 			rec := httptest.NewRecorder()
 			router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tc.target, nil))
-
-			if rec.Code != tc.wantStatus {
-				t.Fatalf("status = %d, want %d: %s", rec.Code, tc.wantStatus, rec.Body.String())
-			}
-			var body struct {
-				Error struct {
-					Code string `json:"code"`
-				} `json:"error"`
-			}
-			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-				t.Fatal(err)
-			}
-			if body.Error.Code != tc.wantCode {
-				t.Errorf("code = %q, want %q", body.Error.Code, tc.wantCode)
-			}
+			assertAPIError(t, rec, tc.wantStatus, tc.wantCode)
 		})
 	}
 }
@@ -955,40 +969,16 @@ func TestCreateCommitErrors(t *testing.T) {
 		wantStatus int
 		wantCode   string
 	}{
-		{"repo not found", reposervice.ErrRepositoryNotFound, http.StatusNotFound, "repository_not_found"},
-		{"branch not found", reposervice.ErrRefNotFound, http.StatusNotFound, "ref_not_found"},
-		{"delete target missing", reposervice.ErrPathNotFound, http.StatusNotFound, "path_not_found"},
-		{"move destination exists", reposervice.ErrPathConflict, http.StatusConflict, "path_conflict"},
-		{"head mismatch", reposervice.ErrHeadMismatch, http.StatusConflict, "head_mismatch"},
-		{"unknown blob", reposervice.ErrUnknownBlob, http.StatusUnprocessableEntity, "unknown_blob"},
-		{"nothing to commit", reposervice.ErrNothingToCommit, http.StatusUnprocessableEntity, "nothing_to_commit"},
-		{"path blocked", reposervice.ErrPathBlocked, http.StatusUnprocessableEntity, "path_blocked"},
-		{"delete target is a dir", reposervice.ErrNotAFile, http.StatusBadRequest, "invalid_request"},
-		{"invalid branch", reposervice.ErrInvalidBranch, http.StatusBadRequest, "invalid_request"},
-		{"invalid ops", reposervice.ErrInvalidCommitOps, http.StatusBadRequest, "invalid_request"},
-		{"lfs not enabled", reposervice.ErrLFSNotEnabled, http.StatusBadRequest, "invalid_request"},
-		{"internal", io.ErrUnexpectedEOF, http.StatusInternalServerError, "internal_error"},
+		{"service error", reposervice.ErrHeadMismatch, http.StatusConflict, "head_mismatch"},
+		// a missing blob is 404 elsewhere, but here the body references it
+		{"unknown blob is a bad reference", reposervice.ErrUnknownBlob, http.StatusUnprocessableEntity, "unknown_blob"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
 			newTestRouter(&fakeManager{commitErr: tc.commitErr}).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/repositories/7/commits", strings.NewReader(validCommitBody())))
-
-			if rec.Code != tc.wantStatus {
-				t.Fatalf("status = %d, want %d: %s", rec.Code, tc.wantStatus, rec.Body.String())
-			}
-			var body struct {
-				Error struct {
-					Code string `json:"code"`
-				} `json:"error"`
-			}
-			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-				t.Fatal(err)
-			}
-			if body.Error.Code != tc.wantCode {
-				t.Errorf("code = %q, want %q", body.Error.Code, tc.wantCode)
-			}
+			assertAPIError(t, rec, tc.wantStatus, tc.wantCode)
 		})
 	}
 }
@@ -1002,9 +992,7 @@ func TestCreateRepository(t *testing.T) {
 		wantCode   string
 	}{
 		{"created", `{"ownerId":3,"name":"demo","visibility":"private"}`, nil, http.StatusCreated, ""},
-		{"duplicate", `{"ownerId":3,"name":"demo","visibility":"private"}`, reposervice.ErrRepositoryExists, http.StatusConflict, "repository_exists"},
-		{"invalid name", `{"ownerId":3,"name":"..","visibility":"private"}`, reposervice.ErrInvalidRepositoryName, http.StatusBadRequest, "invalid_request"},
-		{"internal", `{"ownerId":3,"name":"demo","visibility":"private"}`, io.ErrUnexpectedEOF, http.StatusInternalServerError, "internal_error"},
+		{"service error", `{"ownerId":3,"name":"demo","visibility":"private"}`, reposervice.ErrRepositoryExists, http.StatusConflict, "repository_exists"},
 		{"invalid body", `not json`, nil, http.StatusBadRequest, "invalid_request"},
 		{"missing owner", `{"name":"demo","visibility":"private"}`, nil, http.StatusBadRequest, "invalid_request"},
 		{"bad visibility", `{"ownerId":3,"name":"demo","visibility":"hidden"}`, nil, http.StatusBadRequest, "invalid_request"},
@@ -1049,8 +1037,7 @@ func TestGetRepositoryByPath(t *testing.T) {
 	}{
 		{"found", "/repositories/by-path/acme/api", nil, http.StatusOK, ""},
 		{"numeric namespace and name", "/repositories/by-path/123/456", nil, http.StatusOK, ""},
-		{"not found", "/repositories/by-path/acme/nope", reposervice.ErrRepositoryNotFound, http.StatusNotFound, "repository_not_found"},
-		{"internal", "/repositories/by-path/acme/api", io.ErrUnexpectedEOF, http.StatusInternalServerError, "internal_error"},
+		{"service error", "/repositories/by-path/acme/nope", reposervice.ErrRepositoryNotFound, http.StatusNotFound, "repository_not_found"},
 	}
 
 	for _, tc := range cases {
@@ -1156,9 +1143,8 @@ func TestPathPolicies(t *testing.T) {
 			wantCode   string
 		}{
 			{"missing pattern", http.MethodPost, "/repositories/7/path-policies", `{}`, nil, http.StatusBadRequest, "invalid_request"},
-			{"invalid pattern", http.MethodPost, "/repositories/7/path-policies", `{"pattern":"a/../b"}`, reposervice.ErrInvalidPathPattern, http.StatusBadRequest, "invalid_request"},
-			{"duplicate", http.MethodPost, "/repositories/7/path-policies", `{"pattern":"runtime"}`, reposervice.ErrPathPolicyExists, http.StatusConflict, "path_policy_exists"},
-			{"repo not found", http.MethodGet, "/repositories/7/path-policies", "", reposervice.ErrRepositoryNotFound, http.StatusNotFound, "repository_not_found"},
+			{"add service error", http.MethodPost, "/repositories/7/path-policies", `{"pattern":"runtime"}`, reposervice.ErrPathPolicyExists, http.StatusConflict, "path_policy_exists"},
+			{"list service error", http.MethodGet, "/repositories/7/path-policies", "", reposervice.ErrRepositoryNotFound, http.StatusNotFound, "repository_not_found"},
 		}
 
 		for _, tc := range cases {
@@ -1170,22 +1156,162 @@ func TestPathPolicies(t *testing.T) {
 					reqBody = strings.NewReader(tc.body)
 				}
 				newTestRouter(fake).ServeHTTP(rec, httptest.NewRequest(tc.method, tc.target, reqBody))
-
-				if rec.Code != tc.wantStatus {
-					t.Fatalf("status = %d, want %d: %s", rec.Code, tc.wantStatus, rec.Body.String())
-				}
-				var body struct {
-					Error struct {
-						Code string `json:"code"`
-					} `json:"error"`
-				}
-				if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-					t.Fatal(err)
-				}
-				if body.Error.Code != tc.wantCode {
-					t.Errorf("code = %q, want %q", body.Error.Code, tc.wantCode)
-				}
+				assertAPIError(t, rec, tc.wantStatus, tc.wantCode)
 			})
 		}
 	})
+}
+
+func TestListBranches(t *testing.T) {
+	fake := &fakeManager{branchList: domain.BranchListing{
+		DefaultBranch: "main",
+		Branches:      []domain.Branch{{Name: "feature/x", CommitSHA: testSHA}, {Name: "main", CommitSHA: testSHA}},
+	}}
+	rec := httptest.NewRecorder()
+	newTestRouter(fake).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/repositories/7/branches", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Data BranchList `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Data.DefaultBranch != "main" || body.Data.Truncated || len(body.Data.Branches) != 2 ||
+		body.Data.Branches[0] != (Branch{Name: "feature/x", CommitSHA: testSHA}) {
+		t.Errorf("body = %+v", body.Data)
+	}
+}
+
+func TestListBranchesEmptyIsArray(t *testing.T) {
+	rec := httptest.NewRecorder()
+	newTestRouter(&fakeManager{branchList: domain.BranchListing{DefaultBranch: "main"}}).
+		ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/repositories/7/branches", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"branches":[]`) {
+		t.Errorf("empty repository must list branches as [], got %s", rec.Body.String())
+	}
+}
+
+func TestCreateBranch(t *testing.T) {
+	fake := &fakeManager{branch: domain.Branch{Name: "feature/x", CommitSHA: testSHA}}
+	body := `{"name": "feature/x", "sha": "` + testSHA + `", "pusherId": 42}`
+	rec := httptest.NewRecorder()
+	newTestRouter(fake).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/repositories/7/branches", strings.NewReader(body)))
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Data Branch `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Data != (Branch{Name: "feature/x", CommitSHA: testSHA}) {
+		t.Errorf("body = %+v", resp.Data)
+	}
+	if fake.createBranchReq != (domain.CreateBranchRequest{Name: "feature/x", SHA: testSHA, PusherID: 42}) {
+		t.Errorf("service request = %+v", fake.createBranchReq)
+	}
+}
+
+func TestCreateBranchValidation(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"not json", "nope"},
+		{"missing name", `{"sha":"` + testSHA + `"}`},
+		{"missing sha", `{"name":"feature/x"}`},
+		{"start point by ref", `{"name":"feature/x","from":"main"}`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeManager{}
+			rec := httptest.NewRecorder()
+			newTestRouter(fake).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/repositories/7/branches", strings.NewReader(tc.body)))
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+			}
+			if fake.branchCalled {
+				t.Error("service must not be called on validation failure")
+			}
+		})
+	}
+}
+
+func TestCreateBranchErrors(t *testing.T) {
+	body := `{"name":"feature/x","sha":"` + testSHA + `"}`
+	rec := httptest.NewRecorder()
+	newTestRouter(&fakeManager{branchErr: reposervice.ErrBranchExists}).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/repositories/7/branches", strings.NewReader(body)))
+	assertAPIError(t, rec, http.StatusConflict, "branch_exists")
+}
+
+func TestDeleteBranch(t *testing.T) {
+	cases := []struct {
+		name   string
+		target string
+		want   domain.DeleteBranchRequest
+	}{
+		{"plain name", "/repositories/7/branches/main", domain.DeleteBranchRequest{Name: "main"}},
+		{"slashes in the name", "/repositories/7/branches/feature/x", domain.DeleteBranchRequest{Name: "feature/x"}},
+		{"escaped slash", "/repositories/7/branches/feature%2Fx", domain.DeleteBranchRequest{Name: "feature/x"}},
+		// with nothing else escaped, chi matches the decoded path, which must not be decoded twice
+		{"literal percent", "/repositories/7/branches/100%25", domain.DeleteBranchRequest{Name: "100%"}},
+		{
+			"expected head and pusher",
+			"/repositories/7/branches/feature/x?expectedSha=" + testSHA + "&pusherId=42",
+			domain.DeleteBranchRequest{Name: "feature/x", ExpectedSHA: testSHA, PusherID: 42},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeManager{}
+			rec := httptest.NewRecorder()
+			newTestRouter(fake).ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, tc.target, nil))
+
+			if rec.Code != http.StatusNoContent {
+				t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+			}
+			if fake.deleteBranchReq != tc.want {
+				t.Errorf("service request = %+v, want %+v", fake.deleteBranchReq, tc.want)
+			}
+		})
+	}
+}
+
+func TestDeleteBranchErrors(t *testing.T) {
+	cases := []struct {
+		name       string
+		target     string
+		err        error
+		wantStatus int
+		wantCode   string
+	}{
+		{"missing name", "/repositories/7/branches/", nil, http.StatusBadRequest, "invalid_request"},
+		{"invalid pusher id", "/repositories/7/branches/main?pusherId=bot", nil, http.StatusBadRequest, "invalid_request"},
+		{"service error", "/repositories/7/branches/main", reposervice.ErrDefaultBranch, http.StatusUnprocessableEntity, "default_branch"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeManager{branchErr: tc.err}
+			rec := httptest.NewRecorder()
+			newTestRouter(fake).ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, tc.target, nil))
+
+			assertAPIError(t, rec, tc.wantStatus, tc.wantCode)
+			if tc.err == nil && fake.branchCalled {
+				t.Error("service must not be called on request validation failure")
+			}
+		})
+	}
 }

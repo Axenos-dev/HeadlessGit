@@ -2,7 +2,6 @@ package repositories
 
 import (
 	"crypto/sha256"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,7 +9,6 @@ import (
 
 	"github.com/Axenos-dev/HeadlessGit/internal/domain"
 	"github.com/Axenos-dev/HeadlessGit/internal/server/response"
-	reposervice "github.com/Axenos-dev/HeadlessGit/internal/services/repositories"
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 )
@@ -39,22 +37,8 @@ func (h *handlers) getArchive(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	req, err := h.service.PrepareArchive(r.Context(), id, q.Get("ref"), q.Get("format"), includeLFS, prefix)
-	switch {
-	case errors.Is(err, reposervice.ErrRepositoryNotFound):
-		return response.NewError(http.StatusNotFound, response.CodeRepositoryNotFound, "repository not found")
-	case errors.Is(err, reposervice.ErrRefNotFound):
-		return response.NewError(http.StatusNotFound, response.CodeRefNotFound, "ref not found")
-	case errors.Is(err, reposervice.ErrInvalidRef):
-		return response.NewError(http.StatusBadRequest, response.CodeInvalidRequest, "invalid ref")
-	case errors.Is(err, reposervice.ErrUnsupportedFormat):
-		return response.NewError(http.StatusBadRequest, response.CodeInvalidRequest, "unsupported archive format")
-	case errors.Is(err, reposervice.ErrInvalidArchivePrefix):
-		return response.NewError(http.StatusBadRequest, response.CodeInvalidRequest, "invalid archive prefix")
-	case errors.Is(err, reposervice.ErrLFSNotEnabled):
-		return response.NewError(http.StatusBadRequest, response.CodeInvalidRequest, "lfs is not enabled")
-	case err != nil:
-		h.logger.Error("failed to prepare archive", zap.Error(err))
-		return response.NewError(http.StatusInternalServerError, response.CodeInternalError, "failed to prepare archive")
+	if err != nil {
+		return h.repositoriesError(err, "failed to prepare archive")
 	}
 
 	etag := archiveETag(req)

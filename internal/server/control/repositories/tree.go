@@ -1,13 +1,11 @@
 package repositories
 
 import (
-	"errors"
 	"net/http"
 	"strconv"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/domain"
 	"github.com/Axenos-dev/HeadlessGit/internal/server/response"
-	reposervice "github.com/Axenos-dev/HeadlessGit/internal/services/repositories"
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 )
@@ -30,20 +28,8 @@ func (h *handlers) getTree(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	tree, err := h.service.Tree(r.Context(), id, ref, treePath, opts)
-	switch {
-	case errors.Is(err, reposervice.ErrRepositoryNotFound):
-		return response.NewError(http.StatusNotFound, response.CodeRepositoryNotFound, "repository not found")
-	case errors.Is(err, reposervice.ErrRefNotFound):
-		return response.NewError(http.StatusNotFound, response.CodeRefNotFound, "ref not found")
-	case errors.Is(err, reposervice.ErrPathNotFound):
-		return response.NewError(http.StatusNotFound, response.CodePathNotFound, "path not found")
-	case errors.Is(err, reposervice.ErrInvalidRef):
-		return response.NewError(http.StatusBadRequest, response.CodeInvalidRequest, "invalid ref")
-	case errors.Is(err, reposervice.ErrInvalidPath):
-		return response.NewError(http.StatusBadRequest, response.CodeInvalidRequest, "invalid path")
-	case err != nil:
-		h.logger.Error("failed to read repository tree", zap.Error(err))
-		return response.NewError(http.StatusInternalServerError, response.CodeInternalError, "failed to read repository tree")
+	if err != nil {
+		return h.repositoriesError(err, "failed to read repository tree")
 	}
 
 	payload, err := newTree(tree)

@@ -6,7 +6,6 @@ import (
 
 	"github.com/Axenos-dev/HeadlessGit/internal/server/response"
 	"github.com/go-chi/chi/v5"
-	"go.uber.org/zap"
 )
 
 func (h *handlers) listWebhooks(w http.ResponseWriter, r *http.Request) error {
@@ -17,8 +16,7 @@ func (h *handlers) listWebhooks(w http.ResponseWriter, r *http.Request) error {
 
 	webhooks, err := h.webhooks.ListWebhooks(r.Context(), repoID)
 	if err != nil {
-		h.logger.Error("failed to list webhooks", zap.Error(err))
-		return response.NewError(http.StatusInternalServerError, response.CodeInternalError, "failed to list webhooks")
+		return h.webhooksError(err, "failed to list webhooks")
 	}
 
 	return response.Data(w, http.StatusOK, newWebhookListItems(webhooks))

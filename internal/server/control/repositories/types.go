@@ -409,6 +409,52 @@ func newCommit(res domain.CommitResult) Commit {
 	}
 }
 
+type CreateBranchRequest struct {
+	Name     string `json:"name"`
+	SHA      string `json:"sha"`
+	PusherID int64  `json:"pusherId,omitempty"`
+}
+
+func (r CreateBranchRequest) Validate() error {
+	if r.Name == "" {
+		return errors.New("name is required")
+	}
+	if r.SHA == "" {
+		return errors.New("sha is required")
+	}
+	return nil
+}
+
+type Branch struct {
+	Name      string `json:"name"`
+	CommitSHA string `json:"commitSha"`
+}
+
+func newBranch(b domain.Branch) Branch {
+	return Branch{
+		Name:      b.Name,
+		CommitSHA: b.CommitSHA,
+	}
+}
+
+type BranchList struct {
+	DefaultBranch string   `json:"defaultBranch"`
+	Branches      []Branch `json:"branches"`
+	Truncated     bool     `json:"truncated"`
+}
+
+func newBranchList(listing domain.BranchListing) BranchList {
+	branches := make([]Branch, len(listing.Branches))
+	for i, b := range listing.Branches {
+		branches[i] = newBranch(b)
+	}
+	return BranchList{
+		DefaultBranch: listing.DefaultBranch,
+		Branches:      branches,
+		Truncated:     listing.Truncated,
+	}
+}
+
 type AddPathPolicyRequest struct {
 	Pattern string `json:"pattern"`
 	Reason  string `json:"reason,omitempty"`

@@ -2,10 +2,14 @@ package users
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"time"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/domain"
 	"github.com/Axenos-dev/HeadlessGit/internal/server/response"
+	authservice "github.com/Axenos-dev/HeadlessGit/internal/services/auth"
+	usersservice "github.com/Axenos-dev/HeadlessGit/internal/services/users"
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 )
@@ -56,4 +60,26 @@ func (h *handlers) RegisterRoutes(parent chi.Router) {
 		r.Delete("/{userID}/tokens", response.Handler(h.logger, h.revokeAllTokens))
 		r.Delete("/{userID}/tokens/{tokenID}", response.Handler(h.logger, h.revokeToken))
 	})
+}
+
+// maps service errors for every route in this group, so one error always gets one response
+func (h *handlers) usersError(err error, logMessage string) *response.APIError {
+	switch {
+	case errors.Is(err, usersservice.ErrUserNotFound):
+		return response.NewError(http.StatusNotFound, response.CodeUserNotFound, "user not found")
+	case errors.Is(err, usersservice.ErrUserExists):
+		return response.NewError(http.StatusConflict, response.CodeUserExists, "user already exists")
+
+	// credentials
+	case errors.Is(err, authservice.ErrInvalidSSHKey):
+		return response.NewError(http.StatusBadRequest, response.CodeInvalidRequest, "invalid ssh key")
+	case errors.Is(err, authservice.ErrSSHKeyNotFound):
+		return response.NewError(http.StatusNotFound, response.CodeSSHKeyNotFound, "ssh key not found")
+	case errors.Is(err, authservice.ErrTokenNotFound):
+		return response.NewError(http.StatusNotFound, response.CodeTokenNotFound, "token not found")
+
+	default:
+		h.logger.Error(logMessage, zap.Error(err))
+		return response.NewError(http.StatusInternalServerError, response.CodeInternalError, logMessage)
+	}
 }

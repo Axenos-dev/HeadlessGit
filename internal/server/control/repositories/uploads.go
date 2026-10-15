@@ -2,12 +2,10 @@ package repositories
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strconv"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/server/response"
-	reposervice "github.com/Axenos-dev/HeadlessGit/internal/services/repositories"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -26,13 +24,8 @@ func (h *handlers) createUpload(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	target, err := h.service.CreateUpload(r.Context(), repositoryID, req.UserID, req.Size)
-	switch {
-	case errors.Is(err, reposervice.ErrRepositoryNotFound):
-		return response.NewError(http.StatusNotFound, response.CodeRepositoryNotFound, "repository not found")
-	case errors.Is(err, reposervice.ErrLFSNotEnabled), errors.Is(err, reposervice.ErrUploadUnavailable):
-		return response.NewError(http.StatusServiceUnavailable, response.CodeLFSUnavailable, "lfs uploads are unavailable")
-	case err != nil:
-		return err
+	if err != nil {
+		return h.repositoriesError(err, "failed to create upload")
 	}
 
 	return response.Data(w, http.StatusCreated, newUploadTarget(target))

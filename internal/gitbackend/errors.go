@@ -17,4 +17,8 @@ var (
 	ErrHeadMismatch    = errors.New("branch head mismatch")
 	ErrNothingToCommit = errors.New("nothing to commit")
 	ErrLFSRequired     = errors.New("path is lfs-tracked but no clean filter is available")
+
+	// branch management
+	ErrBranchExists  = errors.New("branch already exists")
+	ErrDefaultBranch = errors.New("branch is the default branch")
 )

@@ -2,15 +2,12 @@ package permissions
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strconv"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/domain"
 	"github.com/Axenos-dev/HeadlessGit/internal/server/response"
-	permsservice "github.com/Axenos-dev/HeadlessGit/internal/services/permissions"
 	"github.com/go-chi/chi/v5"
-	"go.uber.org/zap"
 )
 
 func (h *handlers) grantPermission(w http.ResponseWriter, r *http.Request) error {
@@ -27,13 +24,8 @@ func (h *handlers) grantPermission(w http.ResponseWriter, r *http.Request) error
 		return response.NewError(http.StatusBadRequest, response.CodeInvalidRequest, err.Error())
 	}
 
-	err = h.perms.Grant(r.Context(), req.UserID, repoID, domain.Role(req.Role))
-	switch {
-	case errors.Is(err, permsservice.ErrInvalidRole):
-		return response.NewError(http.StatusBadRequest, response.CodeInvalidRequest, "invalid role")
-	case err != nil:
-		h.logger.Error("failed to grant permission", zap.Error(err))
-		return response.NewError(http.StatusInternalServerError, response.CodeInternalError, "failed to grant permission")
+	if err := h.perms.Grant(r.Context(), req.UserID, repoID, domain.Role(req.Role)); err != nil {
+		return h.permissionsError(err, "failed to grant permission")
 	}
 
 	w.WriteHeader(http.StatusNoContent)

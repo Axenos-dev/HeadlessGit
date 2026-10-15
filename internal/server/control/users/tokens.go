@@ -1,14 +1,11 @@
 package users
 
 import (
-	"errors"
 	"net/http"
 	"strconv"
 
 	"github.com/Axenos-dev/HeadlessGit/internal/server/response"
-	authservice "github.com/Axenos-dev/HeadlessGit/internal/services/auth"
 	"github.com/go-chi/chi/v5"
-	"go.uber.org/zap"
 )
 
 func (h *handlers) listTokens(w http.ResponseWriter, r *http.Request) error {
@@ -19,8 +16,7 @@ func (h *handlers) listTokens(w http.ResponseWriter, r *http.Request) error {
 
 	tokens, err := h.creds.ListTokens(r.Context(), userID)
 	if err != nil {
-		h.logger.Error("failed to list tokens", zap.Error(err))
-		return response.NewError(http.StatusInternalServerError, response.CodeInternalError, "failed to list tokens")
+		return h.usersError(err, "failed to list tokens")
 	}
 
 	return response.Data(w, http.StatusOK, newTokenResponses(tokens))
@@ -36,12 +32,8 @@ func (h *handlers) revokeToken(w http.ResponseWriter, r *http.Request) error {
 		return response.NewError(http.StatusBadRequest, response.CodeInvalidRequest, "invalid token id")
 	}
 
-	switch err := h.creds.RevokeToken(r.Context(), userID, tokenID); {
-	case errors.Is(err, authservice.ErrTokenNotFound):
-		return response.NewError(http.StatusNotFound, response.CodeTokenNotFound, "token not found")
-	case err != nil:
-		h.logger.Error("failed to revoke token", zap.Error(err))
-		return response.NewError(http.StatusInternalServerError, response.CodeInternalError, "failed to revoke token")
+	if err := h.creds.RevokeToken(r.Context(), userID, tokenID); err != nil {
+		return h.usersError(err, "failed to revoke token")
 	}
 
 	w.WriteHeader(http.StatusNoContent)
@@ -55,8 +47,7 @@ func (h *handlers) revokeAllTokens(w http.ResponseWriter, r *http.Request) error
 	}
 
 	if err := h.creds.RevokeAllTokens(r.Context(), userID); err != nil {
-		h.logger.Error("failed to revoke tokens", zap.Error(err))
-		return response.NewError(http.StatusInternalServerError, response.CodeInternalError, "failed to revoke tokens")
+		return h.usersError(err, "failed to revoke tokens")
 	}
 
 	w.WriteHeader(http.StatusNoContent)

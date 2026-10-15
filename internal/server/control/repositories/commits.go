@@ -10,7 +10,6 @@ import (
 	"github.com/Axenos-dev/HeadlessGit/internal/server/response"
 	reposervice "github.com/Axenos-dev/HeadlessGit/internal/services/repositories"
 	"github.com/go-chi/chi/v5"
-	"go.uber.org/zap"
 )
 
 func (h *handlers) getCommit(w http.ResponseWriter, r *http.Request) error {
@@ -20,18 +19,8 @@ func (h *handlers) getCommit(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	commit, err := h.service.GetCommit(r.Context(), id, chi.URLParam(r, "sha"))
-	switch {
-	case errors.Is(err, reposervice.ErrBlobTooLarge):
-		return response.NewError(http.StatusRequestEntityTooLarge, response.CodeInvalidRequest, err.Error())
-	case errors.Is(err, reposervice.ErrRepositoryNotFound):
-		return response.NewError(http.StatusNotFound, response.CodeRepositoryNotFound, "repository not found")
-	case errors.Is(err, reposervice.ErrCommitNotFound):
-		return response.NewError(http.StatusNotFound, response.CodeCommitNotFound, "commit not found")
-	case errors.Is(err, reposervice.ErrInvalidCommitSHA):
-		return response.NewError(http.StatusBadRequest, response.CodeInvalidRequest, "invalid commit sha")
-	case err != nil:
-		h.logger.Error("failed to get commit", zap.Error(err))
-		return response.NewError(http.StatusInternalServerError, response.CodeInternalError, "failed to get commit")
+	if err != nil {
+		return h.repositoriesError(err, "failed to get commit")
 	}
 
 	return response.Data(w, http.StatusOK, newCommitDetails(commit))
@@ -72,34 +61,12 @@ func (h *handlers) createCommit(w http.ResponseWriter, r *http.Request) error {
 		PusherID:        req.PusherID,
 		Operations:      ops,
 	})
-	switch {
-	case errors.Is(err, reposervice.ErrRepositoryNotFound):
-		return response.NewError(http.StatusNotFound, response.CodeRepositoryNotFound, "repository not found")
-	case errors.Is(err, reposervice.ErrRefNotFound):
-		return response.NewError(http.StatusNotFound, response.CodeRefNotFound, "branch not found; pass the all-zero expectedHeadSha to create it")
-	case errors.Is(err, reposervice.ErrPathNotFound):
-		return response.NewError(http.StatusNotFound, response.CodePathNotFound, "delete target or move source not found")
-	case errors.Is(err, reposervice.ErrPathConflict):
-		return response.NewError(http.StatusConflict, response.CodePathConflict, "move destination already exists")
-	case errors.Is(err, reposervice.ErrHeadMismatch):
-		return response.NewError(http.StatusConflict, response.CodeHeadMismatch, "branch head does not match expectedHeadSha")
-	case errors.Is(err, reposervice.ErrUnknownBlob):
+	// a blob referenced from the body is a bad reference, not a missing resource
+	if errors.Is(err, reposervice.ErrUnknownBlob) {
 		return response.NewError(http.StatusUnprocessableEntity, response.CodeUnknownBlob, "referenced blob not found, upload it first")
-	case errors.Is(err, reposervice.ErrNothingToCommit):
-		return response.NewError(http.StatusUnprocessableEntity, response.CodeNothingToCommit, "operations produce no change")
-	case errors.Is(err, reposervice.ErrPathBlocked):
-		return response.NewError(http.StatusUnprocessableEntity, response.CodePathBlocked, err.Error())
-	case errors.Is(err, reposervice.ErrNotAFile):
-		return response.NewError(http.StatusBadRequest, response.CodeInvalidRequest, "delete target is not a file")
-	case errors.Is(err, reposervice.ErrInvalidBranch):
-		return response.NewError(http.StatusBadRequest, response.CodeInvalidRequest, "invalid branch name")
-	case errors.Is(err, reposervice.ErrInvalidCommitOps):
-		return response.NewError(http.StatusBadRequest, response.CodeInvalidRequest, err.Error())
-	case errors.Is(err, reposervice.ErrLFSNotEnabled):
-		return response.NewError(http.StatusBadRequest, response.CodeInvalidRequest, "path is lfs-tracked but lfs is not enabled")
-	case err != nil:
-		h.logger.Error("failed to create commit", zap.Error(err))
-		return response.NewError(http.StatusInternalServerError, response.CodeInternalError, "failed to create commit")
+	}
+	if err != nil {
+		return h.repositoriesError(err, "failed to create commit")
 	}
 
 	return response.Data(w, http.StatusCreated, newCommit(result))
